@@ -256,7 +256,12 @@ class Surface:
                              LAYERS.get(spec.get("layer", "top"), LayerShell.Layer.TOP))
 
         anchor = spec.get("anchor", "")
-        if anchor:
+        if anchor == "all" or self.role in ("overlay", "widget"):
+            # Fullscreen surface: the wallpaper and the launcher both want the
+            # whole output, and centre their own content with CSS.
+            for edge in ANCHORS.values():
+                LayerShell.set_anchor(self.window, edge, True)
+        elif anchor:
             LayerShell.set_anchor(self.window, ANCHORS[anchor], True)
             # Stretch across the perpendicular axis so a top panel spans the
             # whole width rather than sitting in a corner.
@@ -277,10 +282,13 @@ class Surface:
             LayerShell.set_keyboard_mode(
                 self.window, LayerShell.KeyboardMode.ON_DEMAND)
 
-        if spec.get("height"):
-            self.window.set_size_request(-1, int(spec["height"]))
-        if spec.get("width"):
-            self.window.set_size_request(int(spec["width"]), -1)
+        # Only fix a size on surfaces anchored to one edge; a fullscreen layer
+        # takes its size from the output.
+        if self.role not in ("overlay", "widget") and spec.get("anchor") != "all":
+            if spec.get("height"):
+                self.window.set_size_request(-1, int(spec["height"]))
+            if spec.get("width"):
+                self.window.set_size_request(int(spec["width"]), -1)
 
 
 class App(Gtk.Application):

@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>NETHOS preview</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;font-family:system-ui}
+  /* Stand in for the compositor: the wallpaper, with the shell surfaces
+     layered over it exactly as layer-shell would place them. */
+  #stage{position:relative;width:100%;height:100%;}
+  iframe{position:absolute;border:0;background:transparent}
+  #desktop{inset:0;width:100%;height:100%}
+  #panel{top:0;left:0;width:100%;height:54px}
+  #dock{bottom:0;left:0;width:100%;height:110px}
+  #menu{inset:0;width:100%;height:100%}
+</style>
+</head>
+<body>
+<div id="stage">
+  <iframe id="desktop" src="http://127.0.0.1:7777/desktop.html"></iframe>
+  <iframe id="panel"   src="http://127.0.0.1:7777/panel.html"></iframe>
+  <iframe id="dock"    src="http://127.0.0.1:7777/dock.html"></iframe>
+  <iframe id="menu"    src="http://127.0.0.1:7777/menu.html"></iframe>
+</div>
+</body>
+</html>

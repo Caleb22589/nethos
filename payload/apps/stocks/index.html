@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Stocks</title>
+  <link rel="stylesheet" href="/lib/nethos.css">
+  <script src="/lib/nethos.js"></script>
+  <style>
+    body { padding: 0; background: transparent; overflow: hidden; }
+    .wrap { height: 100%; display: flex; flex-direction: column; padding: 15px 17px; }
+    .head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .head h3 { margin: 0; }
+    .list { flex: 1; overflow-y: auto; margin: 0 -6px; }
+    .row-item {
+      display: grid; grid-template-columns: 1fr 56px 62px;
+      align-items: center; gap: 8px;
+      padding: 7px 6px; border-radius: var(--r-sm);
+    }
+    .row-item:hover { background: var(--glass-sunk); }
+    .sym { font-size: 12.5px; font-weight: 600; }
+    .name { font-size: 10px; color: var(--ink-faint);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .price { font-family: var(--mono); font-size: 12.5px; text-align: right;
+             font-variant-numeric: tabular-nums; }
+    .chg {
+      font-family: var(--mono); font-size: 11px; text-align: right;
+      padding: 2px 6px; border-radius: var(--r-pill); font-variant-numeric: tabular-nums;
+    }
+    .up   { color: var(--good);   background: rgba(35, 160, 106, 0.14); }
+    .down { color: var(--danger); background: rgba(217, 84, 77, 0.14); }
+    .flat { color: var(--ink-soft); background: var(--glass-sunk); }
+    .empty { font-size: 11.5px; color: var(--ink-faint); padding: 8px 6px; line-height: 1.5; }
+    .stamp { font-size: 10px; color: var(--ink-faint); margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="head">
+      <h3>Watchlist</h3>
+      <span class="spacer"></span>
+      <button class="btn btn-quiet" id="refresh" style="padding:3px 9px;font-size:11px">↻</button>
+    </div>
+    <div class="list" id="list"><div class="empty">Loading…</div></div>
+    <div class="stamp" id="stamp"></div>
+  </div>
+
+<script>
+(async () => {
+  const os = await nethos.ready();
+  const list = document.getElementById("list");
+  const stamp = document.getElementById("stamp");
+
+  // Edit your watchlist in ~/.local/state/nethos/apps/stocks.json
+  const DEFAULT = ["AAPL", "MSFT", "NVDA", "^GSPC"];
+
+  async function quote(symbols) {
+    // Yahoo's public chart endpoint: no key, no account. One request per
+    // symbol, run in parallel, and a failure of one does not sink the rest.
+    const out = await Promise.allSettled(symbols.map(async (sym) => {
+      const url = "https://query1.finance.yahoo.com/v8/finance/chart/" +
+                  encodeURIComponent(sym) + "?range=1d&interval=15m";
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) throw new Error(res.status);
+      const j = await res.json();
+      const r = j.chart && j.chart.result && j.chart.result[0];
+      if (!r) throw new Error("no data");
+      const m = r.meta;
+      const price = m.regularMarketPrice;
+      const prev = m.chartPreviousClose ?? m.previousClose ?? price;
+      return {
+        symbol: m.symbol || sym,
+        name: m.shortName || m.longName || "",
+        price: price,
+        change: price - prev,
+        pct: prev ? ((price - prev) / prev) * 100 : 0,
+        currency: m.currency || "",
+      };
+    }));
+    return out.filter((r) => r.status === "fulfilled").map((r) => r.value);
+  }
+
+  function fmt(n) {
+    if (n == null || !isFinite(n)) return "—";
+    return Math.abs(n) >= 1000 ? n.toLocaleString(undefined, { maximumFractionDigits: 0 })
+                               : n.toFixed(2);
+  }
+
+  async function load() {
+    const symbols = await os.storage.get("symbols", DEFAULT);
+    let rows = [];
+    try { rows = await quote(symbols); } catch { rows = []; }
+
+    if (!rows.length) {
+      list.replaceChildren(Object.assign(document.createElement("div"), {
+        className: "empty",
+        textContent: "No quotes. Needs an internet connection; edit symbols in ~/.local/state/nethos/apps/stocks.json",
+      }));
+      stamp.textContent = "";
+      return;
+    }
+
+    list.replaceChildren(...rows.map((q) => {
+      const row = os.ui.el("div", "row-item");
+      const left = os.ui.el("div");
+      left.append(os.ui.el("div", "sym", q.symbol.replace(/^\^/, "")));
+      if (q.name) left.append(os.ui.el("div", "name", q.name));
+      row.append(left);
+      row.append(os.ui.el("div", "price", fmt(q.price)));
+      const dir = q.pct > 0.01 ? "up" : q.pct < -0.01 ? "down" : "flat";
+      const sign = q.pct > 0 ? "+" : "";
+      row.append(os.ui.el("div", "chg " + dir, sign + q.pct.toFixed(2) + "%"));
+      return row;
+    }));
+    stamp.textContent = "Updated " + new Date().toLocaleTimeString(
+      undefined, { hour: "2-digit", minute: "2-digit" });
+  }
+
+  document.getElementById("refresh").addEventListener("click", load);
+  load();
+  setInterval(load, 5 * 60 * 1000);
+})();
+</script>
+</body>
+</html>

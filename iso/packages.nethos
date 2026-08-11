@@ -3,6 +3,18 @@
 # Appended to archiso's releng package list by iso/build-iso.sh.
 # Keep this in step with the pacman block in payload/install-nethos.sh.
 
+# compositor: Hyprland is the NETHOS look (rounded corners, real blur)
+hyprland
+xdg-desktop-portal-hyprland
+brightnessctl
+wireplumber
+
+# the shell renderer: WebKit + layer shell, not Chromium
+webkitgtk-6.0
+gtk4-layer-shell
+python-gobject
+python-dbus
+
 # compositor and session
 sway
 swaybg

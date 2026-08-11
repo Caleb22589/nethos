@@ -2,19 +2,16 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>NETHOS Panel</title>
+  <title>Panel</title>
   <link rel="stylesheet" href="style.css">
   <script src="shell.js" defer></script>
 </head>
 <body data-view="panel">
   <div id="panel">
-    <button class="brand" id="brand">
-      <span class="glyph"></span>
-      <span>NETHOS</span>
-    </button>
-
+    <!-- No wordmark. The mark is the launcher. -->
+    <button class="mark" id="brand" title="Applications"><i></i></button>
     <div id="tasks"></div>
-
+    <div id="tray"></div>
     <div id="status">
       <span id="metrics"></span>
       <span class="clock" id="clock"></span>

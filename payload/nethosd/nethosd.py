@@ -216,7 +216,79 @@ class SwayIPC:
         return self.request(self.GET_OUTPUTS)
 
 
+class HyprIPC:
+    """Hyprland IPC.
+
+    Simpler than sway's: two unix sockets, line oriented. `.socket.sock` takes
+    a request and returns a reply, `.socket2.sock` streams events as text.
+    Hyprland is what gives NETHOS rounded corners and real blur -- sway can do
+    neither -- so it is the default when present.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def base():
+        sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+        runtime = os.environ.get("XDG_RUNTIME_DIR", "/run/user/%d" % os.getuid())
+        if sig:
+            return os.path.join(runtime, "hypr", sig)
+        candidates = sorted(glob.glob(os.path.join(runtime, "hypr", "*")),
+                            key=lambda p: os.stat(p).st_mtime, reverse=True)
+        return candidates[0] if candidates else None
+
+    @classmethod
+    def available(cls):
+        base = cls.base()
+        return bool(base) and os.path.exists(os.path.join(base, ".socket.sock"))
+
+    def _request(self, text):
+        base = self.base()
+        if not base:
+            return None
+        path = os.path.join(base, ".socket.sock")
+        try:
+            with self._lock:
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                sock.settimeout(5)
+                sock.connect(path)
+                sock.sendall(text.encode())
+                chunks = []
+                while True:
+                    chunk = sock.recv(65536)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                sock.close()
+            return b"".join(chunks).decode("utf-8", "replace")
+        except OSError:
+            return None
+
+    def json(self, what):
+        raw = self._request("j/" + what)
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return None
+
+    def dispatch(self, *args):
+        return self._request("dispatch " + " ".join(str(a) for a in args))
+
+    def keyword(self, *args):
+        return self._request("keyword " + " ".join(str(a) for a in args))
+
+
+HYPR = HyprIPC()
 SWAY = SwayIPC()
+
+
+def backend():
+    """Which compositor are we driving? Decided per call so a session that
+    restarts under the other one keeps working without restarting nethosd."""
+    return "hypr" if HyprIPC.available() else "sway"
 
 
 def spawn(argv):
@@ -305,28 +377,66 @@ def watch_files(paths, interval=1.0):
             EVENTS.bump("files-changed")
 
 
-def sway_event_loop():
-    """Subscribe to sway and push window changes to the shell.
+def compositor_event_loop():
+    """Push window changes to the shell instead of letting it poll.
 
-    This is what removes the taskbar's polling: the panel no longer asks "what
-    windows exist" every second and a half, it is told when that changes.
+    The panel no longer asks "what windows exist" on a timer; it is told.
     """
     while True:
         try:
-            sock = SwayIPC.connect()
-            sock.settimeout(None)
-            SwayIPC.send(sock, SwayIPC.SUBSCRIBE, b'["window","workspace"]')
-            SwayIPC.recv(sock)                      # subscription ack
-            while True:
-                mtype, data = SwayIPC.recv(sock)
-                if not (mtype & 0x80000000):
-                    continue
-                if isinstance(data, dict) and data.get("change") == "new":
-                    apply_window_rules(data.get("container") or {})
-                EVENTS.publish("windows", {})
+            if backend() == "hypr":
+                hypr_event_loop()
+            else:
+                sway_event_loop()
         except (OSError, struct.error):
-            EVENTS.publish("disconnected", {})
-            time.sleep(2)
+            pass
+        EVENTS.publish("disconnected", {})
+        time.sleep(2)
+
+
+def sway_event_loop():
+    sock = SwayIPC.connect()
+    sock.settimeout(None)
+    SwayIPC.send(sock, SwayIPC.SUBSCRIBE, b'["window","workspace"]')
+    SwayIPC.recv(sock)                      # subscription ack
+    while True:
+        mtype, data = SwayIPC.recv(sock)
+        if not (mtype & 0x80000000):
+            continue
+        if isinstance(data, dict) and data.get("change") == "new":
+            apply_window_rules_sway(data.get("container") or {})
+        EVENTS.publish("windows", {})
+
+
+HYPR_INTERESTING = (
+    "openwindow", "closewindow", "movewindow", "activewindow",
+    "windowtitle", "workspace", "fullscreen", "changefloatingmode",
+)
+
+
+def hypr_event_loop():
+    base = HyprIPC.base()
+    if not base:
+        raise OSError("no hyprland socket")
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.connect(os.path.join(base, ".socket2.sock"))
+    buf = b""
+    while True:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise OSError("hyprland closed the event socket")
+        buf += chunk
+        while b"\n" in buf:
+            line, _, buf = buf.partition(b"\n")
+            text = line.decode("utf-8", "replace")
+            name, _, payload = text.partition(">>")
+            if name == "openwindow":
+                # ADDRESS,WORKSPACE,CLASS,TITLE
+                parts = payload.split(",", 3)
+                if len(parts) >= 3:
+                    apply_window_rules_hypr("0x" + parts[0], parts[2])
+            if name in HYPR_INTERESTING:
+                EVENTS.publish("windows", {})
 
 
 # --------------------------------------------------------------------------
@@ -356,11 +466,41 @@ def walk_tree(node, out, workspace=None):
 
 
 def list_windows():
+    if backend() == "hypr":
+        return hypr_windows()
     tree = SWAY.get_tree()
     if not isinstance(tree, dict):
         return []
     out = []
     walk_tree(tree, out)
+    # sway ids are ints; the API uses strings so both backends look the same
+    # to the shell.
+    for w in out:
+        w["id"] = str(w["id"])
+    return out
+
+
+def hypr_windows():
+    clients = HYPR.json("clients")
+    if not isinstance(clients, list):
+        return []
+    active = HYPR.json("activewindow") or {}
+    active_addr = active.get("address") if isinstance(active, dict) else None
+
+    out = []
+    for c in clients:
+        app_id = c.get("class") or c.get("initialClass") or ""
+        if is_shell_surface(app_id):
+            continue
+        out.append({
+            "id": c.get("address", ""),
+            "title": c.get("title") or "",
+            "app_id": app_id,
+            "focused": c.get("address") == active_addr,
+            "workspace": (c.get("workspace") or {}).get("name"),
+            "floating": bool(c.get("floating")),
+            "nethos_app": nethos_app_for(app_id),
+        })
     return out
 
 
@@ -374,6 +514,14 @@ def walk_all_app_ids(node, out):
 
 
 def output_size(default=(1440, 900)):
+    if backend() == "hypr":
+        monitors = HYPR.json("monitors")
+        if isinstance(monitors, list) and monitors:
+            m = monitors[0]
+            if m.get("width") and m.get("height"):
+                scale = m.get("scale") or 1
+                return int(m["width"] / scale), int(m["height"] / scale)
+        return default
     outputs = SWAY.get_outputs()
     if isinstance(outputs, list) and outputs:
         rect = outputs[0].get("rect") or {}
@@ -397,11 +545,47 @@ def nethos_app_for(app_id):
     return ""
 
 
-def apply_window_rules(container):
+def widget_geometry(app):
+    """Where a widget sits, from its manifest."""
+    ow, oh = output_size()
+    w, h = app["width"], app["height"]
+    margin, top = 16, 56
+    return {
+        "top-right":    (ow - w - margin, top),
+        "top-left":     (margin, top),
+        "bottom-right": (ow - w - margin, oh - h - margin - 90),
+        "bottom-left":  (margin, oh - h - margin - 90),
+        "center":       ((ow - w) // 2, (oh - h) // 2),
+    }.get(app.get("position", "top-right"), (ow - w - margin, top))
+
+
+def apply_window_rules_hypr(address, app_class):
+    which = nethos_app_for(app_class)
+    if not which:
+        return
+    app = find_app(which)
+    if not app:
+        return
+    target = "address:%s" % address
+
+    if app.get("mode") == "widget":
+        x, y = widget_geometry(app)
+        HYPR.dispatch("setfloating", target)
+        HYPR.dispatch("resizewindowpixel", "exact %d %d,%s" % (app["width"], app["height"], target))
+        HYPR.dispatch("movewindowpixel", "exact %d %d,%s" % (x, y, target))
+        HYPR.dispatch("pin", target)          # follow across workspaces
+    elif app.get("floating"):
+        HYPR.dispatch("setfloating", target)
+        HYPR.dispatch("resizewindowpixel",
+                      "exact %d %d,%s" % (app["width"], app["height"], target))
+        HYPR.dispatch("centerwindow")
+
+
+def apply_window_rules_sway(container):
     """Place a newly mapped NETHOS app window according to its manifest.
 
-    sway's own for_window rules cannot read our manifests, so window vs widget
-    placement is decided here, on the sway event stream.
+    A compositor's own rules cannot read our manifests, so window vs widget
+    placement is decided here, on the compositor's event stream.
     """
     app_id = container.get("app_id") or ""
     which = nethos_app_for(app_id)
@@ -419,22 +603,11 @@ def apply_window_rules(container):
     if app.get("mode") == "widget":
         # A widget is furniture: it floats above the desktop, follows you
         # between workspaces, has no border, and never takes focus.
-        ow, oh = output_size()
-        w, h = app["width"], app["height"]
-        margin = 12
-        panel_h = 44
-        positions = {
-            "top-right":     (ow - w - margin, panel_h + margin),
-            "top-left":      (margin, panel_h + margin),
-            "bottom-right":  (ow - w - margin, oh - h - margin),
-            "bottom-left":   (margin, oh - h - margin),
-            "center":        ((ow - w) // 2, (oh - h) // 2),
-        }
-        x, y = positions.get(app.get("position", "top-right"), positions["top-right"])
+        x, y = widget_geometry(app)
         SWAY.command(
             "%s floating enable, border none, sticky enable, "
             "resize set width %d px height %d px, move absolute position %d %d"
-            % (sel, w, h, x, y)
+            % (sel, app["width"], app["height"], x, y)
         )
     elif app.get("floating"):
         SWAY.command(
@@ -685,51 +858,212 @@ def launch_desktop_app(app):
 # launcher
 # --------------------------------------------------------------------------
 
+def window_action(action, wid):
+    """Act on a window. Ids are opaque strings: a sway con_id or a Hyprland
+    address, so the shell never has to know which compositor is running."""
+    if backend() == "hypr":
+        target = "address:%s" % wid
+        if action == "focus":
+            HYPR.dispatch("focuswindow", target)
+        elif action == "close":
+            HYPR.dispatch("closewindow", target)
+        elif action == "fullscreen":
+            HYPR.dispatch("focuswindow", target)
+            HYPR.dispatch("fullscreen", "1")
+        elif action == "popout":
+            HYPR.dispatch("unpin", target)
+            HYPR.dispatch("settiled", target)
+            HYPR.dispatch("focuswindow", target)
+        elif action == "float":
+            HYPR.dispatch("setfloating", target)
+        else:
+            return False
+        return True
+
+    try:
+        sel = "[con_id=%d]" % int(wid)
+    except (TypeError, ValueError):
+        return False
+    commands = {
+        "focus": "%s focus",
+        "close": "%s kill",
+        "fullscreen": "%s fullscreen toggle",
+        "popout": "%s floating disable, sticky disable, border pixel 2, focus",
+        "float": "%s floating enable, border pixel 2",
+    }
+    if action not in commands:
+        return False
+    SWAY.command(commands[action] % sel)
+    return True
+
+
+# --------------------------------------------------------------------------
+# launcher
+# --------------------------------------------------------------------------
+
 MENU_STATE = {"open": False}
 
 
-def menu_window_exists():
-    tree = SWAY.get_tree()
-    if not isinstance(tree, dict):
-        return False
-    found = []
-    walk_all_app_ids(tree, found)
-    return any(MENU_MARK in a for a in found)
-
-
-def menu_prewarm():
-    """Open the launcher once and park it in the scratchpad.
-
-    Opening it later is then a compositor operation instead of a Chromium
-    start, which is the difference between instant and several seconds.
-    """
-    if menu_window_exists():
-        return
-    ow, oh = output_size()
-    spawn(CHROME_BASE + [
-        "--app=http://%s:%d/menu.html" % (HOST, PORT),
-        "--window-size=%d,%d" % (int(ow * 0.78), int(oh * 0.74)),
-    ])
-
-
 def menu_toggle(force=None):
+    """Show or hide the launcher.
+
+    The launcher is a layer-shell surface that exists for the whole session and
+    hides itself; toggling is a broadcast on the event bus, not a compositor
+    operation and certainly not a browser start. That makes it instant and
+    identical on sway and Hyprland.
+    """
     want = (not MENU_STATE["open"]) if force is None else bool(force)
-
-    if not menu_window_exists():
-        # Lost it (crash, or the session restarted): bring one back.
-        menu_prewarm()
-        MENU_STATE["open"] = True
-        EVENTS.publish("menu", {"open": True})
-        return True
-
-    if want:
-        SWAY.command("%s scratchpad show, move position center" % MENU_CRITERIA)
-    else:
-        SWAY.command("%s move scratchpad" % MENU_CRITERIA)
-
     MENU_STATE["open"] = want
     EVENTS.publish("menu", {"open": want})
     return want
+
+
+# --------------------------------------------------------------------------
+# system tray (StatusNotifierItem)
+# --------------------------------------------------------------------------
+
+TRAY = {"items": {}, "lock": threading.Lock()}
+
+
+def tray_items():
+    with TRAY["lock"]:
+        return [dict(v) for v in TRAY["items"].values()]
+
+
+def tray_run():
+    """Be a StatusNotifierWatcher and host, so tray apps have somewhere to go.
+
+    This is how Steam, Discord, Slack, nm-applet and friends put an icon in a
+    panel: they register a StatusNotifierItem on the session bus and expect
+    something to be watching. Without a watcher they either hide the icon or
+    fall back to nothing at all. Runs in its own thread with a GLib main loop,
+    which is what dbus-python wants.
+    """
+    try:
+        import dbus
+        import dbus.service
+        import dbus.mainloop.glib
+        from gi.repository import GLib
+    except ImportError:
+        return                      # tray simply unavailable; panel shows none
+
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    bus = dbus.SessionBus()
+
+    WATCHER_IFACE = "org.kde.StatusNotifierWatcher"
+    ITEM_IFACE = "org.kde.StatusNotifierItem"
+
+    def read_item(service, path):
+        try:
+            obj = bus.get_object(service, path)
+            props = dbus.Interface(obj, "org.freedesktop.DBus.Properties")
+            get = lambda k: props.Get(ITEM_IFACE, k)  # noqa: E731
+            entry = {
+                "id": "%s%s" % (service, path),
+                "service": str(service),
+                "path": str(path),
+                "title": str(get("Title") or get("Id") or ""),
+                "icon_name": str(get("IconName") or ""),
+                "status": str(get("Status") or "Active"),
+            }
+            entry["icon_url"] = ("/api/icon/" + urllib.parse.quote(entry["icon_name"])
+                                if entry["icon_name"] else "")
+            return entry
+        except Exception:
+            return None
+
+    def add(service, path="/StatusNotifierItem"):
+        entry = read_item(service, path)
+        if not entry:
+            return
+        with TRAY["lock"]:
+            TRAY["items"][entry["id"]] = entry
+        EVENTS.publish("tray", {})
+
+    class Watcher(dbus.service.Object):
+        def __init__(self):
+            name = dbus.service.BusName(WATCHER_IFACE, bus,
+                                        do_not_queue=True, replace_existing=False)
+            super().__init__(bus, "/StatusNotifierWatcher", name)
+
+        @dbus.service.method(WATCHER_IFACE, in_signature="s", sender_keyword="sender")
+        def RegisterStatusNotifierItem(self, service, sender=None):
+            # Callers pass either a bus name or an object path; the spec allows
+            # both and real applications use both.
+            if service.startswith("/"):
+                add(sender, service)
+            else:
+                add(service)
+
+        @dbus.service.method(WATCHER_IFACE, in_signature="s")
+        def RegisterStatusNotifierHost(self, service):
+            pass
+
+        @dbus.service.method("org.freedesktop.DBus.Properties",
+                             in_signature="ss", out_signature="v")
+        def Get(self, iface, prop):
+            if prop == "IsStatusNotifierHostRegistered":
+                return dbus.Boolean(True)
+            if prop == "RegisteredStatusNotifierItems":
+                with TRAY["lock"]:
+                    return dbus.Array([i["service"] for i in TRAY["items"].values()],
+                                      signature="s")
+            if prop == "ProtocolVersion":
+                return dbus.Int32(0)
+            return dbus.String("")
+
+        @dbus.service.method("org.freedesktop.DBus.Properties",
+                             in_signature="s", out_signature="a{sv}")
+        def GetAll(self, iface):
+            return dbus.Dictionary(
+                {"IsStatusNotifierHostRegistered": dbus.Boolean(True),
+                 "ProtocolVersion": dbus.Int32(0)}, signature="sv")
+
+        @dbus.service.signal(WATCHER_IFACE, signature="s")
+        def StatusNotifierItemRegistered(self, service):
+            pass
+
+    def on_name_owner_changed(name, old, new):
+        # An application quitting should take its icon with it.
+        if not new:
+            with TRAY["lock"]:
+                gone = [k for k, v in TRAY["items"].items() if v["service"] == str(name)]
+                for k in gone:
+                    del TRAY["items"][k]
+            if gone:
+                EVENTS.publish("tray", {})
+
+    try:
+        Watcher()
+    except Exception:
+        # Another tray host owns the name; leave it alone rather than fight.
+        return
+
+    bus.add_signal_receiver(on_name_owner_changed,
+                            signal_name="NameOwnerChanged",
+                            dbus_interface="org.freedesktop.DBus")
+    GLib.MainLoop().run()
+
+
+def tray_activate(item_id, secondary=False):
+    try:
+        import dbus
+    except ImportError:
+        return False
+    with TRAY["lock"]:
+        entry = TRAY["items"].get(item_id)
+    if not entry:
+        return False
+    try:
+        obj = dbus.SessionBus().get_object(entry["service"], entry["path"])
+        iface = dbus.Interface(obj, "org.kde.StatusNotifierItem")
+        if secondary:
+            iface.SecondaryActivate(0, 0)
+        else:
+            iface.Activate(0, 0)
+        return True
+    except Exception:
+        return False
 
 
 # --------------------------------------------------------------------------
@@ -935,6 +1269,8 @@ class Handler(BaseHTTPRequestHandler):
             if not path:
                 return self.send_error(404)
             return self.send_path(path, cache=True)
+        if route == "/api/tray":
+            return self.send_json({"items": tray_items()})
         if route.startswith("/api/storage/"):
             return self.send_json({"data": storage_read(route[len("/api/storage/"):])})
 
@@ -981,27 +1317,19 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": ok})
 
         if route == "/api/window":
-            action, wid = data.get("action"), data.get("id")
-            if not isinstance(wid, int):
+            action, wid = data.get("action"), str(data.get("id", ""))
+            if not wid:
                 return self.send_json({"error": "bad id"}, 400)
-            sel = "[con_id=%d]" % wid
-            if action == "focus":
-                SWAY.command("%s focus" % sel)
-            elif action == "close":
-                SWAY.command("%s kill" % sel)
-            elif action == "fullscreen":
-                SWAY.command("%s fullscreen toggle" % sel)
-            elif action == "popout":
-                # Turn a widget into an ordinary managed window.
-                SWAY.command("%s floating disable, sticky disable, border pixel 2, focus" % sel)
-            elif action == "float":
-                SWAY.command("%s floating enable, border pixel 2" % sel)
-            else:
+            if not window_action(action, wid):
                 return self.send_json({"error": "bad action"}, 400)
             return self.send_json({"ok": True})
 
         if route == "/api/menu":
             return self.send_json({"ok": True, "open": menu_toggle(data.get("open"))})
+
+        if route == "/api/tray/activate":
+            ok = tray_activate(str(data.get("id", "")), bool(data.get("secondary")))
+            return self.send_json({"ok": ok})
 
         if route == "/api/reload":
             return self.send_json({"ok": True,
@@ -1015,32 +1343,13 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_error(404)
 
 
-def prewarm_when_ready(timeout=90):
-    """Park a launcher window in the scratchpad once the panel is up.
-
-    Waiting for the panel matters: Chromium's first window owns the shared
-    profile, and we want that to be the panel rather than a hidden launcher.
-    """
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        tree = SWAY.get_tree()
-        if isinstance(tree, dict):
-            found = []
-            walk_all_app_ids(tree, found)
-            if any(PANEL_MARK in a for a in found):
-                time.sleep(2)
-                menu_prewarm()
-                return
-        time.sleep(1)
-
-
 def main():
     os.chdir("/")
     os.makedirs(STATE_DIR, exist_ok=True)
 
     threading.Thread(target=build_icon_index, daemon=True).start()
-    threading.Thread(target=sway_event_loop, daemon=True).start()
-    threading.Thread(target=prewarm_when_ready, daemon=True).start()
+    threading.Thread(target=compositor_event_loop, daemon=True).start()
+    threading.Thread(target=tray_run, daemon=True).start()
 
     watched = [d for d in [SHELL_DIR, LIB_DIR] + APP_DIRS_WEB if os.path.isdir(d)]
     if watched:

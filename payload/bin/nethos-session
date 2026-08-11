@@ -1,80 +1,82 @@
 #!/bin/sh
-# Bring up the NETHOS shell inside a running sway session.
+# Bring up the NETHOS shell.
 #
-# Order matters: the panel is a web page served by nethosd, so the daemon has
-# to be answering before Chromium tries to load it. Run from sway's `exec`,
-# which gives us WAYLAND_DISPLAY and SWAYSOCK for free.
+# Four layer-shell surfaces, all hosted by one nethos-view process:
+#
+#   desktop   the wallpaper, and the widgets that live on it
+#   panel     top bar: launcher mark, windows, tray, clock
+#   dock      bottom dock, auto-hiding
+#   menu      the launcher, hidden until asked for
+#
+# They are layer surfaces rather than windows, so the compositor blurs behind
+# them, reserves space for the panel, and never tiles them by accident.
 set -eu
 
 API="http://127.0.0.1:7777"
 
-# One Chromium profile for the panel, the launcher and every app: separate
-# profiles mean separate Chromium instances, and paying a cold start per window
-# is what made the launcher feel broken.
-CHROME_PROFILE="$HOME/.config/nethos-chromium"
-
-CHROME_FLAGS="--ozone-platform=wayland
---enable-features=UseOzonePlatform
---disable-gpu
---password-store=basic
---no-first-run
---no-default-browser-check
---disable-background-networking
---disable-sync
---process-per-site
---disable-site-isolation-trials
---disable-features=TranslateUI,MediaRouter,SitePerProcess,IsolateOrigins,OptimizationHints,CalculateNativeWinOcclusion
---renderer-process-limit=2
---disable-extensions
---disable-component-update
---disable-breakpad
---no-zygote
---disable-dev-shm-usage"
-
-# Hand sway's environment to the user service manager, otherwise nethosd starts
-# without WAYLAND_DISPLAY/SWAYSOCK and every swaymsg call inside it fails.
+# Hand the compositor's environment to the user service manager, otherwise
+# nethosd starts without WAYLAND_DISPLAY and cannot talk to the compositor.
 systemctl --user import-environment \
-    WAYLAND_DISPLAY SWAYSOCK XDG_CURRENT_DESKTOP XDG_SESSION_TYPE 2>/dev/null || true
+    WAYLAND_DISPLAY SWAYSOCK HYPRLAND_INSTANCE_SIGNATURE \
+    XDG_CURRENT_DESKTOP XDG_SESSION_TYPE 2>/dev/null || true
 
-# nethosd runs as a user service so that `systemctl --user restart nethosd`
-# applies API changes in a second. Fall back to running it directly if systemd
-# is unavailable for any reason.
 if ! systemctl --user restart nethosd.service 2>/dev/null; then
     if ! curl -sf -o /dev/null --max-time 2 "$API/api/status" 2>/dev/null; then
         /usr/bin/nethosd &
     fi
 fi
 
-# Wait (max ~15s) for the API rather than racing it.
+# Wait for the API rather than racing it.
 i=0
 while [ "$i" -lt 150 ]; do
-    if curl -sf -o /dev/null "$API/api/status"; then
-        break
-    fi
+    curl -sf -o /dev/null "$API/api/status" && break
     i=$((i + 1))
     sleep 0.1
 done
 
 if [ "$i" -ge 150 ]; then
-    swaynag -t error -m "nethosd failed to start — panel unavailable. Try: systemctl --user status nethosd" &
+    notify-send "NETHOS" "nethosd failed to start" 2>/dev/null || true
+    echo "nethosd did not come up; check: systemctl --user status nethosd" >&2
     exit 1
 fi
 
-# Panel width has to match the output, and only the client can set its own size
-# on Wayland — so ask sway how wide the screen is and tell Chromium directly.
-PANEL_H=38
-WIDTH=$(swaymsg -t get_outputs 2>/dev/null \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["rect"]["width"])' \
-    2>/dev/null) || WIDTH=""
-[ -n "$WIDTH" ] || WIDTH=1440
+# Software rendering everywhere: there is no GPU in a VM, and WebKit's
+# compositing buffers are expensive without one.
+export WEBKIT_DISABLE_COMPOSITING_MODE=1
+export LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-1}
 
-# Note: --class is deliberately absent. Chromium ignores it in --app mode and
-# derives app_id from the URL instead; the sway rules match on that.
-# The panel is started first on purpose: Chromium's first window owns the
-# shared profile, and nethosd waits for the panel before parking a launcher
-# window in the scratchpad.
-exec chromium $CHROME_FLAGS \
-    --app="$API/panel.html" \
-    --window-size="${WIDTH},${PANEL_H}" \
-    --window-position=0,0 \
-    --user-data-dir="$CHROME_PROFILE"
+# The glass shell needs WebKit and gtk4-layer-shell. A files-only update
+# installs new scripts without new packages, so check rather than assume --
+# being left with no desktop at all is a much worse outcome than an old-looking
+# one. Fall back to the previous Chromium panel if anything is missing.
+shell_ready() {
+    command -v nethos-view >/dev/null 2>&1 || return 1
+    python3 - <<'PY' >/dev/null 2>&1 || return 1
+import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("WebKit", "6.0")
+gi.require_version("Gtk4LayerShell", "1.0")
+from gi.repository import Gtk, WebKit, Gtk4LayerShell  # noqa: F401
+PY
+    return 0
+}
+
+if ! shell_ready; then
+    echo "nethos: WebKit/layer-shell unavailable, falling back to the Chromium panel" >&2
+    echo "nethos: run 'sudo nethos-update --packages' to get the glass shell" >&2
+    WIDTH=1440
+    exec chromium \
+        --ozone-platform=wayland --enable-features=UseOzonePlatform \
+        --disable-gpu --password-store=basic --no-first-run \
+        --no-default-browser-check --process-per-site \
+        --disable-site-isolation-trials --no-zygote \
+        --app="$API/panel.html" \
+        --window-size="${WIDTH},38" --window-position=0,0 \
+        --user-data-dir="$HOME/.config/nethos-chromium"
+fi
+
+exec nethos-view \
+    "url=$API/desktop.html,role=widget,name=desktop,layer=background,anchor=top,exclusive=-1" \
+    "url=$API/panel.html,role=panel,name=panel,height=54,anchor=top,exclusive=46" \
+    "url=$API/dock.html,role=dock,name=dock,height=110,anchor=bottom,exclusive=0" \
+    "url=$API/menu.html,role=overlay,name=menu,keyboard=on,exclusive=0"

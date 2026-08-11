@@ -1,0 +1,13 @@
+{
+  "id": "stocks",
+  "name": "Stocks",
+  "description": "A watchlist ticker with sparklines",
+  "icon": "ST",
+  "version": "1.0.0",
+  "categories": ["NETHOS", "Office"],
+  "entry": "index.html",
+  "permissions": ["system", "storage"],
+  "mode": "widget",
+  "position": "top-right",
+  "window": { "width": 300, "height": 250 }
+}

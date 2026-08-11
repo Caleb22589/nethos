@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Desktop</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="shell.js" defer></script>
+</head>
+<body data-view="desktop">
+  <!--
+    The wallpaper is a surface we draw rather than an image we ship, so the
+    glass above it has a gradient to refract and the whole thing weighs
+    nothing. Widgets live here as iframes: one web process hosts all of them
+    instead of one process per widget window.
+  -->
+  <div id="widgets"></div>
+</body>
+</html>

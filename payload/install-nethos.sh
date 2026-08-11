@@ -48,7 +48,15 @@ if [ "$DO_PACKAGES" -eq 1 ]; then
     log "Installing the NETHOS package set"
     # swaynag ships inside the sway package; no separate dependency needed.
     pacman -S --noconfirm --needed \
+        hyprland \
+        xdg-desktop-portal-hyprland \
         sway swaybg swayidle swaylock \
+        gtk4-layer-shell \
+        webkitgtk-6.0 \
+        python-gobject \
+        python-dbus \
+        brightnessctl \
+        wireplumber \
         chromium \
         foot \
         xorg-xwayland \
@@ -106,6 +114,9 @@ done
 install -d /etc/sway/config.d
 install -m 0644 "$PAYLOAD"/sway/config /etc/sway/config
 
+install -d /etc/nethos
+install -m 0644 "$PAYLOAD"/hypr/hyprland.conf /etc/nethos/hyprland.conf
+
 install -d /etc/systemd/user
 install -m 0644 "$PAYLOAD"/systemd/nethosd.service /etc/systemd/user/nethosd.service
 
@@ -118,6 +129,9 @@ log "User configuration"
 # database path and aborts at startup), so it is worth being explicit.
 install -d -o "$NETH_USER" -g "$NETH_USER" "$NETH_HOME/.config"
 install -d -o "$NETH_USER" -g "$NETH_USER" "$NETH_HOME/.config/sway"
+install -d -o "$NETH_USER" -g "$NETH_USER" "$NETH_HOME/.config/hypr"
+ln -sf /etc/nethos/hyprland.conf "$NETH_HOME/.config/hypr/hyprland.conf"
+chown -h "$NETH_USER:$NETH_USER" "$NETH_HOME/.config/hypr/hyprland.conf"
 install -d -o "$NETH_USER" -g "$NETH_USER" "$NETH_HOME/.local"
 install -d -o "$NETH_USER" -g "$NETH_USER" "$NETH_HOME/.local/share"
 install -d -o "$NETH_USER" -g "$NETH_USER" "$NETH_HOME/.local/share/nethos"
@@ -140,17 +154,25 @@ EOF
     cat >"$NETH_HOME/.bash_profile" <<'EOF'
 # NETHOS: start the desktop on the first virtual terminal, nowhere else.
 if [ -z "${WAYLAND_DISPLAY:-}" ] && [ "$(tty)" = "/dev/tty1" ]; then
-    export XDG_CURRENT_DESKTOP=sway
     export XDG_SESSION_TYPE=wayland
     export MOZ_ENABLE_WAYLAND=1
     export QT_QPA_PLATFORM=wayland
+    export GDK_BACKEND=wayland
     export _JAVA_AWT_WM_NONREPARENTING=1
 
-    # There is no GPU in the VM: virtio-gpu plus Mesa's llvmpipe. wlroots
-    # refuses a software renderer unless told explicitly that we mean it.
+    # Without a GPU, wlroots refuses a software renderer unless told to.
     export WLR_RENDERER_ALLOW_SOFTWARE=1
-    export LIBGL_ALWAYS_SOFTWARE=1
+    export LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-1}
+    export WEBKIT_DISABLE_COMPOSITING_MODE=1
 
+    # Hyprland is the NETHOS look: it is the only one of the two that can round
+    # a corner or blur behind the glass. sway stays as a fallback, and nethosd
+    # speaks both, so NETHOS=sway in the environment gets you the old session.
+    if [ "${NETHOS_COMPOSITOR:-hyprland}" = "hyprland" ] && command -v Hyprland >/dev/null; then
+        export XDG_CURRENT_DESKTOP=Hyprland
+        exec Hyprland
+    fi
+    export XDG_CURRENT_DESKTOP=sway
     exec sway
 fi
 EOF

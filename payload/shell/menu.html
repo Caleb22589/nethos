@@ -2,32 +2,23 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>NETHOS Menu</title>
+  <title>Applications</title>
   <link rel="stylesheet" href="style.css">
   <script src="shell.js" defer></script>
 </head>
 <body data-view="menu">
   <div id="menu">
-    <div class="menu-head">
-      <h1>NETHOS</h1>
-      <span class="sub">application launcher</span>
-    </div>
-
-    <input id="search" type="text" placeholder="Search applications…" autocomplete="off" spellcheck="false">
+    <input id="search" class="input" type="text" placeholder="Search"
+           autocomplete="off" spellcheck="false">
     <div id="count"></div>
     <div id="grid"></div>
-
     <div class="menu-foot">
-      <!-- No terminal button: the terminal is an ordinary application, so it
-           belongs in the grid above where it can be searched like everything
-           else. Lock stays because it is not an application. -->
-      <button class="pw" data-builtin="lock">LOCK</button>
+      <span class="hint">↑↓ move · ↵ open · esc close</span>
       <span class="spacer"></span>
-      <span class="hint">↑↓←→ navigate · enter launch · esc close</span>
-      <span class="spacer"></span>
-      <button class="pw" data-builtin="logout">LOG OUT</button>
-      <button class="pw" data-builtin="reboot">REBOOT</button>
-      <button class="pw danger" data-builtin="poweroff">SHUT DOWN</button>
+      <button class="pw" data-builtin="lock">Lock</button>
+      <button class="pw" data-builtin="logout">Log out</button>
+      <button class="pw" data-builtin="reboot">Restart</button>
+      <button class="pw danger" data-builtin="poweroff">Shut down</button>
     </div>
   </div>
 </body>

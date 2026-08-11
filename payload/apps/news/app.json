@@ -1,0 +1,13 @@
+{
+  "id": "news",
+  "name": "News",
+  "description": "Headlines from your own RSS feeds",
+  "icon": "NW",
+  "version": "1.0.0",
+  "categories": ["NETHOS", "Network"],
+  "entry": "index.html",
+  "permissions": ["system", "storage"],
+  "mode": "widget",
+  "position": "top-right",
+  "window": { "width": 300, "height": 260 }
+}
