@@ -47,10 +47,38 @@ nethos-app run notes
 | Field | Meaning |
 | --- | --- |
 | `id` | Directory name and API identity. Lowercase, `[a-z0-9._-]`. |
-| `icon` | One or two characters shown in the launcher tile. |
+| `icon` | One or two characters for the launcher tile, or an image file shipped in the app directory. |
 | `entry` | Page to open. Defaults to `index.html`. |
-| `window` | Size in pixels. Apps open floating and centred. |
+| `mode` | `window` (default) or `widget` — see below. |
+| `window` | Size in pixels. Add `"floating": true` to float a window-mode app. |
+| `position` | Widgets only: `top-right` (default), `top-left`, `bottom-right`, `bottom-left`, `center`. |
 | `permissions` | Declared intent — see the honesty note at the bottom. |
+
+## Windows and widgets
+
+An app is one of two things, and the manifest decides which.
+
+**`"mode": "window"`** — an ordinary managed window. It tiles alongside your
+terminal and file manager, appears in the taskbar, and is moved, resized and
+closed like any other program. This is the default. Add `"floating": true` in
+`window` if it should float instead of tiling.
+
+**`"mode": "widget"`** — desktop furniture. It floats above the desktop, is
+sticky across workspaces, has no border, and is placed from `position`. Use it
+for ambient things you want visible rather than managed.
+
+sway's own rules cannot read a manifest, so `nethosd` watches sway's event
+stream and places each window as it is mapped.
+
+A widget is not stuck that way. Any app can become a real window at runtime:
+
+```js
+await os.window.popOut();   // widget -> managed, tiled window
+await os.window.float();    // the inverse
+```
+
+`apps/monitor` ships as a widget with a POP OUT button and is worth reading for
+both halves of this.
 
 ## The library
 
@@ -97,7 +125,18 @@ const windows = await os.windows.list();
 await os.windows.focus(windows[0].id);
 await os.windows.close(windows[0].id);
 await os.windows.fullscreen(windows[0].id);
-await os.windows.closeSelf();
+await os.windows.float(id);
+await os.windows.popOut(id);
+```
+
+Your app's own window, without guessing from the title — `nethosd` tags each
+window with the app it belongs to:
+
+```js
+const me = await os.window.self();   // null if not found
+await os.window.fullscreen();
+await os.window.popOut();
+await os.window.close();
 ```
 
 ### Storage
