@@ -529,6 +529,20 @@ class Transaction:
         self.solver = Solver(db, repos)
         self.verbose = verbose
         self.dry_run = dry_run
+        # path -> owning package, built once and maintained as we go. Without
+        # it, checking each new package against every installed one re-reads
+        # every file list from disk: installing 150 packages, some shipping
+        # thousands of kernel modules, turns into millions of redundant reads
+        # and looks exactly like a hang.
+        self._owners: dict[str, str] | None = None
+
+    def _owner_map(self) -> dict[str, str]:
+        if self._owners is None:
+            self._owners = {}
+            for name in self.db.installed():
+                for rel in self.db.files(name):
+                    self._owners[rel] = name
+        return self._owners
 
     def say(self, text: str) -> None:
         if self.verbose:
@@ -565,14 +579,17 @@ class Transaction:
         # Refuse to trample another package's files. Replacing our own copy on
         # upgrade is fine; silently clobbering someone else's is not.
         incoming = set(pkg.files())
-        for other, _m in self.db.installed().items():
-            if other == manifest.name:
-                continue
-            clash = incoming & set(self.db.files(other))
-            if clash:
-                sample = ", ".join(sorted(clash)[:3])
-                raise ConflictError(
-                    f"{manifest.name} and {other} both provide: {sample}")
+        owners = self._owner_map()
+        clashes: dict[str, list[str]] = {}
+        for rel in incoming:
+            other = owners.get(rel)
+            if other and other != manifest.name:
+                clashes.setdefault(other, []).append(rel)
+        if clashes:
+            other, paths = next(iter(clashes.items()))
+            raise ConflictError(
+                f"{manifest.name} and {other} both provide: "
+                f"{', '.join(sorted(paths)[:3])}")
 
         for conflict in manifest.conflicts:
             cname = parse_requirement(conflict)[0]
@@ -618,6 +635,11 @@ class Transaction:
                 os.remove(target)
 
         self.db.record(manifest, files)
+        if self._owners is not None:
+            for rel in old_files - set(files):
+                self._owners.pop(rel, None)
+            for rel in files:
+                self._owners[rel] = manifest.name
         verb = "upgraded" if previous else "installed"
         self.say(f"  {verb} {manifest.id} ({len(files)} files)")
 
@@ -659,6 +681,9 @@ class Transaction:
                 except OSError:
                     pass
             self.db.forget(name)
+            if self._owners is not None:
+                for rel in files:
+                    self._owners.pop(rel, None)
             self.say(f"  removed {name} ({len(files)} files)")
         return names
 

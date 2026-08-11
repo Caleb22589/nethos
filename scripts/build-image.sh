@@ -46,6 +46,12 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# Always keep a log next to the images, so there is somewhere to look without
+# having to remember how the build was launched.
+mkdir -p "$BUILD"
+LOG="$BUILD/build-image.log"
+exec > >(tee "$LOG") 2>&1
+
 say() { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
@@ -143,7 +149,7 @@ mkdir -p "$R/boot"
 mount "${TARGET}1" "$R/boot"
 
 echo "--- bootstrapping (as root, so ownership and setuid are real) ---"
-python3 "$SRC/pkg/npkg_bootstrap.py" "$R" \
+python3 -u "$SRC/pkg/npkg_bootstrap.py" "$R" \
     $(for s in $SETS; do printf -- '--set %s ' "$s"; done) \
     --arch arm64 --user "$USERNAME" --work /var/tmp/nethos-work
 
@@ -236,6 +242,20 @@ BOOTSTRAP
 cat > "$STAGE/user-data" <<'USERDATA'
 #cloud-config
 datasource_list: [ NoCloud, None ]
+# The builder is a throwaway VM on loopback, but it still gets a real login so
+# a stalled build can be inspected instead of guessed at:
+#   ssh -p 2223 builder@127.0.0.1   (password: builder)
+users:
+  - name: builder
+    lock_passwd: false
+    plain_text_passwd: builder
+    sudo: ["ALL=(ALL:ALL) NOPASSWD:ALL"]
+    shell: /bin/bash
+ssh_pwauth: true
+chpasswd:
+  expire: false
+  list: |
+    root:builder
 runcmd:
   - [ mkdir, -p, /mnt/seed ]
   - [ mount, -o, ro, /dev/sr0, /mnt/seed ]

@@ -39,6 +39,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from npkg import Database, Manifest, NpkgError, Package, Transaction, build_index  # noqa: E402
 from npkg_convert import convert_deb, parse_control  # noqa: E402
 
+def say(*args):
+    """print(), but visible immediately even through a pipe."""
+    print(*args, flush=True)
+
+
 MIRROR = "http://deb.debian.org/debian"
 SUITE = "bookworm"
 
@@ -111,7 +116,7 @@ class DebianArchive:
                    f"binary-{self.arch}/Packages.gz")
             cached = os.path.join(self.cache, f"Packages-{component}-{self.arch}.gz")
             if not os.path.isfile(cached):
-                print(f"  fetching {component}/{self.arch} index")
+                say(f"  fetching {component}/{self.arch} index")
                 os.makedirs(self.cache, exist_ok=True)
                 try:
                     with urllib.request.urlopen(url, timeout=60) as resp, \
@@ -128,7 +133,7 @@ class DebianArchive:
                     name = fields.get("Package")
                     if name and name not in self.packages:
                         self.packages[name] = fields
-        print(f"  index: {len(self.packages)} packages available")
+        say(f"  index: {len(self.packages)} packages available")
 
     def provider(self, name: str) -> dict | None:
         """Find a package by name, or by what it provides (a virtual name)."""
@@ -170,7 +175,7 @@ class DebianArchive:
                 queue.append(first.split(":")[0])
 
         if missing:
-            print(f"  note: {len(missing)} names had no package "
+            say(f"  note: {len(missing)} names had no package "
                   f"(virtual or unavailable): {', '.join(sorted(missing)[:6])}")
         return list(chosen.values())
 
@@ -367,7 +372,7 @@ def bootstrap(root: str, sets: list[str], arch: str, username: str,
     npks = os.path.join(work, "packages")
     os.makedirs(work, exist_ok=True)
 
-    print(f"\n== Debian {suite}/{arch} index ==")
+    say(f"\n== Debian {suite}/{arch} index ==")
     archive = DebianArchive(mirror, suite, arch, cache=work)
     archive.load()
 
@@ -377,29 +382,29 @@ def bootstrap(root: str, sets: list[str], arch: str, username: str,
             raise NpkgError(f"unknown set '{name}' (have: {', '.join(SETS)})")
         seeds += [s.format(arch=arch) for s in SETS[name]]
 
-    print(f"\n== resolving {len(seeds)} seed packages ==")
+    say(f"\n== resolving {len(seeds)} seed packages ==")
     resolved = archive.resolve(seeds)
     total = sum(int(f.get("Size", 0)) for f in resolved)
-    print(f"  {len(resolved)} packages, {total/1e6:.0f} MB to download")
+    say(f"  {len(resolved)} packages, {total/1e6:.0f} MB to download")
 
-    print("\n== downloading ==")
+    say("\n== downloading ==")
     paths = []
     for i, fields in enumerate(resolved, 1):
         paths.append(archive.download(fields, debs))
         if i % 25 == 0 or i == len(resolved):
-            print(f"  {i}/{len(resolved)}")
+            say(f"  {i}/{len(resolved)}")
 
-    print("\n== converting to npkg, Arch layout ==")
+    say("\n== converting to npkg, Arch layout ==")
     for i, path in enumerate(paths, 1):
         try:
             convert_deb(path, npks, layout="arch")
         except NpkgError as exc:
-            print(f"  skipped {os.path.basename(path)}: {exc}")
+            say(f"  skipped {os.path.basename(path)}: {exc}")
         if i % 25 == 0 or i == len(paths):
-            print(f"  {i}/{len(paths)}")
+            say(f"  {i}/{len(paths)}")
     build_index(npks)
 
-    print("\n== building the root ==")
+    say("\n== building the root ==")
     make_skeleton(root)
 
     db = Database(root)
@@ -412,25 +417,25 @@ def bootstrap(root: str, sets: list[str], arch: str, username: str,
             tx.install_files([os.path.join(npks, name)])
             installed += 1
         except NpkgError as exc:
-            print(f"  {name}: {exc}")
-    print(f"  installed {installed} packages")
+            say(f"  {name}: {exc}")
+    say(f"  installed {installed} packages")
 
-    print("\n== users, sudo, /etc ==")
+    say("\n== users, sudo, /etc ==")
     setup_etc(root, hostname)
     setup_users(root, username, password, root_password)
     setup_sudo(root)
 
     if os.geteuid() != 0:
-        print("\n  ! not running as root: file ownership and setuid bits were "
+        say("\n  ! not running as root: file ownership and setuid bits were "
               "not applied.\n    sudo and su will refuse to work until this is "
               "built as root.")
 
     if not keep:
         shutil.rmtree(debs, ignore_errors=True)
 
-    print(f"\nDone: {root}")
-    print(f"  user {username} (wheel), root account, /home/{username}")
-    print(f"  npkg --root {root} list")
+    say(f"\nDone: {root}")
+    say(f"  user {username} (wheel), root account, /home/{username}")
+    say(f"  npkg --root {root} list")
 
 
 def main(argv=None):
@@ -457,7 +462,7 @@ def main(argv=None):
                   os.path.abspath(args.work), args.mirror, args.suite,
                   keep=args.keep_debs)
     except NpkgError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        say(f"error: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130
