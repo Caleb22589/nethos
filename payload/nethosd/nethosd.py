@@ -90,10 +90,27 @@ CHROME_BASE = [
     "--password-store=basic",
     "--no-first-run",
     "--no-default-browser-check",
-    "--disable-features=TranslateUI,MediaRouter",
     "--disable-background-networking",
     "--disable-sync",
     "--user-data-dir=" + CHROME_PROFILE,
+
+    # Memory. Every NETHOS surface -- panel, launcher, each app -- is served
+    # from the same origin on loopback, so site isolation buys us nothing and
+    # costs a renderer process per window. Collapsing them onto one renderer is
+    # the single biggest saving available without changing engines.
+    "--process-per-site",
+    "--disable-site-isolation-trials",
+    "--disable-features=TranslateUI,MediaRouter,SitePerProcess,IsolateOrigins,"
+    "OptimizationHints,CalculateNativeWinOcclusion",
+    "--renderer-process-limit=2",
+    # A desktop shell has no business keeping spare renderers warm.
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-extensions",
+    "--disable-component-update",
+    "--disable-breakpad",
+    "--no-zygote",
+    "--disable-dev-shm-usage",
 ]
 
 

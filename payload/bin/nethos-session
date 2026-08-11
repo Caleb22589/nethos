@@ -19,9 +19,17 @@ CHROME_FLAGS="--ozone-platform=wayland
 --password-store=basic
 --no-first-run
 --no-default-browser-check
---disable-features=TranslateUI,MediaRouter
 --disable-background-networking
---disable-sync"
+--disable-sync
+--process-per-site
+--disable-site-isolation-trials
+--disable-features=TranslateUI,MediaRouter,SitePerProcess,IsolateOrigins,OptimizationHints,CalculateNativeWinOcclusion
+--renderer-process-limit=2
+--disable-extensions
+--disable-component-update
+--disable-breakpad
+--no-zygote
+--disable-dev-shm-usage"
 
 # Hand sway's environment to the user service manager, otherwise nethosd starts
 # without WAYLAND_DISPLAY/SWAYSOCK and every swaymsg call inside it fails.

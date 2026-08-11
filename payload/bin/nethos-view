@@ -1,0 +1,328 @@
+#!/usr/bin/env python3
+"""
+nethos-view - the NETHOS surface host.
+
+Replaces Chromium for everything the shell draws. Chromium was costing ~2.6 GB
+across 26 processes on a 6 GB machine, most of it renderers we did not need:
+the shell is a handful of small static pages, not a browser.
+
+This hosts them in WebKitGTK instead, and hosts *all* shell surfaces in one
+process so they share a single web context rather than paying per window.
+
+It also gets the shell out of the window manager's way. The panel and dock are
+now real wlr-layer-shell surfaces, which means:
+
+  * they are not windows, so they never tile, never take focus by accident and
+    never show up in the window list
+  * the compositor reserves space for them (the exclusive zone), so maximised
+    windows stop exactly where the dock begins -- no manual gap
+  * they can sit above or below normal windows deliberately
+
+Usage:
+    nethos-view SPEC [SPEC ...]
+
+A SPEC is comma-separated key=value:
+
+    url=http://…            page to load                        (required)
+    role=panel|dock|overlay|widget|window
+    anchor=top|bottom|left|right
+    height=44  width=300    surface size
+    exclusive=44            space to reserve; -1 to ignore others, 0 for none
+    layer=background|bottom|top|overlay
+    name=panel              namespace / app-id
+    transparent=1           transparent background so CSS glass works
+
+Pages can talk back:
+
+    nethosHost.exclusive(48)          reserve space (dock pinning)
+    nethosHost.inputRect(x,y,w,h)     limit the clickable region
+    nethosHost.hide() / .show()
+"""
+
+import json
+import os
+import sys
+
+# gtk4-layer-shell has to be loaded before GTK touches Wayland. When GTK4 is
+# used through a language binding there is no link-time opportunity to do that,
+# so the library documents LD_PRELOAD as the supported route. Without this
+# init_for_window() silently does nothing and every panel becomes an ordinary
+# window -- which is exactly how it fails: no error, just wrong behaviour.
+_PRELOAD = "/usr/lib/libgtk4-layer-shell.so"
+if os.path.exists(_PRELOAD) and _PRELOAD not in os.environ.get("LD_PRELOAD", ""):
+    os.environ["LD_PRELOAD"] = (
+        _PRELOAD + ":" + os.environ["LD_PRELOAD"]
+        if os.environ.get("LD_PRELOAD") else _PRELOAD
+    )
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+gi.require_version("WebKit", "6.0")
+from gi.repository import Gdk, GLib, Gtk, WebKit  # noqa: E402
+
+try:
+    gi.require_version("Gtk4LayerShell", "1.0")
+    from gi.repository import Gtk4LayerShell as LayerShell
+    HAVE_LAYER_SHELL = True
+except (ValueError, ImportError):
+    LayerShell = None
+    HAVE_LAYER_SHELL = False
+
+
+LAYERS = {}
+ANCHORS = {}
+if HAVE_LAYER_SHELL:
+    LAYERS = {
+        "background": LayerShell.Layer.BACKGROUND,
+        "bottom": LayerShell.Layer.BOTTOM,
+        "top": LayerShell.Layer.TOP,
+        "overlay": LayerShell.Layer.OVERLAY,
+    }
+    ANCHORS = {
+        "top": LayerShell.Edge.TOP,
+        "bottom": LayerShell.Edge.BOTTOM,
+        "left": LayerShell.Edge.LEFT,
+        "right": LayerShell.Edge.RIGHT,
+    }
+
+# Sensible defaults per role, so a spec only states what is unusual.
+ROLE_DEFAULTS = {
+    "panel":   {"layer": "top",     "anchor": "top",    "exclusive": "auto"},
+    "dock":    {"layer": "top",     "anchor": "bottom", "exclusive": "0"},
+    "overlay": {"layer": "overlay", "anchor": "",       "exclusive": "0"},
+    "widget":  {"layer": "bottom",  "anchor": "",       "exclusive": "0"},
+    "window":  {"layer": "",        "anchor": "",       "exclusive": "0"},
+}
+
+
+def parse_spec(text):
+    spec = {}
+    for part in text.split(","):
+        if not part.strip():
+            continue
+        key, _, value = part.partition("=")
+        spec[key.strip()] = value.strip()
+    if "url" not in spec:
+        raise SystemExit("surface spec needs url=: %r" % text)
+    role = spec.get("role", "window")
+    for key, value in ROLE_DEFAULTS.get(role, {}).items():
+        spec.setdefault(key, value)
+    return spec
+
+
+class Surface:
+    # WebKit gives each WebView its own web process by default. For a browser
+    # that is right; for a shell it means paying a whole process for every
+    # panel, dock and widget. Views created "related" to an existing one share
+    # a single web process, so the shell costs roughly one renderer no matter
+    # how many surfaces it draws.
+    _related_to = None
+
+    def __init__(self, app, spec):
+        self.spec = spec
+        self.role = spec.get("role", "window")
+        self.name = spec.get("name") or self.role
+
+        self.window = Gtk.ApplicationWindow(application=app)
+        self.window.set_title(spec.get("title", self.name))
+        # The app-id is how the compositor identifies plain windows; layer
+        # surfaces use the namespace set below instead.
+        self.window.set_default_size(int(spec.get("width", 800)),
+                                     int(spec.get("height", 600)))
+        if self.role != "window":
+            self.window.set_decorated(False)
+
+        # webkit_web_view_new_with_related_view() is a C constructor that the
+        # GI bindings do not expose as a method; the same thing is reachable as
+        # the construct-only "related-view" property.
+        if Surface._related_to is not None:
+            self.view = WebKit.WebView(related_view=Surface._related_to)
+        else:
+            self.view = WebKit.WebView()
+            Surface._related_to = self.view
+
+        settings = self.view.get_settings()
+        settings.set_enable_developer_extras(True)
+        settings.set_enable_write_console_messages_to_stdout(True)
+        # Trim what a shell surface will never use. Each of these is a chunk of
+        # machinery WebKit would otherwise keep warm.
+        settings.set_enable_media(False)
+        settings.set_enable_webaudio(False)
+        settings.set_enable_webgl(False)
+        settings.set_media_playback_requires_user_gesture(True)
+        settings.set_enable_page_cache(False)
+        settings.set_enable_html5_database(False)
+        settings.set_enable_html5_local_storage(True)
+        settings.set_javascript_can_open_windows_automatically(False)
+        settings.set_enable_back_forward_navigation_gestures(False)
+
+        if spec.get("transparent", "1") not in ("0", "false", "no"):
+            # Transparent so CSS glass composites against the desktop rather
+            # than an opaque white page.
+            self.view.set_background_color(Gdk.RGBA(red=0, green=0, blue=0, alpha=0))
+
+        self._install_bridge()
+
+        self.window.set_child(self.view)
+        if HAVE_LAYER_SHELL and self.role != "window":
+            self._init_layer_shell()
+
+        self.view.load_uri(spec["url"])
+        self.window.present()
+
+    # -- native bridge ---------------------------------------------------
+    def _install_bridge(self):
+        manager = self.view.get_user_content_manager()
+        manager.register_script_message_handler("nethosHost", None)
+        manager.connect("script-message-received::nethosHost", self._on_message)
+
+        # A tiny shim so pages call nethosHost.exclusive(44) rather than
+        # assembling postMessage payloads by hand.
+        shim = """
+        window.nethosHost = {
+          exclusive: (n) => window.webkit.messageHandlers.nethosHost.postMessage(
+              JSON.stringify({type: "exclusive", value: n})),
+          inputRect: (x, y, w, h) => window.webkit.messageHandlers.nethosHost.postMessage(
+              JSON.stringify({type: "input_rect", x: x, y: y, w: w, h: h})),
+          hide: () => window.webkit.messageHandlers.nethosHost.postMessage(
+              JSON.stringify({type: "hide"})),
+          show: () => window.webkit.messageHandlers.nethosHost.postMessage(
+              JSON.stringify({type: "show"})),
+          surface: %s,
+        };
+        """ % json.dumps(self.name)
+        manager.add_script(WebKit.UserScript.new(
+            shim,
+            WebKit.UserContentInjectedFrames.TOP_FRAME,
+            WebKit.UserScriptInjectionTime.START,
+            None, None,
+        ))
+
+    def _on_message(self, _manager, result):
+        try:
+            msg = json.loads(result.to_json(0)) if hasattr(result, "to_json") else {}
+            if isinstance(msg, str):
+                msg = json.loads(msg)
+        except (ValueError, TypeError):
+            return
+        kind = msg.get("type")
+
+        if kind == "exclusive" and HAVE_LAYER_SHELL and self.role != "window":
+            LayerShell.set_exclusive_zone(self.window, int(msg.get("value", 0)))
+        elif kind == "input_rect":
+            self._set_input_rect(msg)
+        elif kind == "hide":
+            self.window.set_visible(False)
+        elif kind == "show":
+            self.window.set_visible(True)
+
+    def _set_input_rect(self, msg):
+        """Limit clicks to part of the surface.
+
+        An auto-hiding dock is a full-size transparent surface most of the
+        time; without this it would swallow every click aimed at the window
+        underneath it.
+        """
+        surface = self.window.get_surface()
+        if surface is None:
+            return
+        try:
+            from gi.repository import Cairo  # noqa: F401
+        except (ValueError, ImportError):
+            pass
+        try:
+            region = Gdk.Rectangle()
+            region.x = int(msg.get("x", 0))
+            region.y = int(msg.get("y", 0))
+            region.width = max(0, int(msg.get("w", 0)))
+            region.height = max(0, int(msg.get("h", 0)))
+            import cairo
+            reg = cairo.Region(cairo.RectangleInt(
+                region.x, region.y, region.width, region.height))
+            surface.set_input_region(reg)
+        except Exception:
+            # Not fatal: the surface simply stays fully clickable.
+            pass
+
+    # -- layer shell -----------------------------------------------------
+    def _init_layer_shell(self):
+        spec = self.spec
+        LayerShell.init_for_window(self.window)
+        LayerShell.set_namespace(self.window, "nethos-" + self.name)
+        LayerShell.set_layer(self.window,
+                             LAYERS.get(spec.get("layer", "top"), LayerShell.Layer.TOP))
+
+        anchor = spec.get("anchor", "")
+        if anchor:
+            LayerShell.set_anchor(self.window, ANCHORS[anchor], True)
+            # Stretch across the perpendicular axis so a top panel spans the
+            # whole width rather than sitting in a corner.
+            if anchor in ("top", "bottom"):
+                LayerShell.set_anchor(self.window, LayerShell.Edge.LEFT, True)
+                LayerShell.set_anchor(self.window, LayerShell.Edge.RIGHT, True)
+            else:
+                LayerShell.set_anchor(self.window, LayerShell.Edge.TOP, True)
+                LayerShell.set_anchor(self.window, LayerShell.Edge.BOTTOM, True)
+
+        exclusive = spec.get("exclusive", "0")
+        if exclusive == "auto":
+            LayerShell.auto_exclusive_zone_enable(self.window)
+        else:
+            LayerShell.set_exclusive_zone(self.window, int(exclusive))
+
+        if spec.get("keyboard", "") == "on":
+            LayerShell.set_keyboard_mode(
+                self.window, LayerShell.KeyboardMode.ON_DEMAND)
+
+        if spec.get("height"):
+            self.window.set_size_request(-1, int(spec["height"]))
+        if spec.get("width"):
+            self.window.set_size_request(int(spec["width"]), -1)
+
+
+class App(Gtk.Application):
+    def __init__(self, specs):
+        super().__init__(application_id=None,
+                         flags=0)
+        self.specs = specs
+        self.surfaces = []
+
+    def do_activate(self):
+        for spec in self.specs:
+            self.surfaces.append(Surface(self, spec))
+
+
+def main():
+    args = [a for a in sys.argv[1:] if a != "--"]
+    specs = []
+    i = 0
+    while i < len(args):
+        if args[i] == "--surface":
+            i += 1
+            if i >= len(args):
+                raise SystemExit("--surface needs a spec")
+            specs.append(parse_spec(args[i]))
+        elif args[i] in ("-h", "--help"):
+            print(__doc__)
+            return 0
+        else:
+            specs.append(parse_spec(args[i]))
+        i += 1
+
+    if not specs:
+        print(__doc__)
+        return 2
+
+    if not HAVE_LAYER_SHELL and any(s.get("role") in ("panel", "dock") for s in specs):
+        print("warning: gtk4-layer-shell missing; panels fall back to plain windows",
+              file=sys.stderr)
+
+    app = App(specs)
+    return app.run([])
+
+
+if __name__ == "__main__":
+    sys.exit(main())
