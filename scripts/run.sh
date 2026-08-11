@@ -5,6 +5,8 @@
 #   scripts/run.sh --arch aarch64  force the ARM image
 #   scripts/run.sh --arch x86_64   force the x86 image
 #   scripts/run.sh --console       serial only, no GUI window
+#   scripts/run.sh --reset-uefi    rebuild the UEFI variable store; use
+#                                  this if the VM lands on a Shell> prompt
 #
 # Why two architectures:
 #
@@ -25,6 +27,7 @@ BUILD="$ROOT/build"
 
 ARCH=""
 CONSOLE=0
+RESET_UEFI=0
 MEM="${MEM:-6144}"
 CPUS="${CPUS:-4}"
 
@@ -32,6 +35,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --arch) ARCH="${2:?--arch needs x86_64 or aarch64}"; shift 2 ;;
         --console) CONSOLE=1; shift ;;
+        --reset-uefi) RESET_UEFI=1; shift ;;
         -h|--help) sed -n '2,20p' "$0" | sed 's/^# \?//'; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
@@ -72,13 +76,23 @@ Build it with:  scripts/build-arm.sh"
     done
     [ -n "$FW_CODE" ] || die "edk2-aarch64-code.fd not found (brew install qemu)"
 
-    # UEFI needs somewhere writable to keep its variables; that store is
-    # per-VM, so it lives beside the disk rather than next to the firmware.
+    # UEFI keeps its boot entries in a writable variable store, per VM. Copy QEMU's
+    # template rather than inventing 64MB of zeros: a zeroed store leaves the
+    # firmware with no boot entries, and it drops to the EFI shell instead of
+    # booting. It also gets corrupted if a VM is killed mid-write, with the
+    # same symptom, so --reset-uefi puts it back.
     FW_VARS="$BUILD/edk2-arm-vars.fd"
+    FW_TEMPLATE="$(dirname "$FW_CODE")/edk2-arm-vars.fd"
+    if [ "${RESET_UEFI:-0}" = "1" ]; then
+        rm -f "$FW_VARS"
+    fi
     if [ ! -f "$FW_VARS" ]; then
-        say "Creating UEFI variable store"
-        # The vars image must be exactly 64MiB to pair with the code image.
-        dd if=/dev/zero of="$FW_VARS" bs=1m count=64 2>/dev/null
+        say "Creating the UEFI variable store"
+        if [ -f "$FW_TEMPLATE" ]; then
+            cp "$FW_TEMPLATE" "$FW_VARS"
+        else
+            dd if=/dev/zero of="$FW_VARS" bs=1m count=64 2>/dev/null
+        fi
     fi
 
     ACCEL=tcg
