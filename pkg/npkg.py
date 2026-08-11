@@ -209,7 +209,14 @@ class Package:
         total = 0
         for base, _dirs, names in os.walk(source_dir):
             for n in names:
-                total += os.path.getsize(os.path.join(base, n))
+                # lstat, not getsize: packages legitimately ship symlinks whose
+                # target lives in a different package, and following one of
+                # those would fail on a link that is not broken at all -- only
+                # unresolvable until the rest of the system is installed.
+                try:
+                    total += os.lstat(os.path.join(base, n)).st_size
+                except OSError:
+                    pass
         manifest.size = total
         manifest.built = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -567,8 +574,15 @@ class Transaction:
                 src = os.path.join(staging, rel)
                 dst = os.path.join(self.db.root, rel)
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
+                # Replacing an existing path (an upgrade, or a symlink another
+                # package already placed) needs it gone first: os.replace will
+                # not overwrite a symlink with a file.
+                if os.path.islink(dst) or os.path.exists(dst):
+                    try:
+                        os.remove(dst)
+                    except IsADirectoryError:
+                        shutil.rmtree(dst, ignore_errors=True)
                 shutil.move(src, dst)
-                shutil.copystat(src, dst) if os.path.exists(src) else None
         finally:
             shutil.rmtree(staging, ignore_errors=True)
 
@@ -638,8 +652,11 @@ class Transaction:
     def verify(self, names: list[str] | None = None) -> dict[str, list[str]]:
         problems = {}
         for name in (names or list(self.db.installed())):
+            # lexists, not exists: a symlink pointing into a package you have
+            # not installed is still present and correct. Following it would
+            # report a perfectly good file as missing.
             missing = [rel for rel in self.db.files(name)
-                       if not os.path.exists(os.path.join(self.db.root, rel))]
+                       if not os.path.lexists(os.path.join(self.db.root, rel))]
             if missing:
                 problems[name] = missing
         return problems

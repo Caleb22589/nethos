@@ -115,7 +115,7 @@ def arch_requirement(text: str) -> str:
     return text.split(":", 1)[0].strip()
 
 
-def convert_arch(path: str, outdir: str) -> str:
+def convert_arch(path: str, outdir: str, layout: str = "native") -> str:
     with open_tar(path) as tar:
         try:
             fh = tar.extractfile(".PKGINFO")
@@ -151,7 +151,7 @@ def convert_arch(path: str, outdir: str) -> str:
                 conflicts=[arch_requirement(d) for d in fields.get("conflict", [])],
                 replaces=[arch_requirement(d) for d in fields.get("replaces", [])],
             )
-            return _write(manifest, staging, outdir, source="arch")
+            return _write(manifest, staging, outdir, source="arch", layout=layout)
         finally:
             shutil.rmtree(staging, ignore_errors=True)
 
@@ -242,7 +242,7 @@ def strip_epoch(version: str) -> str:
     return version.split(":", 1)[1] if ":" in version else version
 
 
-def convert_deb(path: str, outdir: str) -> str:
+def convert_deb(path: str, outdir: str, layout: str = "native") -> str:
     entries = read_ar(path)
 
     control_name = next((n for n in entries if n.startswith("control.tar")), None)
@@ -299,20 +299,96 @@ def convert_deb(path: str, outdir: str) -> str:
             post_install=scripts.get("postinst", ""),
             pre_remove=scripts.get("prerm", ""),
         )
-        return _write(manifest, staging, outdir, source="deb")
+        return _write(manifest, staging, outdir, source="deb", layout=layout)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# layout normalisation
+# ---------------------------------------------------------------------------
+
+# Debian puts libraries under a per-architecture triplet directory and keeps
+# sbin separate. Arch does neither: everything lives in /usr/bin and /usr/lib.
+TRIPLET = re.compile(
+    r"^(usr/)?lib(64)?/"
+    r"(?:aarch64|arm|x86_64|i386|riscv64|powerpc64le|s390x)-[a-z0-9]+-[a-z]+[a-z0-9]*/")
+
+# Order matters: the triplet rule runs first, then these prefix moves.
+PREFIX_MOVES = (
+    ("usr/sbin/", "usr/bin/"),
+    ("sbin/", "usr/bin/"),
+    ("bin/", "usr/bin/"),
+    ("lib64/", "usr/lib/"),
+    ("lib/", "usr/lib/"),
+)
+
+
+def arch_path(path: str) -> str:
+    """Rewrite one Debian path into the Arch layout.
+
+    usr/lib/aarch64-linux-gnu/libc.so.6  ->  usr/lib/libc.so.6
+    sbin/ldconfig                        ->  usr/bin/ldconfig
+    usr/sbin/sudo                        ->  usr/bin/sudo
+
+    Nothing outside /bin, /sbin and /lib is touched: /etc, /usr/share and
+    /var mean the same thing in both distributions.
+    """
+    path = path.lstrip("./").lstrip("/")
+    path = TRIPLET.sub("usr/lib/", path)
+    for old, new in PREFIX_MOVES:
+        if path.startswith(old):
+            return new + path[len(old):]
+        if path.startswith("usr/" + old) and old in ("bin/", "lib/"):
+            return path                       # already usr/bin or usr/lib
+    return path
+
+
+def relayout(staging: str) -> int:
+    """Move a staged package tree into the Arch layout in place."""
+    moved = 0
+    for base, _dirs, names in os.walk(staging, topdown=False):
+        for name in names:
+            src = os.path.join(base, name)
+            rel = os.path.relpath(src, staging)
+            new = arch_path(rel)
+            if new == rel:
+                continue
+            dst = os.path.join(staging, new)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            if os.path.exists(dst) or os.path.islink(dst):
+                # Same file arriving by two routes (a package shipping both
+                # lib/foo and usr/lib/foo). Keep the first; they are identical.
+                os.remove(src)
+                continue
+            os.replace(src, dst)
+            moved += 1
+
+    # Prune the directories the move emptied.
+    for base, dirs, _names in os.walk(staging, topdown=False):
+        for d in dirs:
+            try:
+                os.rmdir(os.path.join(base, d))
+            except OSError:
+                pass
+    return moved
 
 
 # ---------------------------------------------------------------------------
 # shared
 # ---------------------------------------------------------------------------
 
-def _write(manifest: Manifest, staging: str, outdir: str, source: str) -> str:
+def _write(manifest: Manifest, staging: str, outdir: str, source: str,
+           layout: str = "native") -> str:
     # Debian data tarballs are rooted at "./"; flatten so paths match Arch's.
     inner = os.path.join(staging, ".")
     if os.path.isdir(inner) and os.listdir(staging) == ["."]:
         staging = inner
+
+    if layout == "arch":
+        moved = relayout(staging)
+        if moved:
+            manifest.description += f"\nRelaid out for the Arch layout ({moved} paths)."
 
     os.makedirs(outdir, exist_ok=True)
     out = os.path.join(outdir, f"{manifest.name}-{manifest.version}-"
@@ -323,11 +399,11 @@ def _write(manifest: Manifest, staging: str, outdir: str, source: str) -> str:
     return out
 
 
-def convert(path: str, outdir: str = "packages") -> str:
+def convert(path: str, outdir: str = "packages", layout: str = "native") -> str:
     if path.endswith(".deb"):
-        return convert_deb(path, outdir)
+        return convert_deb(path, outdir, layout)
     if ".pkg.tar" in path:
-        return convert_arch(path, outdir)
+        return convert_arch(path, outdir, layout)
     raise NpkgError(f"{path}: unrecognised package (expected .deb or .pkg.tar.*)")
 
 
@@ -338,12 +414,15 @@ def main(argv=None):
         description="convert Arch (.pkg.tar.*) and Debian (.deb) packages to npkg")
     parser.add_argument("packages", nargs="+")
     parser.add_argument("-o", "--output", default="packages")
+    parser.add_argument("--layout", choices=("native", "arch"), default="native",
+                        help="'arch' merges sbin into bin and flattens Debian's "
+                             "multiarch lib directories")
     args = parser.parse_args(argv)
 
     failures = 0
     for path in args.packages:
         try:
-            out = convert(path, args.output)
+            out = convert(path, args.output, args.layout)
             print(f"{os.path.basename(path)}  ->  {os.path.basename(out)}")
         except NpkgError as exc:
             print(f"error: {path}: {exc}", file=sys.stderr)
