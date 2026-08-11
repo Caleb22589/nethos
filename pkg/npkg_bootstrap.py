@@ -367,7 +367,14 @@ def setup_etc(root: str, hostname: str) -> None:
         "resolv.conf": "nameserver 1.1.1.1\nnameserver 9.9.9.9\n",
         "fstab": "# <file system> <dir> <type> <options> <dump> <pass>\n",
         "os-release": ('NAME="NETHOS"\nPRETTY_NAME="NETHOS"\nID=nethos\n'
-                       "BUILD_ID=rolling\nANSI_COLOR=\"0;36\"\n"),
+                       'ID_LIKE=debian\nBUILD_ID=rolling\nANSI_COLOR="0;36"\n'
+                       'HOME_URL="https://github.com/Caleb22589/nethos"\n'),
+        # Debian's base-files ships /etc/issue, so without this the login
+        # banner cheerfully announces Debian on a system that has no dpkg,
+        # no apt and a filesystem laid out nothing like Debian's.
+        "issue": "\n\\e[36mNETHOS\\e[0m \\s \\r \\m\n\n",
+        "issue.net": "NETHOS %h\n",
+        "motd": "",
         "login.defs": ("UID_MIN 1000\nUID_MAX 60000\nGID_MIN 1000\nGID_MAX 60000\n"
                        "ENCRYPT_METHOD SHA512\nUMASK 022\nCREATE_HOME yes\n"),
         "profile": ('export PATH="/usr/bin:/usr/local/bin"\n'
