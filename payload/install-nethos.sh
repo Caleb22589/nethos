@@ -1,11 +1,14 @@
 #!/bin/bash
 # Turn a stock Arch Linux x86_64 system into NETHOS — and keep it up to date.
 #
-#   install-nethos.sh                full install (packages + user + files)
-#   install-nethos.sh --files-only   just the NETHOS files (what updates use)
+#   install-nethos.sh                 full install (packages + user + files)
+#   install-nethos.sh --files-only    just the NETHOS files (what updates use)
+#   install-nethos.sh --no-packages   everything except the pacman step
 #
 # --files-only is the fast path: it skips pacman and user creation entirely, so
-# applying a change from git takes seconds instead of minutes. Run as root.
+# applying a change from git takes seconds instead of minutes.
+# --no-packages is for the live ISO and the disk installer, where the packages
+# are already present and only the NETHOS layer has to be applied. Run as root.
 set -euo pipefail
 
 PAYLOAD="$(cd "$(dirname "$0")" && pwd)"
@@ -14,7 +17,15 @@ NETH_HOME="/home/${NETH_USER}"
 PREFIX=/usr/share/nethos
 
 FILES_ONLY=0
-[ "${1:-}" = "--files-only" ] && FILES_ONLY=1
+DO_PACKAGES=1
+for arg in "$@"; do
+    case "$arg" in
+        --files-only)  FILES_ONLY=1; DO_PACKAGES=0 ;;
+        --no-packages) DO_PACKAGES=0 ;;
+        -h|--help)     sed -n '2,12p' "$0" | sed 's/^# \?//'; exit 0 ;;
+        *) echo "unknown option: $arg" >&2; exit 2 ;;
+    esac
+done
 
 log() { printf '\n\033[1;36m[nethos]\033[0m %s\n' "$*"; }
 
@@ -27,7 +38,7 @@ if [ "$FILES_ONLY" -eq 1 ] && ! id "$NETH_USER" >/dev/null 2>&1; then
 fi
 
 # --------------------------------------------------------------------------
-if [ "$FILES_ONLY" -eq 0 ]; then
+if [ "$DO_PACKAGES" -eq 1 ]; then
     log "Refreshing packages (this is the slow part under emulation)"
     pacman-key --init >/dev/null 2>&1 || true
     pacman-key --populate archlinux >/dev/null 2>&1 || true
@@ -56,7 +67,9 @@ if [ "$FILES_ONLY" -eq 0 ]; then
         mousepad \
         imv \
         htop
+fi
 
+if [ "$FILES_ONLY" -eq 0 ]; then
     log "Creating the ${NETH_USER} user"
     if ! id "$NETH_USER" >/dev/null 2>&1; then
         useradd -m -G wheel,video,input,audio -s /bin/bash "$NETH_USER"
@@ -79,7 +92,7 @@ cp -R "$PAYLOAD"/apps/. "$PREFIX/apps/"
 chmod -R u=rwX,go=rX "$PREFIX/apps"
 
 install -m 0755 "$PAYLOAD"/nethosd/nethosd.py /usr/bin/nethosd
-for tool in nethos-session nethos-menu-toggle nethos-reload nethos-update nethos-app; do
+for tool in nethos-session nethos-menu-toggle nethos-reload nethos-update nethos-app nethos-install; do
     install -m 0755 "$PAYLOAD/bin/$tool" "/usr/bin/$tool"
 done
 

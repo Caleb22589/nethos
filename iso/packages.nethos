@@ -1,0 +1,46 @@
+
+# --- NETHOS -----------------------------------------------------------------
+# Appended to archiso's releng package list by iso/build-iso.sh.
+# Keep this in step with the pacman block in payload/install-nethos.sh.
+
+# compositor and session
+sway
+swaybg
+swayidle
+swaylock
+xorg-xwayland
+wl-clipboard
+polkit
+
+# the shell renderer
+chromium
+
+# graphics: no GPU is assumed, llvmpipe does the work
+mesa
+
+# nethosd and tooling
+python
+curl
+git
+
+# terminal and everyday apps
+foot
+thunar
+mousepad
+imv
+htop
+xdg-utils
+
+# fonts the shell and apps ask for by name
+ttf-dejavu
+ttf-jetbrains-mono
+noto-fonts
+noto-fonts-emoji
+
+# needed by nethos-install when putting NETHOS on a real disk
+arch-install-scripts
+gptfdisk
+dosfstools
+e2fsprogs
+grub
+efibootmgr

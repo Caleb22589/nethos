@@ -1,0 +1,267 @@
+#!/bin/bash
+# Install NETHOS from the live ISO onto a real disk.
+#
+#   nethos-install --list                 show candidate disks and exit
+#   nethos-install --target /dev/sda      install (asks for confirmation)
+#   nethos-install --target /dev/sda -n   dry run: print the plan, touch nothing
+#
+# Options:
+#   --hostname NAME    system hostname (default nethos)
+#   --no-confirm       skip the typed confirmation (for unattended installs)
+#
+# THIS ERASES THE TARGET DISK COMPLETELY. Everything on it is destroyed:
+# partition table, filesystems, other operating systems, all data. There is no
+# undo. The confirmation prompt is deliberate — read the summary before typing.
+set -euo pipefail
+
+TARGET=""
+HOSTNAME_NEW="nethos"
+DRY_RUN=0
+CONFIRM=1
+LIST=0
+NETH_USER="${NETH_USER:-neth}"
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --target|-t) TARGET="${2:?--target needs a device}"; shift 2 ;;
+        --hostname) HOSTNAME_NEW="${2:?}"; shift 2 ;;
+        --dry-run|-n) DRY_RUN=1; shift ;;
+        --no-confirm) CONFIRM=0; shift ;;
+        --list|-l) LIST=1; shift ;;
+        -h|--help) sed -n '2,17p' "$0" | sed 's/^# \?//'; exit 0 ;;
+        *) echo "unknown option: $1" >&2; exit 2 ;;
+    esac
+done
+
+say()  { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
+die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+[ "$(id -u)" -eq 0 ] || die "must run as root"
+
+# --------------------------------------------------------------------------
+# what can we install onto
+# --------------------------------------------------------------------------
+live_device() {
+    # The disk the live ISO itself came from — never a valid target.
+    local src
+    src=$(findmnt -no SOURCE /run/archiso/bootmnt 2>/dev/null || true)
+    [ -n "$src" ] && lsblk -no PKNAME "$src" 2>/dev/null | head -1
+}
+
+LIVE_DISK="$(live_device || true)"
+
+list_disks() {
+    printf '%-12s %-10s %-8s %s\n' DEVICE SIZE TYPE MODEL
+    lsblk -dno NAME,SIZE,TYPE,MODEL | while read -r name size type model; do
+        case "$type" in disk) ;; *) continue ;; esac
+        case "$name" in loop*|ram*|sr*) continue ;; esac
+        local note=""
+        [ "$name" = "$LIVE_DISK" ] && note="   <- live media, cannot install here"
+        printf '/dev/%-7s %-10s %-8s %s%s\n' "$name" "$size" "$type" "${model:-—}" "$note"
+    done
+}
+
+if [ "$LIST" -eq 1 ] || [ -z "$TARGET" ]; then
+    say "Disks on this machine"
+    list_disks
+    [ -z "$TARGET" ] && {
+        printf '\nPick one and run:  nethos-install --target /dev/sdX\n'
+        printf 'Add -n first for a dry run that changes nothing.\n\n'
+        exit 0
+    }
+    exit 0
+fi
+
+# --------------------------------------------------------------------------
+# validate the target
+# --------------------------------------------------------------------------
+[ -b "$TARGET" ] || die "not a block device: $TARGET"
+
+TARGET_NAME="$(basename "$TARGET")"
+[ "$(lsblk -dno TYPE "$TARGET")" = "disk" ] \
+    || die "$TARGET is not a whole disk — pass the disk (/dev/sda), not a partition"
+
+[ "$TARGET_NAME" = "$LIVE_DISK" ] \
+    && die "$TARGET is the live media you booted from"
+
+# Anything mounted from this disk means it is in use; refuse rather than
+# corrupt a running system.
+if lsblk -no MOUNTPOINTS "$TARGET" | grep -qE '\S'; then
+    lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINTS "$TARGET"
+    die "$TARGET has mounted partitions — unmount them first"
+fi
+
+if [ -d /sys/firmware/efi ]; then
+    FIRMWARE=UEFI
+else
+    FIRMWARE=BIOS
+fi
+
+SIZE="$(lsblk -dno SIZE "$TARGET")"
+MODEL="$(lsblk -dno MODEL "$TARGET" | sed 's/ *$//')"
+
+# --------------------------------------------------------------------------
+say "Install plan"
+# --------------------------------------------------------------------------
+cat <<EOF
+
+  Target disk   : $TARGET  ($SIZE${MODEL:+, $MODEL})
+  Firmware      : $FIRMWARE
+  Hostname      : $HOSTNAME_NEW
+  User          : $NETH_USER  (password: nethos — change it after first login)
+
+  Partitioning  : GPT, wiping everything currently on $TARGET
+EOF
+if [ "$FIRMWARE" = UEFI ]; then
+cat <<EOF
+                  ${TARGET}1  512M  EFI System (FAT32, mounted at /boot)
+                  ${TARGET}2  rest  Linux root (ext4)
+                  bootloader: GRUB (x86_64-efi)
+EOF
+else
+cat <<EOF
+                  ${TARGET}1    1M  BIOS boot partition
+                  ${TARGET}2  rest  Linux root (ext4)
+                  bootloader: GRUB (i386-pc, installed to the MBR)
+EOF
+fi
+echo
+echo "  Current contents of $TARGET:"
+lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINTS "$TARGET" | sed 's/^/    /'
+echo
+
+if [ "$DRY_RUN" -eq 1 ]; then
+    say "Dry run — nothing was changed."
+    exit 0
+fi
+
+warn "This ERASES $TARGET completely. All data on it will be lost."
+if [ "$CONFIRM" -eq 1 ]; then
+    printf '\nType ERASE %s to continue: ' "$TARGET"
+    read -r reply
+    [ "$reply" = "ERASE $TARGET" ] || die "not confirmed — nothing was changed"
+fi
+
+# --------------------------------------------------------------------------
+say "Partitioning $TARGET"
+# --------------------------------------------------------------------------
+wipefs -a "$TARGET"
+sgdisk --zap-all "$TARGET"
+
+if [ "$FIRMWARE" = UEFI ]; then
+    sgdisk -n1:0:+512M -t1:ef00 -c1:"NETHOS EFI" "$TARGET"
+    sgdisk -n2:0:0     -t2:8300 -c2:"NETHOS root" "$TARGET"
+else
+    sgdisk -n1:0:+1M   -t1:ef02 -c1:"BIOS boot" "$TARGET"
+    sgdisk -n2:0:0     -t2:8300 -c2:"NETHOS root" "$TARGET"
+fi
+partprobe "$TARGET" 2>/dev/null || true
+sleep 2
+
+# NVMe and mmc devices name partitions p1/p2 rather than 1/2.
+case "$TARGET" in
+    *nvme*|*mmcblk*|*loop*) P1="${TARGET}p1"; P2="${TARGET}p2" ;;
+    *)                      P1="${TARGET}1";  P2="${TARGET}2"  ;;
+esac
+
+say "Creating filesystems"
+[ "$FIRMWARE" = UEFI ] && mkfs.fat -F32 -n NETHOSEFI "$P1"
+mkfs.ext4 -F -L NETHOS "$P2"
+
+# --------------------------------------------------------------------------
+say "Copying the system to disk"
+# --------------------------------------------------------------------------
+MNT=/mnt/nethos-install
+mkdir -p "$MNT"
+mount "$P2" "$MNT"
+if [ "$FIRMWARE" = UEFI ]; then
+    mkdir -p "$MNT/boot"
+    mount "$P1" "$MNT/boot"
+fi
+
+# Copy the live filesystem rather than pacstrapping: it needs no network and
+# it guarantees the installed system is exactly what you just tried.
+rsync -aAXH --info=progress2 \
+    --exclude=/dev/ --exclude=/proc/ --exclude=/sys/ --exclude=/tmp/ \
+    --exclude=/run/ --exclude=/mnt/ --exclude=/media/ --exclude=/lost+found \
+    / "$MNT/"
+
+mkdir -p "$MNT"/{dev,proc,sys,tmp,run,mnt,media}
+chmod 1777 "$MNT/tmp"
+
+say "Generating fstab"
+genfstab -U "$MNT" > "$MNT/etc/fstab"
+
+# --------------------------------------------------------------------------
+say "Turning the live image into an installed system"
+# --------------------------------------------------------------------------
+cat > "$MNT/root/nethos-post-install.sh" <<POST
+#!/bin/bash
+set -euo pipefail
+
+# Live-only pieces that must not survive onto a real install.
+rm -f /etc/systemd/system/multi-user.target.wants/nethos-live-setup.service
+rm -f /etc/systemd/system/nethos-live-setup.service
+rm -f /etc/mkinitcpio.conf.d/archiso.conf
+rm -rf /etc/systemd/system/getty@tty1.service.d/autovt.conf
+rm -f /etc/systemd/system/multi-user.target.wants/{pacman-init,choose-mirror,reflector}.service 2>/dev/null || true
+rm -f /etc/systemd/system/{pacman-init,choose-mirror}.service 2>/dev/null || true
+rm -f /etc/sudoers.d/g_wheel 2>/dev/null || true
+rm -rf /root/{.automated_script.sh,.zlogin} /etc/systemd/logind.conf.d 2>/dev/null || true
+rm -f /usr/local/bin/{Installation_guide,choose-mirror,livecd-sound} 2>/dev/null || true
+
+echo "$HOSTNAME_NEW" > /etc/hostname
+cat > /etc/hosts <<HOSTS
+127.0.0.1   localhost
+::1         localhost
+127.0.1.1   $HOSTNAME_NEW.localdomain $HOSTNAME_NEW
+HOSTS
+
+# The live ISO's initramfs only knows how to boot a squashfs. Rebuild it as an
+# ordinary one or the installed system will not come up.
+cat > /etc/mkinitcpio.conf <<MKI
+MODULES=()
+BINARIES=()
+FILES=()
+HOOKS=(base udev autodetect microcode modconf kms keyboard keymap consolefont block filesystems fsck)
+MKI
+mkinitcpio -P
+
+systemctl enable systemd-networkd systemd-resolved 2>/dev/null || true
+systemctl enable NetworkManager 2>/dev/null || true
+
+# Bootloader
+if [ -d /sys/firmware/efi ]; then
+    grub-install --target=x86_64-efi --efi-directory=/boot \
+                 --bootloader-id=NETHOS --removable
+    grub-install --target=x86_64-efi --efi-directory=/boot \
+                 --bootloader-id=NETHOS 2>/dev/null || true
+else
+    grub-install --target=i386-pc "$TARGET"
+fi
+sed -i 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=2/' /etc/default/grub 2>/dev/null || true
+sed -i 's/^GRUB_DISTRIBUTOR=.*/GRUB_DISTRIBUTOR="NETHOS"/' /etc/default/grub 2>/dev/null || true
+grub-mkconfig -o /boot/grub/grub.cfg
+
+# Mark this as an installed build, not a live session.
+date -u +'%Y-%m-%dT%H:%M:%SZ' > /etc/nethos-release
+POST
+
+chmod +x "$MNT/root/nethos-post-install.sh"
+arch-chroot "$MNT" /root/nethos-post-install.sh
+rm -f "$MNT/root/nethos-post-install.sh"
+
+say "Unmounting"
+sync
+umount -R "$MNT"
+
+say "NETHOS is installed on $TARGET."
+cat <<EOF
+
+  Remove the USB stick and reboot.
+  Log in as ${NETH_USER} / nethos — then change the password:  passwd
+
+  Keep it updated with:  nethos-update
+
+EOF

@@ -1,0 +1,21 @@
+[Unit]
+# Applies the NETHOS layer to the live environment on boot. Every package is
+# already in the ISO, so this only lays down files, creates the user and sets
+# up autologin — a couple of seconds, not a pacman run.
+Description=NETHOS live environment setup
+After=systemd-tmpfiles-setup.service
+Before=getty@tty1.service
+ConditionPathExists=!/etc/nethos-release
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StandardOutput=journal+console
+StandardError=journal+console
+ExecStart=/usr/share/nethos-payload/install-nethos.sh --no-packages
+# The installer rewrites the tty1 autologin; restart it so the desktop comes up
+# in this boot rather than only after a reboot.
+ExecStartPost=/usr/bin/systemctl restart getty@tty1.service
+
+[Install]
+WantedBy=multi-user.target
