@@ -1,0 +1,11 @@
+{
+  "id": "template",
+  "name": "Template App",
+  "description": "Starting point for a NETHOS app — copy this directory",
+  "icon": "TP",
+  "version": "1.0.0",
+  "categories": ["NETHOS", "Development"],
+  "entry": "index.html",
+  "permissions": ["system", "storage"],
+  "window": { "width": 760, "height": 560 }
+}

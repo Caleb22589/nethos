@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>System — NETHOS</title>
+  <link rel="stylesheet" href="/lib/nethos.css">
+  <script src="/lib/nethos.js"></script>
+</head>
+<body>
+  <div class="neth-app-header">
+    <h1>System</h1>
+    <span class="neth-sub" id="host"></span>
+    <span class="neth-spacer"></span>
+    <button class="neth-btn" id="reload-all">Reload all surfaces</button>
+  </div>
+
+  <div class="neth-grid" id="stats"></div>
+
+  <h3 style="margin-top:26px">Open windows</h3>
+  <table class="neth-table">
+    <thead><tr><th>Title</th><th>App</th><th>WS</th><th style="width:150px">Actions</th></tr></thead>
+    <tbody id="windows"></tbody>
+  </table>
+
+  <h3 style="margin-top:26px">Installed applications</h3>
+  <div class="neth-grid" id="apps"></div>
+
+<script>
+(async () => {
+  // One call and the whole OS API is available.
+  const os = await nethos.ready();
+  const el = os.ui.el;
+
+  document.getElementById("reload-all").addEventListener("click", async () => {
+    await os.system.reload("system-app");
+    os.ui.toast("Reload broadcast to every window", "good");
+  });
+
+  async function drawStats() {
+    const s = await os.system.status();
+    document.getElementById("host").textContent =
+      s.user + "@" + s.host + " · " + s.kernel;
+
+    const cards = [
+      ["Memory", s.mem.used_pct + "%",
+       os.ui.bytes(s.mem.total_kb - s.mem.avail_kb) + " of " + os.ui.bytes(s.mem.total_kb),
+       s.mem.used_pct],
+      ["Load average", s.load.toFixed(2), "1 minute", Math.min(100, s.load * 25)],
+      ["Uptime", os.ui.duration(s.uptime), "since boot", null],
+      ["Build", s.nethos.split("T")[0], "generation " + s.generation, null],
+    ];
+
+    const host = document.getElementById("stats");
+    host.replaceChildren(...cards.map(([title, stat, sub, pct]) => {
+      const card = el("div", "neth-card");
+      card.append(el("div", "neth-card-title", title));
+      card.append(el("div", "neth-stat", stat));
+      card.append(el("div", "neth-dim", sub));
+      if (pct != null) {
+        const bar = el("div", "neth-bar");
+        const fill = el("span");
+        fill.style.width = pct + "%";
+        bar.append(fill);
+        card.append(bar);
+      }
+      return card;
+    }));
+  }
+
+  async function drawWindows() {
+    const windows = await os.windows.list();
+    const body = document.getElementById("windows");
+    if (!windows.length) {
+      const tr = el("tr");
+      const td = el("td", "neth-dim", "No windows open");
+      td.colSpan = 4;
+      tr.append(td);
+      body.replaceChildren(tr);
+      return;
+    }
+    body.replaceChildren(...windows.map((w) => {
+      const tr = el("tr");
+      tr.append(el("td", null, w.title || "(untitled)"));
+      const app = el("td");
+      app.append(el("span", "neth-badge", w.app_id || "?"));
+      tr.append(app);
+      tr.append(el("td", "neth-mono", w.workspace || "-"));
+
+      const actions = el("td", "neth-row");
+      const focus = el("button", "neth-btn", "Focus");
+      focus.addEventListener("click", () => os.windows.focus(w.id).then(drawWindows));
+      const close = el("button", "neth-btn neth-btn-danger", "Close");
+      close.addEventListener("click", () => os.windows.close(w.id).then(drawWindows));
+      actions.append(focus, close);
+      tr.append(actions);
+      return tr;
+    }));
+  }
+
+  async function drawApps() {
+    const apps = await os.apps.list();
+    document.getElementById("apps").replaceChildren(...apps.map((a) => {
+      const card = el("div", "neth-card");
+      const head = el("div", "neth-row");
+      head.append(el("strong", null, a.name));
+      head.append(el("span", "neth-spacer"));
+      head.append(el("span",
+        "neth-badge" + (a.source === "nethos" ? " neth-badge-accent" : ""), a.source));
+      card.append(head);
+      card.append(el("div", "neth-dim", a.comment || a.id));
+      const launch = el("button", "neth-btn neth-btn-primary", "Launch");
+      launch.style.marginTop = "10px";
+      launch.addEventListener("click", () => {
+        os.apps.launch(a.id);
+        os.ui.toast("Launching " + a.name);
+      });
+      card.append(launch);
+      return card;
+    }));
+  }
+
+  async function refresh() {
+    await Promise.all([drawStats(), drawWindows(), drawApps()]);
+  }
+
+  await refresh();
+  setInterval(drawStats, 5000);
+  setInterval(drawWindows, 2500);
+
+  // Anything else on the system can push us a message.
+  os.on("notify", (m) => os.ui.toast(m.text, m.level));
+})();
+</script>
+</body>
+</html>

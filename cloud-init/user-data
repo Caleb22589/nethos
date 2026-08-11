@@ -1,0 +1,86 @@
+#cloud-config
+# NETHOS first-boot provisioning.
+#
+# The seed ISO carries both this file and the NETHOS payload tree. We mount the
+# ISO and hand off to install-nethos.sh, which does the real work.
+
+hostname: nethos
+
+users:
+  - name: neth
+    groups: [wheel, video, input, audio]
+    shell: /bin/bash
+    lock_passwd: false
+    # "nethos" — a throwaway local VM password, changed on first login below.
+    plain_text_passwd: nethos
+    sudo: ["ALL=(ALL:ALL) ALL"]
+
+chpasswd:
+  expire: false
+  list: |
+    root:nethos
+    neth:nethos
+
+ssh_pwauth: true
+
+write_files:
+  - path: /etc/systemd/system/nethos-install.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=NETHOS first-boot installation
+      After=network-online.target
+      Wants=network-online.target
+      ConditionPathExists=!/etc/nethos-release
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      TimeoutStartSec=0
+      StandardOutput=journal+console
+      StandardError=journal+console
+      ExecStart=/usr/local/bin/nethos-firstboot
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /usr/local/bin/nethos-firstboot
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      # Copy the payload off the seed ISO and run the installer, then reboot
+      # into the desktop. Logged to the serial console so the host can watch.
+      set -euo pipefail
+      exec > >(tee -a /var/log/nethos-install.log) 2>&1
+      echo "=== NETHOS install starting $(date -u) ==="
+
+      mkdir -p /mnt/seed
+      mounted=""
+      for dev in /dev/sr0 /dev/sr1 /dev/vdb; do
+        [ -b "$dev" ] || continue
+        if mount -o ro "$dev" /mnt/seed 2>/dev/null; then
+          if [ -d /mnt/seed/payload ]; then mounted="$dev"; break; fi
+          umount /mnt/seed
+        fi
+      done
+      if [ -z "$mounted" ]; then
+        echo "FATAL: could not find the NETHOS payload on any removable device"
+        exit 1
+      fi
+      echo "payload found on $mounted"
+
+      rm -rf /opt/nethos-payload
+      cp -r /mnt/seed/payload /opt/nethos-payload
+      umount /mnt/seed
+      chmod +x /opt/nethos-payload/install-nethos.sh /opt/nethos-payload/bin/*
+
+      /opt/nethos-payload/install-nethos.sh
+      echo "=== NETHOS install finished $(date -u) ==="
+      systemctl disable nethos-install.service || true
+      systemctl reboot
+
+runcmd:
+  - [systemctl, daemon-reload]
+  - [systemctl, enable, --now, nethos-install.service]
+
+final_message: "NETHOS base boot complete; first-boot installer is running."

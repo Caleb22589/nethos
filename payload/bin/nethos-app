@@ -1,0 +1,94 @@
+#!/bin/bash
+# Create, list and run NETHOS apps.
+#
+#   nethos-app new <id> [Name]   scaffold a new app from the template
+#   nethos-app list              list installed apps
+#   nethos-app run <id>          launch an app
+#   nethos-app edit <id>         print the app's directory (for cd/$EDITOR)
+#
+# New apps go to ~/.local/share/nethos/apps/<id>, which takes precedence over
+# the system directory — so you can shadow a built-in app by copying it there.
+# nethosd notices the new directory and it appears in the launcher immediately.
+set -euo pipefail
+
+API="http://127.0.0.1:7777"
+USER_APPS="$HOME/.local/share/nethos/apps"
+SYS_APPS="/usr/share/nethos/apps"
+
+say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
+die() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+usage() { sed -n '2,10p' "$0" | sed 's/^# \?//'; }
+
+cmd="${1:-}"
+[ -n "$cmd" ] || { usage; exit 0; }
+shift || true
+
+case "$cmd" in
+new)
+    id="${1:?usage: nethos-app new <id> [Name]}"
+    shift || true
+    name="${*:-$id}"
+
+    echo "$id" | grep -qE '^[a-z0-9][a-z0-9._-]*$' \
+        || die "id must be lowercase letters, digits, dot, dash or underscore"
+
+    dest="$USER_APPS/$id"
+    [ -e "$dest" ] && die "already exists: $dest"
+
+    mkdir -p "$dest"
+    cp "$SYS_APPS/template/index.html" "$dest/index.html"
+
+    cat >"$dest/app.json" <<EOF
+{
+  "id": "$id",
+  "name": "$name",
+  "description": "A NETHOS app",
+  "icon": "$(printf '%s' "$id" | cut -c1-2 | tr '[:lower:]' '[:upper:]')",
+  "version": "0.1.0",
+  "categories": ["NETHOS"],
+  "entry": "index.html",
+  "permissions": ["system", "storage"],
+  "window": { "width": 820, "height": 600 }
+}
+EOF
+
+    # Retitle the copied template so the new app does not masquerade as it.
+    sed -i "s|<title>Template App — NETHOS</title>|<title>$name — NETHOS</title>|; \
+            s|<h1>Template App</h1>|<h1>$name</h1>|" "$dest/index.html"
+
+    say "Created $dest"
+    say "It is already in your launcher. Edit index.html and it live-reloads."
+    printf '\n  %s\n  %s\n\n' "\$EDITOR $dest/index.html" "nethos-app run $id"
+    ;;
+
+list)
+    curl -sf "$API/api/apps" \
+        | python3 -c '
+import json, sys
+apps = json.load(sys.stdin)["apps"]
+for a in apps:
+    tag = "nethos" if a["source"] == "nethos" else "system"
+    print("%-8s %-24s %s" % (tag, a["id"], a.get("comment") or a["name"]))
+' || die "nethosd unreachable — is the desktop running?"
+    ;;
+
+run)
+    id="${1:?usage: nethos-app run <id>}"
+    curl -sf -X POST -H 'Content-Type: application/json' \
+        -d "{\"id\":\"$id\"}" "$API/api/launch" >/dev/null \
+        || die "could not launch $id"
+    say "Launched $id"
+    ;;
+
+edit)
+    id="${1:?usage: nethos-app edit <id>}"
+    if   [ -d "$USER_APPS/$id" ]; then echo "$USER_APPS/$id"
+    elif [ -d "$SYS_APPS/$id" ];  then echo "$SYS_APPS/$id"
+    else die "no such app: $id"
+    fi
+    ;;
+
+-h|--help|help) usage ;;
+*) die "unknown command: $cmd" ;;
+esac

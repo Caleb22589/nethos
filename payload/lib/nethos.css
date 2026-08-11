@@ -1,0 +1,182 @@
+/*!
+ * nethos.css — the NETHOS design system for apps.
+ *
+ * Link this and your app looks like part of the OS instead of a web page:
+ *
+ *     <link rel="stylesheet" href="/lib/nethos.css">
+ *
+ * These are the same tokens the shell itself uses, so restyling the OS
+ * restyles every app that builds on them. Override any --neth-* variable in
+ * your own stylesheet to theme a single app.
+ */
+
+:root {
+  --neth-bg:        #0b0e14;
+  --neth-raise:     #131822;
+  --neth-hover:     #1c2434;
+  --neth-line:      #232b3b;
+  --neth-fg:        #d7dee9;
+  --neth-dim:       #7c8798;
+  --neth-faint:     #4a5468;
+  --neth-accent:    #3ddbd9;
+  --neth-accent-dk: #0f7a78;
+  --neth-warn:      #f7a072;
+  --neth-good:      #7ee787;
+
+  --neth-radius:    8px;
+  --neth-gap:       12px;
+  --neth-mono: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, monospace;
+  --neth-sans: "Inter", "DejaVu Sans", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  background: var(--neth-bg);
+  color: var(--neth-fg);
+  font-family: var(--neth-sans);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+body { padding: 22px 26px; overflow-y: auto; }
+
+/* ------------------------------------------------------------ typography */
+
+h1, h2, h3 { font-weight: 600; line-height: 1.25; }
+h1 { font-size: 19px; margin-bottom: 4px; }
+h2 { font-size: 15px; margin-bottom: 10px; }
+h3 { font-size: 13px; color: var(--neth-dim); text-transform: uppercase;
+     letter-spacing: .09em; font-family: var(--neth-mono); margin-bottom: 8px; }
+
+a { color: var(--neth-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, kbd, pre { font-family: var(--neth-mono); font-size: 12.5px; }
+code { background: var(--neth-raise); padding: 1px 5px; border-radius: 4px;
+       border: 1px solid var(--neth-line); }
+pre { background: var(--neth-raise); border: 1px solid var(--neth-line);
+      border-radius: var(--neth-radius); padding: 14px; overflow-x: auto; }
+pre code { background: none; border: 0; padding: 0; }
+.neth-dim { color: var(--neth-dim); }
+.neth-mono { font-family: var(--neth-mono); }
+
+/* ---------------------------------------------------------------- layout */
+
+.neth-app-header {
+  display: flex; align-items: baseline; gap: 12px;
+  padding-bottom: 14px; margin-bottom: 18px;
+  border-bottom: 1px solid var(--neth-line);
+}
+.neth-app-header h1 { margin: 0; }
+.neth-app-header .neth-sub {
+  font-family: var(--neth-mono); font-size: 11.5px; color: var(--neth-dim);
+}
+
+.neth-row { display: flex; gap: var(--neth-gap); align-items: center; }
+.neth-col { display: flex; gap: var(--neth-gap); flex-direction: column; }
+.neth-grid {
+  display: grid; gap: var(--neth-gap);
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+}
+.neth-spacer { flex: 1; }
+
+/* ----------------------------------------------------------------- cards */
+
+.neth-card {
+  background: var(--neth-raise);
+  border: 1px solid var(--neth-line);
+  border-radius: var(--neth-radius);
+  padding: 14px 16px;
+}
+.neth-card-title {
+  font-family: var(--neth-mono); font-size: 11px; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--neth-dim); margin-bottom: 6px;
+}
+.neth-stat { font-size: 22px; font-family: var(--neth-mono); color: var(--neth-fg); }
+.neth-stat small { font-size: 12px; color: var(--neth-dim); margin-left: 4px; }
+
+/* --------------------------------------------------------------- control */
+
+.neth-btn {
+  font: inherit; color: var(--neth-fg); cursor: pointer;
+  background: var(--neth-raise);
+  border: 1px solid var(--neth-line);
+  border-radius: 6px;
+  padding: 8px 15px;
+  transition: background 110ms, border-color 110ms, color 110ms;
+}
+.neth-btn:hover { background: var(--neth-hover); border-color: var(--neth-dim); }
+.neth-btn:active { transform: translateY(1px); }
+.neth-btn-primary { border-color: var(--neth-accent-dk); color: var(--neth-accent); }
+.neth-btn-primary:hover { background: var(--neth-accent-dk); color: #04110f; }
+.neth-btn-danger:hover { border-color: var(--neth-warn); color: var(--neth-warn); }
+.neth-btn:disabled { opacity: .45; cursor: not-allowed; }
+
+.neth-input, .neth-select, .neth-textarea {
+  font: inherit; width: 100%;
+  color: var(--neth-fg); background: var(--neth-raise);
+  border: 1px solid var(--neth-line); border-radius: 6px;
+  padding: 9px 12px; outline: none;
+}
+.neth-input:focus, .neth-select:focus, .neth-textarea:focus {
+  border-color: var(--neth-accent-dk);
+}
+.neth-input::placeholder { color: var(--neth-faint); }
+.neth-textarea { min-height: 120px; resize: vertical; font-family: var(--neth-mono); }
+
+.neth-label {
+  display: block; margin-bottom: 6px;
+  font-size: 12px; color: var(--neth-dim);
+}
+
+/* ---------------------------------------------------------------- tables */
+
+.neth-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.neth-table th, .neth-table td {
+  text-align: left; padding: 8px 10px;
+  border-bottom: 1px solid var(--neth-line);
+}
+.neth-table th {
+  font-family: var(--neth-mono); font-size: 11px; font-weight: 500;
+  text-transform: uppercase; letter-spacing: .08em; color: var(--neth-dim);
+}
+.neth-table tr:hover td { background: var(--neth-hover); }
+
+/* ----------------------------------------------------------------- misc */
+
+.neth-badge {
+  display: inline-block; padding: 2px 8px; border-radius: 20px;
+  font-family: var(--neth-mono); font-size: 10.5px; letter-spacing: .06em;
+  background: var(--neth-hover); color: var(--neth-dim);
+  border: 1px solid var(--neth-line);
+}
+.neth-badge-accent { color: var(--neth-accent); border-color: var(--neth-accent-dk); }
+
+.neth-bar {
+  height: 6px; border-radius: 3px; overflow: hidden;
+  background: var(--neth-hover); border: 1px solid var(--neth-line);
+}
+.neth-bar > span { display: block; height: 100%; background: var(--neth-accent); }
+
+/* toasts, created by nethos.ui.toast() */
+.neth-toasts {
+  position: fixed; right: 18px; bottom: 18px; z-index: 9999;
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
+}
+.neth-toast {
+  padding: 10px 15px; border-radius: 6px; font-size: 13px;
+  background: var(--neth-hover); color: var(--neth-fg);
+  border: 1px solid var(--neth-line);
+  animation: neth-toast-in 160ms ease-out;
+}
+.neth-toast-error { border-color: var(--neth-warn); color: var(--neth-warn); }
+.neth-toast-good  { border-color: var(--neth-good); color: var(--neth-good); }
+@keyframes neth-toast-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb { background: var(--neth-line); border-radius: 5px; }
+::-webkit-scrollbar-thumb:hover { background: var(--neth-hover); }

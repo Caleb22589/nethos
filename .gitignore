@@ -1,0 +1,12 @@
+# VM images and downloaded bases — large, reproducible, never committed.
+build/
+*.qcow2
+*.iso
+
+# Screenshots captured during development
+nethos-shot*.png
+
+.DS_Store
+
+# dev server state
+payload/.devstate/

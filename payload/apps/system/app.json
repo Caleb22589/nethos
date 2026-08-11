@@ -1,0 +1,11 @@
+{
+  "id": "system",
+  "name": "System",
+  "description": "Live system status, running windows and installed apps",
+  "icon": "SY",
+  "version": "1.0.0",
+  "categories": ["NETHOS", "System"],
+  "entry": "index.html",
+  "permissions": ["system", "windows", "apps", "storage"],
+  "window": { "width": 980, "height": 700 }
+}

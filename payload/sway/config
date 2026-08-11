@@ -1,0 +1,119 @@
+# NETHOS compositor configuration.
+#
+# The hybrid model: sway does the real window management, and the NETHOS shell
+# (a Chromium app window running local HTML) is pinned to the top of the screen
+# as the panel. Native Wayland/X11 apps open as ordinary managed windows and
+# are reported to the shell through nethosd.
+
+set $mod Mod4
+set $term foot
+
+### appearance -------------------------------------------------------------
+
+font pango:DejaVu Sans 10
+
+# colours match shell/style.css so borders and panel read as one system
+#                       border   bg       text     indicator child_border
+client.focused          #3ddbd9  #131822  #d7dee9  #3ddbd9   #3ddbd9
+client.focused_inactive #232b3b  #131822  #7c8798  #232b3b   #232b3b
+client.unfocused        #232b3b  #0b0e14  #7c8798  #232b3b   #232b3b
+client.urgent           #f7a072  #131822  #f7a072  #f7a072   #f7a072
+
+default_border pixel 2
+gaps inner 6
+# reserve the top strip for the panel so tiled windows are never covered
+gaps top 44
+
+exec_always swaybg -c "#0b0e14"
+
+### the shell ---------------------------------------------------------------
+
+# nethos-session starts nethosd, waits for it to answer, then opens the panel
+exec nethos-session
+
+# Chromium ignores --class in --app mode and derives its own app_id from the
+# URL, e.g. "chrome-127.0.0.1__panel.html-Default". sway matches app_id as a
+# regex, so key off the page name — that part is stable.
+
+# Sizing is done with Chromium's own --window-size (see nethos-session): a
+# Wayland client picks its own size and ignores the compositor's suggestion, so
+# `resize set` here would just be undone a moment later. Position still has to
+# come from sway, and it must be `move absolute position` — plain `move
+# position` is workspace-relative and lands below the reserved top gap.
+
+# The panel: pinned to the very top, on every workspace.
+for_window [app_id="^chrome-.*panel\.html.*$"] \
+    floating enable, sticky enable, border none, \
+    move absolute position 0 0
+
+# The launcher overlay: centred, above everything, focused on open.
+for_window [app_id="^chrome-.*menu\.html.*$"] \
+    floating enable, sticky enable, border none, \
+    move position center, focus
+
+# NETHOS apps (served from /apps/<id>/) open as floating, app-like windows.
+# They size themselves from their manifest via --window-size.
+for_window [app_id="^chrome-.*__apps_.*$"] \
+    floating enable, border pixel 2, move position center
+
+# Chromium's own browsing windows should behave like normal apps.
+for_window [app_id="^chromium$"] border pixel 2
+
+### keys --------------------------------------------------------------------
+
+bindsym $mod+Return exec $term
+bindsym $mod+d exec nethos-menu-toggle
+bindsym $mod+space exec nethos-menu-toggle
+bindsym $mod+q kill
+
+# Development: reload the shell, or the shell and the daemon together.
+bindsym $mod+Shift+r exec nethos-reload
+bindsym $mod+Ctrl+Shift+r exec nethos-reload --daemon
+bindsym $mod+Shift+e exec swaynag -t warning -m 'Log out of NETHOS?' \
+    -B 'Log out' 'swaymsg exit'
+
+floating_modifier $mod normal
+
+bindsym $mod+Left focus left
+bindsym $mod+Right focus right
+bindsym $mod+Up focus up
+bindsym $mod+Down focus down
+
+bindsym $mod+Shift+Left move left
+bindsym $mod+Shift+Right move right
+bindsym $mod+Shift+Up move up
+bindsym $mod+Shift+Down move down
+
+bindsym $mod+f fullscreen toggle
+bindsym $mod+Shift+space floating toggle
+bindsym $mod+v split vertical
+bindsym $mod+b split horizontal
+
+bindsym $mod+1 workspace number 1
+bindsym $mod+2 workspace number 2
+bindsym $mod+3 workspace number 3
+bindsym $mod+4 workspace number 4
+bindsym $mod+Shift+1 move container to workspace number 1
+bindsym $mod+Shift+2 move container to workspace number 2
+bindsym $mod+Shift+3 move container to workspace number 3
+bindsym $mod+Shift+4 move container to workspace number 4
+
+mode "resize" {
+    bindsym Left  resize shrink width 10px
+    bindsym Right resize grow width 10px
+    bindsym Up    resize shrink height 10px
+    bindsym Down  resize grow height 10px
+    bindsym Return mode "default"
+    bindsym Escape mode "default"
+}
+bindsym $mod+r mode "resize"
+
+### input/output ------------------------------------------------------------
+
+input type:keyboard {
+    xkb_options terminate:ctrl_alt_bksp
+}
+
+output * bg "#0b0e14" solid_color
+
+include /etc/sway/config.d/*

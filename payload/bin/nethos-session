@@ -1,0 +1,64 @@
+#!/bin/sh
+# Bring up the NETHOS shell inside a running sway session.
+#
+# Order matters: the panel is a web page served by nethosd, so the daemon has
+# to be answering before Chromium tries to load it. Run from sway's `exec`,
+# which gives us WAYLAND_DISPLAY and SWAYSOCK for free.
+set -eu
+
+API="http://127.0.0.1:7777"
+
+CHROME_FLAGS="--ozone-platform=wayland
+--enable-features=UseOzonePlatform
+--disable-gpu
+--password-store=basic
+--no-first-run
+--no-default-browser-check
+--disable-features=TranslateUI,MediaRouter
+--disable-background-networking
+--disable-sync"
+
+# Hand sway's environment to the user service manager, otherwise nethosd starts
+# without WAYLAND_DISPLAY/SWAYSOCK and every swaymsg call inside it fails.
+systemctl --user import-environment \
+    WAYLAND_DISPLAY SWAYSOCK XDG_CURRENT_DESKTOP XDG_SESSION_TYPE 2>/dev/null || true
+
+# nethosd runs as a user service so that `systemctl --user restart nethosd`
+# applies API changes in a second. Fall back to running it directly if systemd
+# is unavailable for any reason.
+if ! systemctl --user restart nethosd.service 2>/dev/null; then
+    if ! curl -sf -o /dev/null --max-time 2 "$API/api/status" 2>/dev/null; then
+        /usr/bin/nethosd &
+    fi
+fi
+
+# Wait (max ~15s) for the API rather than racing it.
+i=0
+while [ "$i" -lt 150 ]; do
+    if curl -sf -o /dev/null "$API/api/status"; then
+        break
+    fi
+    i=$((i + 1))
+    sleep 0.1
+done
+
+if [ "$i" -ge 150 ]; then
+    swaynag -t error -m "nethosd failed to start — panel unavailable. Try: systemctl --user status nethosd" &
+    exit 1
+fi
+
+# Panel width has to match the output, and only the client can set its own size
+# on Wayland — so ask sway how wide the screen is and tell Chromium directly.
+PANEL_H=38
+WIDTH=$(swaymsg -t get_outputs 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["rect"]["width"])' \
+    2>/dev/null) || WIDTH=""
+[ -n "$WIDTH" ] || WIDTH=1440
+
+# Note: --class is deliberately absent. Chromium ignores it in --app mode and
+# derives app_id from the URL instead; the sway rules match on that.
+exec chromium $CHROME_FLAGS \
+    --app="$API/panel.html" \
+    --window-size="${WIDTH},${PANEL_H}" \
+    --window-position=0,0 \
+    --user-data-dir="$HOME/.config/nethos-chromium-panel"

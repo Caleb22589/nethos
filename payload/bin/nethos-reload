@@ -1,0 +1,49 @@
+#!/bin/bash
+# Apply changes to a running NETHOS. No reboot, no logout.
+#
+#   nethos-reload            reload every open surface (panel, menu, apps)
+#   nethos-reload --daemon   also restart nethosd, for changes to the API
+#   nethos-reload --shell    also relaunch the panel window itself
+#
+# Editing files under /usr/share/nethos already triggers this automatically --
+# nethosd watches the tree and pushes a reload within a second. This command is
+# for when you want it right now, or you changed nethosd itself.
+set -euo pipefail
+
+API="http://127.0.0.1:7777"
+DAEMON=0
+SHELL_RESTART=0
+
+for arg in "$@"; do
+    case "$arg" in
+        --daemon|-d) DAEMON=1 ;;
+        --shell|-s)  SHELL_RESTART=1 ;;
+        --all|-a)    DAEMON=1; SHELL_RESTART=1 ;;
+        -h|--help)   sed -n '2,12p' "$0" | sed 's/^# \?//'; exit 0 ;;
+        *) echo "unknown option: $arg" >&2; exit 2 ;;
+    esac
+done
+
+say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
+
+if [ "$DAEMON" -eq 1 ]; then
+    say "Restarting nethosd"
+    systemctl --user restart nethosd
+    for _ in $(seq 1 100); do
+        curl -sf -o /dev/null "$API/api/status" && break
+        sleep 0.1
+    done
+fi
+
+if [ "$SHELL_RESTART" -eq 1 ]; then
+    say "Relaunching the panel"
+    swaymsg '[app_id="^chrome-.*panel\.html.*$"] kill' >/dev/null 2>&1 || true
+    sleep 1
+    nohup nethos-session >/dev/null 2>&1 &
+    exit 0
+fi
+
+say "Broadcasting reload"
+curl -sf -X POST -H 'Content-Type: application/json' \
+    -d '{"reason":"nethos-reload"}' "$API/api/reload" >/dev/null
+say "Done — every open NETHOS surface has reloaded."

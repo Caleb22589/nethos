@@ -1,0 +1,6 @@
+#!/bin/sh
+# Show/hide the NETHOS launcher. Bound to Super+D / Super+Space in sway, and
+# used by the panel's NETHOS button via the same API endpoint.
+exec curl -sf -X POST -H 'Content-Type: application/json' \
+    -d '{"builtin":"menu-toggle"}' \
+    http://127.0.0.1:7777/api/launch >/dev/null
