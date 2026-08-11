@@ -434,7 +434,7 @@ def apply_window_rules(container):
 # icons
 # --------------------------------------------------------------------------
 
-_icon_index = {"built": False, "map": {}, "lock": threading.Lock()}
+_icon_index = {"map": {}, "lock": threading.Lock(), "ready": threading.Event()}
 ICON_EXT_RANK = {".svg": 3, ".png": 2, ".xpm": 1}
 
 
@@ -467,14 +467,21 @@ def build_icon_index():
                     index[stem] = (score, os.path.join(dirpath, name))
     with _icon_index["lock"]:
         _icon_index["map"] = {k: v[1] for k, v in index.items()}
-        _icon_index["built"] = True
+    _icon_index["ready"].set()
 
 
-def resolve_icon(name):
+def resolve_icon(name, wait=15):
+    """Path for an icon name, waiting for the index if it is still building.
+
+    Called from a request thread, so blocking briefly is fine and is much
+    better than the alternative: returning "no icon" during startup and having
+    that answer cached, which is why icons silently never appeared.
+    """
     if not name:
         return None
     if os.path.isabs(name) and os.path.isfile(name):
         return name
+    _icon_index["ready"].wait(timeout=wait)
     with _icon_index["lock"]:
         return _icon_index["map"].get(name)
 
@@ -596,12 +603,16 @@ def parse_desktop(path):
         return None
 
     icon = entry.get("Icon", "")
+    # Advertise the icon URL without resolving it here. Resolution needs the
+    # icon index, this runs on the cached app-list path, and a miss during
+    # startup would be cached as "no icon". The endpoint 404s if it cannot find
+    # the file and the shell falls back to initials.
     return {
         "id": os.path.basename(path),
         "name": entry["Name"],
         "comment": entry.get("Comment", ""),
         "icon": icon,
-        "icon_url": "/api/icon/" + urllib.parse.quote(icon) if resolve_icon(icon) else "",
+        "icon_url": "/api/icon/" + urllib.parse.quote(icon) if icon else "",
         "categories": [c for c in entry.get("Categories", "").split(";") if c],
         "terminal": entry.get("Terminal", "").lower() == "true",
         "mode": "window",
