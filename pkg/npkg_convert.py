@@ -292,7 +292,10 @@ def convert_deb(path: str, outdir: str, layout: str = "native",
             description=body.strip(),
             url=fields.get("Homepage", ""),
             licence="",                      # .deb keeps licences in a copyright file
-            depends=deb_requirements(fields.get("Depends", "")),
+            # Pre-Depends are dependencies too; npkg has no separate notion
+            # of "must be configured first", so they merge into depends.
+            depends=deb_requirements(", ".join(filter(None, [
+                fields.get("Pre-Depends", ""), fields.get("Depends", "")]))),
             optional=deb_requirements(fields.get("Recommends", "")),
             provides=deb_requirements(fields.get("Provides", "")),
             conflicts=deb_requirements(fields.get("Conflicts", "")),

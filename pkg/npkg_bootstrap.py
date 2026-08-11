@@ -135,6 +135,22 @@ class DebianArchive:
                         self.packages[name] = fields
         say(f"  index: {len(self.packages)} packages available")
 
+    def base_seeds(self) -> list[str]:
+        """Every Essential and Priority: required package.
+
+        This is what debootstrap means by a base system, and it is the right
+        answer to "why is libc-bin missing": nothing declares a dependency on
+        it, yet ldd and ldconfig live there and initramfs-tools cannot work
+        without them. Hand-listing the base was always going to keep springing
+        leaks; Debian already marks what belongs.
+        """
+        out = []
+        for name, fields in self.packages.items():
+            if (fields.get("Essential", "").lower() == "yes"
+                    or fields.get("Priority", "") == "required"):
+                out.append(name)
+        return out
+
     def provider(self, name: str) -> dict | None:
         """Find a package by name, or by what it provides (a virtual name)."""
         if name in self.packages:
@@ -163,7 +179,13 @@ class DebianArchive:
                 continue
             chosen[fields["Package"]] = fields
 
-            deps = fields.get("Depends", "")
+            # Pre-Depends, not just Depends. Debian's essential packages --
+            # coreutils, libc6, dpkg -- declare their requirements there, so
+            # reading only Depends makes every dependency of the base system
+            # invisible. That is how libattr1 and libc-bin went missing while
+            # the resolver reported nothing wrong.
+            deps = ", ".join(filter(None, [fields.get("Pre-Depends", ""),
+                                           fields.get("Depends", "")]))
             if with_recommends:
                 deps += ", " + fields.get("Recommends", "")
             for clause in deps.split(","):
@@ -381,6 +403,11 @@ def bootstrap(root: str, sets: list[str], arch: str, username: str,
         if name not in SETS:
             raise NpkgError(f"unknown set '{name}' (have: {', '.join(SETS)})")
         seeds += [s.format(arch=arch) for s in SETS[name]]
+
+    if "base" in sets:
+        essential = archive.base_seeds()
+        say(f"  base: {len(essential)} essential/required packages from Debian")
+        seeds += essential
 
     say(f"\n== resolving {len(seeds)} seed packages ==")
     resolved = archive.resolve(seeds)
