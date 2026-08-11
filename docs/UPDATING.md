@@ -42,6 +42,21 @@ change it bumps a generation counter and pushes an event down a server-sent
 event stream. Every open surface — panel, launcher, every app window — is
 subscribed via `EventSource` and reloads itself. That is the whole mechanism.
 
+## Bootstrapping a machine built before the updater existed
+
+A NETHOS image built before `nethos-update` shipped has neither `git` nor the
+update tooling, so it needs one manual pass to pick them up:
+
+```bash
+sudo pacman -S --needed git
+git clone https://github.com/Caleb22589/nethos.git ~/nethos-boot
+sudo ~/nethos-boot/payload/install-nethos.sh --files-only
+nethos-reload --daemon
+```
+
+After that `nethos-update` works on its own and this is never needed again.
+Images built from the current repo include `git` and the tooling already.
+
 ## Pointing at your own repository
 
 `/etc/nethos/update.conf`:

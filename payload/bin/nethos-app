@@ -68,8 +68,9 @@ list)
 import json, sys
 apps = json.load(sys.stdin)["apps"]
 for a in apps:
-    tag = "nethos" if a["source"] == "nethos" else "system"
-    print("%-8s %-24s %s" % (tag, a["id"], a.get("comment") or a["name"]))
+    # .get(): an older nethosd on a machine mid-upgrade has no "source" field.
+    tag = "nethos" if a.get("source") == "nethos" else "system"
+    print("%-8s %-24s %s" % (tag, a["id"], a.get("comment") or a.get("name", "")))
 ' || die "nethosd unreachable — is the desktop running?"
     ;;
 

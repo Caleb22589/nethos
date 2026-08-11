@@ -28,6 +28,14 @@ say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 
 if [ "$DAEMON" -eq 1 ]; then
     say "Restarting nethosd"
+    # Clear any unsupervised nethosd still holding port 7777 (e.g. one started
+    # directly by an older nethos-session), otherwise the unit cannot bind and
+    # systemd sits in a restart loop while the stale daemon keeps serving.
+    # The bracket in the pattern stops pkill matching its own command line --
+    # and, more importantly, matching the shell that is running this script.
+    systemctl --user stop nethosd 2>/dev/null || true
+    pkill -f "[/]usr/bin/nethosd" 2>/dev/null || true
+    sleep 1
     systemctl --user restart nethosd
     for _ in $(seq 1 100); do
         curl -sf -o /dev/null "$API/api/status" && break
