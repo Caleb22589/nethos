@@ -46,15 +46,16 @@ for_window [app_id="^chrome-.*panel\.html.*$"] \
     floating enable, sticky enable, border none, \
     move absolute position 0 0
 
-# The launcher overlay: centred, above everything, focused on open.
+# The launcher is opened once at session start and parked in the scratchpad;
+# toggling it is then `scratchpad show`, a compositor operation, instead of a
+# cold Chromium start. That is the difference between instant and seconds.
 for_window [app_id="^chrome-.*menu\.html.*$"] \
     floating enable, sticky enable, border none, \
-    move position center, focus
+    move scratchpad
 
-# NETHOS apps (served from /apps/<id>/) open as floating, app-like windows.
-# They size themselves from their manifest via --window-size.
-for_window [app_id="^chrome-.*__apps_.*$"] \
-    floating enable, border pixel 2, move position center
+# NETHOS app windows are placed by nethosd from each app's manifest (window vs
+# widget), which sway's own rules cannot read. Only the fallback border here.
+for_window [app_id="^chrome-.*__apps_.*$"] border pixel 2
 
 # Chromium's own browsing windows should behave like normal apps.
 for_window [app_id="^chromium$"] border pixel 2

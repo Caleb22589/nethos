@@ -23,6 +23,21 @@ python
 curl
 git
 
+# networking. NetworkManager on its own cannot do Wi-Fi: it needs a supplicant
+# backend, and without one a laptop with no ethernet port has no way online at
+# all. iwd also provides iwctl, which is what the Arch install guide tells you
+# to use, so people reasonably expect it to exist after install.
+networkmanager
+wpa_supplicant
+iwd
+usbmuxd            # iPhone USB tethering
+modemmanager       # USB LTE dongles
+
+# icon themes, so the launcher can show real application icons
+hicolor-icon-theme
+adwaita-icon-theme
+papirus-icon-theme
+
 # terminal and everyday apps
 foot
 thunar

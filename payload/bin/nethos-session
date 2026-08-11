@@ -8,6 +8,11 @@ set -eu
 
 API="http://127.0.0.1:7777"
 
+# One Chromium profile for the panel, the launcher and every app: separate
+# profiles mean separate Chromium instances, and paying a cold start per window
+# is what made the launcher feel broken.
+CHROME_PROFILE="$HOME/.config/nethos-chromium"
+
 CHROME_FLAGS="--ozone-platform=wayland
 --enable-features=UseOzonePlatform
 --disable-gpu
@@ -57,8 +62,11 @@ WIDTH=$(swaymsg -t get_outputs 2>/dev/null \
 
 # Note: --class is deliberately absent. Chromium ignores it in --app mode and
 # derives app_id from the URL instead; the sway rules match on that.
+# The panel is started first on purpose: Chromium's first window owns the
+# shared profile, and nethosd waits for the panel before parking a launcher
+# window in the scratchpad.
 exec chromium $CHROME_FLAGS \
     --app="$API/panel.html" \
     --window-size="${WIDTH},${PANEL_H}" \
     --window-position=0,0 \
-    --user-data-dir="$HOME/.config/nethos-chromium-panel"
+    --user-data-dir="$CHROME_PROFILE"

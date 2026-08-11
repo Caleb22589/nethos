@@ -18,7 +18,9 @@
     <div id="grid"></div>
 
     <div class="menu-foot">
-      <button class="pw" data-builtin="terminal">TERMINAL</button>
+      <!-- No terminal button: the terminal is an ordinary application, so it
+           belongs in the grid above where it can be searched like everything
+           else. Lock stays because it is not an application. -->
       <button class="pw" data-builtin="lock">LOCK</button>
       <span class="spacer"></span>
       <span class="hint">↑↓←→ navigate · enter launch · esc close</span>

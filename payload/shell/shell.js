@@ -1,5 +1,11 @@
-/* NETHOS shell logic. One file, two views: the panel and the launcher menu.
-   Everything privileged goes through nethosd on loopback. */
+/* NETHOS shell logic. One file, two views: the panel and the launcher.
+   Everything privileged goes through nethosd on loopback.
+
+   The shell is event-driven. It used to poll /api/windows every 1.5s, which
+   meant nethosd spawned a swaymsg subprocess and parsed a whole window tree on
+   a timer -- painful on a slow machine. Now sway's own event stream is
+   forwarded over SSE and the taskbar redraws only when something changed. The
+   timers that remain are slow safety nets, not the mechanism. */
 
 const API = "http://127.0.0.1:7777";
 
@@ -25,6 +31,44 @@ const el = (tag, cls, text) => {
   return n;
 };
 
+/* Collapse bursts of events into one redraw: sway emits several in a row for
+   a single user action (new, focus, title), and redrawing per event is waste. */
+function debounce(fn, ms) {
+  let timer = null;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+}
+
+/* Shared icon tile: a real application icon when nethosd resolved one from the
+   icon themes, otherwise initials. */
+function iconTile(app, cls) {
+  const initials = (name) => {
+    const w = String(name).split(/[\s\-_]+/).filter(Boolean);
+    return ((w[0] || "?")[0] + (w.length > 1 ? w[1][0] : "")).toUpperCase();
+  };
+
+  const tile = el("div", cls);
+  if (app.icon_url) {
+    const img = el("img");
+    img.src = app.icon_url;
+    img.alt = "";
+    img.loading = "lazy";
+    // Themes lie: an index entry can point at a file that will not decode.
+    img.addEventListener("error", () => {
+      tile.replaceChildren();
+      tile.textContent = initials(app.name);
+    });
+    tile.append(img);
+  } else if (app.icon && app.icon.length <= 2) {
+    tile.textContent = app.icon;          // manifest text tile, e.g. "SY"
+  } else {
+    tile.textContent = initials(app.name);
+  }
+  return tile;
+}
+
 /* ------------------------------------------------------------------ panel */
 
 function initPanel() {
@@ -33,9 +77,18 @@ function initPanel() {
   const clock = document.getElementById("clock");
   const metrics = document.getElementById("metrics");
 
+  let busy = false;
   brand.addEventListener("click", async () => {
-    const r = await post("/api/launch", { builtin: "menu-toggle" });
-    brand.classList.toggle("active", !!r.open);
+    // Toggling is fast now, but a double click should still not queue two
+    // opposite toggles and land back where it started.
+    if (busy) return;
+    busy = true;
+    try {
+      const r = await post("/api/launch", { builtin: "menu-toggle" });
+      brand.classList.toggle("active", !!r.open);
+    } finally {
+      setTimeout(() => { busy = false; }, 150);
+    }
   });
 
   async function refreshTasks() {
@@ -55,12 +108,11 @@ function initPanel() {
       x.title = "close";
       x.addEventListener("click", (e) => {
         e.stopPropagation();
-        post("/api/window", { action: "close", id: w.id }).then(refreshTasks);
+        post("/api/window", { action: "close", id: w.id });
       });
       b.append(x);
       b.title = (w.app_id || "") + "  ·  ws " + (w.workspace || "?");
-      b.addEventListener("click", () =>
-        post("/api/window", { action: "focus", id: w.id }).then(refreshTasks));
+      b.addEventListener("click", () => post("/api/window", { action: "focus", id: w.id }));
       tasks.append(b);
     }
   }
@@ -88,16 +140,18 @@ function initPanel() {
     }));
   }
 
-  async function syncBrand() {
-    try {
-      brand.classList.toggle("active", (await get("/api/menu")).open);
-    } catch { /* daemon restarting */ }
-  }
+  const tasksSoon = debounce(refreshTasks, 60);
 
-  refreshTasks(); refreshStatus(); syncBrand();
-  setInterval(refreshTasks, 1500);
-  setInterval(refreshStatus, 5000);
-  setInterval(syncBrand, 1500);
+  onShellEvent((msg) => {
+    if (msg.type === "windows") tasksSoon();
+    else if (msg.type === "menu") brand.classList.toggle("active", !!msg.data.open);
+    else if (msg.type === "notify") toast(msg.data.text, msg.data.level);
+  });
+
+  refreshTasks();
+  refreshStatus();
+  setInterval(refreshStatus, 10000);
+  setInterval(refreshTasks, 15000);   // safety net if the event stream drops
 }
 
 /* ------------------------------------------------------------------- menu */
@@ -108,23 +162,18 @@ function initMenu() {
   const count = document.getElementById("count");
   let apps = [], view = [], sel = 0;
 
-  const initials = (name) => {
-    const w = name.split(/[\s\-_]+/).filter(Boolean);
-    return ((w[0] || "?")[0] + (w.length > 1 ? w[1][0] : "")).toUpperCase();
-  };
-
   function render() {
     grid.replaceChildren();
     view.forEach((app, i) => {
       const b = el("button", "app" + (i === sel ? " sel" : "")
                             + (app.source === "nethos" ? " app-nethos" : ""));
-      b.append(el("div", "icon", app.icon && app.icon.length <= 2
-                                 ? app.icon : initials(app.name)));
+      b.append(iconTile(app, "icon"));
       const meta = el("div", "meta");
       const nameRow = el("div", "name-row");
       nameRow.append(el("span", "name", app.name));
-      // NETHOS apps are the ones you can edit and hot-reload; mark them.
-      if (app.source === "nethos") nameRow.append(el("span", "tag", "APP"));
+      if (app.source === "nethos") {
+        nameRow.append(el("span", "tag", app.mode === "widget" ? "WIDGET" : "APP"));
+      }
       meta.append(nameRow);
       meta.append(el("div", "desc", app.comment || app.categories.join(" · ") || app.id));
       b.append(meta);
@@ -139,9 +188,7 @@ function initMenu() {
 
   function paintSel() {
     [...grid.children].forEach((c, i) => c.classList.toggle("sel", i === sel));
-    if (grid.children[sel]) {
-      grid.children[sel].scrollIntoView({ block: "nearest" });
-    }
+    if (grid.children[sel]) grid.children[sel].scrollIntoView({ block: "nearest" });
   }
 
   function filter() {
@@ -174,33 +221,52 @@ function initMenu() {
     b.addEventListener("click", () => post("/api/launch", { builtin: b.dataset.builtin }));
   });
 
-  get("/api/apps").then((r) => { apps = r.apps; filter(); search.focus(); })
-    .catch(() => { count.textContent = "nethosd unreachable"; });
+  async function load() {
+    try {
+      apps = (await get("/api/apps")).apps;
+      filter();
+    } catch {
+      count.textContent = "nethosd unreachable";
+    }
+  }
+
+  // The launcher window is never destroyed, only hidden in the scratchpad, so
+  // "opening" it is a focus event. Reset it here rather than on load.
+  window.addEventListener("focus", () => {
+    search.value = "";
+    load().then(() => search.focus());
+  });
+
+  load().then(() => search.focus());
+  onShellEvent((msg) => { if (msg.type === "windows") load(); });
 }
 
-/* --------------------------------------------------------------- reload */
+/* ------------------------------------------------------- events + toasts */
 
-/* The shell eats its own dog food: it subscribes to the same event stream the
-   app SDK exposes, so editing panel.html or style.css reloads the panel within
-   a second — no reboot, no logout, no relaunching Chromium. */
-function initLiveReload() {
-  if (typeof EventSource === "undefined") return;
+let stream = null;
+const shellHandlers = new Set();
+
+function onShellEvent(handler) {
+  shellHandlers.add(handler);
+  if (stream || typeof EventSource === "undefined") return;
+
   let generation = null;
-
-  const stream = new EventSource(API + "/api/events");
+  stream = new EventSource(API + "/api/events");
   stream.onmessage = (ev) => {
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
 
     if (msg.type === "reload") {
+      // Editing panel.html or style.css reloads the shell in place.
       if (generation !== null && msg.generation !== generation) {
         location.reload();
         return;
       }
       generation = msg.generation;
-    } else if (msg.type === "notify" && document.body.dataset.view === "panel") {
-      toast(msg.data.text, msg.data.level);
     }
+    shellHandlers.forEach((fn) => {
+      try { fn(msg); } catch (err) { console.error("[nethos]", err); }
+    });
   };
 }
 
@@ -218,5 +284,4 @@ function toast(text, level) {
 document.addEventListener("DOMContentLoaded", () => {
   if (document.body.dataset.view === "panel") initPanel();
   else initMenu();
-  initLiveReload();
 });

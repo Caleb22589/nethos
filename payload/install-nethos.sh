@@ -58,6 +58,13 @@ if [ "$DO_PACKAGES" -eq 1 ]; then
         python \
         curl \
         git \
+        networkmanager \
+        wpa_supplicant \
+        iwd \
+        usbmuxd \
+        hicolor-icon-theme \
+        adwaita-icon-theme \
+        papirus-icon-theme \
         ttf-dejavu \
         ttf-jetbrains-mono \
         noto-fonts \

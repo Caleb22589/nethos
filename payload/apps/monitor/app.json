@@ -1,0 +1,13 @@
+{
+  "id": "monitor",
+  "name": "Monitor",
+  "description": "Ambient system widget — floats on the desktop, pops out to a window",
+  "icon": "MO",
+  "version": "1.0.0",
+  "categories": ["NETHOS", "System"],
+  "entry": "index.html",
+  "permissions": ["system"],
+  "mode": "widget",
+  "position": "top-right",
+  "window": { "width": 260, "height": 190 }
+}

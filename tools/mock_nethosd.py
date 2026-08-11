@@ -116,13 +116,21 @@ def web_apps():
         except (OSError, ValueError):
             continue
         window = m.get("window") or {}
+        icon = m.get("icon", "")
+        icon_url = ""
+        if icon and os.path.isfile(os.path.join(APPS_DIR, name, icon)):
+            icon_url = "/apps/%s/%s" % (m["id"], icon)
         apps.append({
             "id": m["id"], "name": m.get("name", m["id"]),
-            "comment": m.get("description", ""), "icon": m.get("icon", ""),
+            "comment": m.get("description", ""), "icon": icon,
+            "icon_url": icon_url,
             "version": m.get("version", "0.0.0"),
             "categories": m.get("categories") or ["NETHOS"],
             "entry": m.get("entry", "index.html"),
             "permissions": m.get("permissions") or [],
+            "mode": m.get("mode", "window"),
+            "position": m.get("position", "top-right"),
+            "floating": bool(window.get("floating", False)),
             "width": int(window.get("width", 960)),
             "height": int(window.get("height", 640)),
             "source": "nethos", "terminal": False,

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Monitor — NETHOS</title>
+  <link rel="stylesheet" href="/lib/nethos.css">
+  <script src="/lib/nethos.js"></script>
+  <style>
+    /* A widget is furniture, not a document: tighter, borderless, no scroll. */
+    body { padding: 12px 14px; overflow: hidden; }
+    .row { display: flex; align-items: baseline; gap: 8px; margin-bottom: 9px; }
+    .row .k {
+      font-family: var(--neth-mono); font-size: 10px; letter-spacing: .1em;
+      text-transform: uppercase; color: var(--neth-dim); width: 46px; flex: none;
+    }
+    .row .v { font-family: var(--neth-mono); font-size: 15px; }
+    .head {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+      padding-bottom: 8px; border-bottom: 1px solid var(--neth-line);
+    }
+    .head .title {
+      font-family: var(--neth-mono); font-size: 10px; letter-spacing: .18em;
+      color: var(--neth-accent);
+    }
+    .head button {
+      margin-left: auto; padding: 2px 8px; font-size: 10px;
+      font-family: var(--neth-mono); letter-spacing: .06em;
+    }
+  </style>
+</head>
+<body>
+  <div class="head">
+    <span class="title">MONITOR</span>
+    <button class="neth-btn" id="popout" title="Turn this widget into a real window">POP OUT</button>
+  </div>
+
+  <div class="row"><span class="k">mem</span><span class="v" id="mem">—</span></div>
+  <div class="neth-bar" style="margin:-4px 0 10px"><span id="membar"></span></div>
+  <div class="row"><span class="k">load</span><span class="v" id="load">—</span></div>
+  <div class="row"><span class="k">up</span><span class="v" id="up">—</span></div>
+
+<script>
+(async () => {
+  const os = await nethos.ready();
+
+  // The same page works as an ambient widget and as a normal window; this
+  // just asks the compositor to stop treating it as floating furniture.
+  document.getElementById("popout").addEventListener("click", async () => {
+    await os.window.popOut();
+    os.ui.toast("Now a managed window", "good");
+  });
+
+  async function tick() {
+    const s = await os.system.status();
+    document.getElementById("mem").textContent = s.mem.used_pct + "%";
+    document.getElementById("membar").style.width = s.mem.used_pct + "%";
+    document.getElementById("load").textContent = s.load.toFixed(2);
+    document.getElementById("up").textContent = os.ui.duration(s.uptime);
+  }
+
+  tick();
+  setInterval(tick, 5000);
+})();
+</script>
+</body>
+</html>

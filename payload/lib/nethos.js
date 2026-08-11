@@ -166,13 +166,45 @@
       focus: (id) => post("/api/window", { action: "focus", id }),
       close: (id) => post("/api/window", { action: "close", id }),
       fullscreen: (id) => post("/api/window", { action: "fullscreen", id }),
-      /** Close the window this app is running in. */
-      async closeSelf() {
-        const title = document.title;
+      /** Make a window float above the layout. */
+      float: (id) => post("/api/window", { action: "float", id }),
+      /** Drop a floating window back into the tiling layout. */
+      popOut: (id) => post("/api/window", { action: "popout", id }),
+    },
+
+    /**
+     * This app's own window.
+     *
+     * nethosd tags each window with the NETHOS app it belongs to, so an app can
+     * find itself without guessing from the title.
+     */
+    window: {
+      async self() {
         const all = await nethos.windows.list();
-        const me = all.find((w) => w.title === title);
+        return all.find((w) => w.nethos_app === APP_ID) || null;
+      },
+      async close() {
+        const me = await nethos.window.self();
         if (me) return nethos.windows.close(me.id);
         global.close();
+      },
+      async fullscreen() {
+        const me = await nethos.window.self();
+        if (me) return nethos.windows.fullscreen(me.id);
+      },
+      /**
+       * Turn a widget into an ordinary managed window: it stops floating and
+       * being sticky, and joins the tiling layout like any other program.
+       * Lets one app be an ambient widget that becomes a real window on demand.
+       */
+      async popOut() {
+        const me = await nethos.window.self();
+        if (me) return nethos.windows.popOut(me.id);
+      },
+      /** The inverse: float this window above the layout. */
+      async float() {
+        const me = await nethos.window.self();
+        if (me) return nethos.windows.float(me.id);
       },
     },
 

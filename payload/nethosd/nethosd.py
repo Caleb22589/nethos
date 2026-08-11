@@ -5,27 +5,35 @@ nethosd - the NETHOS shell bridge and app host.
 The NETHOS desktop is written in HTML/CSS/JS and runs inside Chromium. This
 daemon is the only thing standing between that web shell and the real system:
 it serves the shell, the app SDK and every installed NETHOS app, and exposes a
-small JSON API over loopback for the things a web page cannot do on its own --
-enumerate installed applications, launch them, drive the sway compositor's real
-windows, and persist per-app state.
+small JSON API over loopback for the things a web page cannot do on its own.
 
-Deliberate constraints:
-  * stdlib only. No pip, no venv, nothing to break on a pacman -Syu.
-  * binds 127.0.0.1 only.
-  * never executes an arbitrary command string from a page. Launch requests
-    name a .desktop id or a NETHOS app id that must already exist on disk, or a
-    builtin action from a fixed table.
+Performance notes, because they shaped the design:
 
-NOT a security boundary: every local app is served from the same origin and
-talks to the same API, so app "permissions" below are scoping and hygiene, not
-a sandbox. Anything you install can reach anything this daemon exposes.
+  * sway is driven over a persistent IPC socket, not by spawning `swaymsg`.
+    A subprocess per taskbar tick is brutal on a slow machine, and the shell
+    ticks constantly.
+  * window state is push-based. A background thread subscribes to sway's event
+    stream and forwards changes to the shell over SSE, so nothing polls a
+    multi-megabyte window tree on a timer.
+  * the launcher is pre-warmed at session start and toggled with sway's
+    scratchpad, so opening it is a compositor operation rather than a cold
+    Chromium start.
+
+Deliberate constraints: stdlib only, loopback only, and never execute an
+arbitrary command string from a page.
+
+NOT a security boundary: every local app shares one origin and one API, so app
+"permissions" are scoping and hygiene, not a sandbox.
 """
 
+import glob
 import json
 import os
 import queue
 import re
 import shlex
+import socket
+import struct
 import subprocess
 import threading
 import time
@@ -50,22 +58,29 @@ APP_DIRS_XDG = [
     "/usr/share/applications",
 ]
 
-# Fixed table of privileged actions a page may invoke by name.
+ICON_DIRS = [
+    os.path.expanduser("~/.local/share/icons"),
+    "/usr/share/icons",
+    "/usr/share/pixmaps",
+]
+
+# One Chromium profile for the panel, the launcher and every app. Separate
+# profiles mean separate Chromium instances, and a cold start per window is
+# exactly what made the launcher feel broken.
+CHROME_PROFILE = os.path.expanduser("~/.config/nethos-chromium")
+
 BUILTINS = {
     "poweroff": ["systemctl", "poweroff"],
     "reboot": ["systemctl", "reboot"],
     "logout": ["swaymsg", "exit"],
     "lock": ["swaylock", "-f", "-c", "0b0e14"],
     "terminal": ["foot"],
-    "menu-toggle": None,   # handled internally
+    "menu-toggle": None,
 }
 
-# Chromium ignores --class in --app mode and builds its own app_id out of the
-# URL ("chrome-127.0.0.1__panel.html-Default"), so the shell's own surfaces are
-# identified by the page they show rather than by a class we chose.
 PANEL_MARK = "panel.html"
 MENU_MARK = "menu.html"
-MENU_SELECTOR = r'[app_id="^chrome-.*menu\.html.*$"]'
+MENU_CRITERIA = r'[app_id="^chrome-.*menu\.html.*$"]'
 
 CHROME_BASE = [
     "chromium",
@@ -78,9 +93,8 @@ CHROME_BASE = [
     "--disable-features=TranslateUI,MediaRouter",
     "--disable-background-networking",
     "--disable-sync",
+    "--user-data-dir=" + CHROME_PROFILE,
 ]
-
-_app_cache = {"at": 0.0, "apps": []}
 
 
 def is_shell_surface(app_id):
@@ -88,16 +102,126 @@ def is_shell_surface(app_id):
 
 
 # --------------------------------------------------------------------------
-# live reload: generation counter + event fan-out
+# sway IPC
+# --------------------------------------------------------------------------
+
+class SwayIPC:
+    """Minimal i3/sway IPC client over the unix socket.
+
+    Replaces shelling out to swaymsg. The protocol is small: a fixed header of
+    magic + length + type, then a JSON payload.
+    """
+
+    MAGIC = b"i3-ipc"
+    RUN_COMMAND = 0
+    GET_WORKSPACES = 1
+    SUBSCRIBE = 2
+    GET_OUTPUTS = 3
+    GET_TREE = 4
+
+    def __init__(self):
+        self._sock = None
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def socket_path():
+        path = os.environ.get("SWAYSOCK")
+        if path and os.path.exists(path):
+            return path
+        # sway was started before nethosd inherited an environment, or the
+        # session was restarted; fall back to the newest socket for this user.
+        candidates = glob.glob("/run/user/%d/sway-ipc.*.sock" % os.getuid())
+        candidates.sort(key=lambda p: os.stat(p).st_mtime, reverse=True)
+        return candidates[0] if candidates else None
+
+    @classmethod
+    def connect(cls):
+        path = cls.socket_path()
+        if not path:
+            raise OSError("no sway socket")
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(10)
+        sock.connect(path)
+        return sock
+
+    @classmethod
+    def send(cls, sock, mtype, payload=b""):
+        sock.sendall(cls.MAGIC + struct.pack("=II", len(payload), mtype) + payload)
+
+    @staticmethod
+    def recv_exactly(sock, n):
+        buf = b""
+        while len(buf) < n:
+            chunk = sock.recv(n - len(buf))
+            if not chunk:
+                raise OSError("sway closed the connection")
+            buf += chunk
+        return buf
+
+    @classmethod
+    def recv(cls, sock):
+        header = cls.recv_exactly(sock, 14)
+        length, mtype = struct.unpack("=II", header[6:14])
+        body = cls.recv_exactly(sock, length) if length else b"{}"
+        try:
+            return mtype, json.loads(body)
+        except ValueError:
+            return mtype, None
+
+    def request(self, mtype, payload=b""):
+        """Send a request on the shared connection, reconnecting once."""
+        with self._lock:
+            for attempt in (1, 2):
+                try:
+                    if self._sock is None:
+                        self._sock = self.connect()
+                    self.send(self._sock, mtype, payload)
+                    _, data = self.recv(self._sock)
+                    return data
+                except (OSError, struct.error):
+                    try:
+                        if self._sock:
+                            self._sock.close()
+                    except OSError:
+                        pass
+                    self._sock = None
+                    if attempt == 2:
+                        return None
+        return None
+
+    def command(self, cmd):
+        return self.request(self.RUN_COMMAND, cmd.encode())
+
+    def get_tree(self):
+        return self.request(self.GET_TREE)
+
+    def get_outputs(self):
+        return self.request(self.GET_OUTPUTS)
+
+
+SWAY = SwayIPC()
+
+
+def spawn(argv):
+    """Start a detached process. nethosd runs inside the session, so the child
+    inherits WAYLAND_DISPLAY and friends."""
+    try:
+        subprocess.Popen(
+            argv, start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return True
+    except OSError:
+        return False
+
+
+# --------------------------------------------------------------------------
+# events
 # --------------------------------------------------------------------------
 
 class Events:
-    """Broadcast bus for the shell and every open app window.
-
-    This is what makes edits appear without a reboot: bump the generation and
-    every subscribed page reloads itself within milliseconds.
-    """
-
     def __init__(self):
         self.lock = threading.Lock()
         self.subscribers = set()
@@ -134,14 +258,11 @@ class Events:
 
 
 EVENTS = Events()
+_app_cache = {"at": 0.0, "apps": []}
 
 
 def watch_files(paths, interval=1.0):
-    """Poll for changes under the served directories and trigger a reload.
-
-    Polling rather than inotify keeps this stdlib-only. The tree is small
-    (shell + lib + apps), so a 1s stat sweep is cheap even on an emulated CPU.
-    """
+    """Poll the served tree for edits and trigger a live reload."""
     def snapshot():
         stamps = {}
         for root in paths:
@@ -163,50 +284,37 @@ def watch_files(paths, interval=1.0):
             continue
         if current != previous:
             previous = current
-            _app_cache["at"] = 0.0          # manifests may have changed
+            _app_cache["at"] = 0.0
             EVENTS.bump("files-changed")
 
 
-# --------------------------------------------------------------------------
-# sway plumbing
-# --------------------------------------------------------------------------
+def sway_event_loop():
+    """Subscribe to sway and push window changes to the shell.
 
-def sway(*args, capture=True):
-    """Run swaymsg. Returns parsed JSON for -t queries, else raw text."""
-    cmd = ["swaymsg"] + list(args)
-    try:
-        out = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=5, check=False
-        ).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if not capture:
-        return None
-    try:
-        return json.loads(out)
-    except (ValueError, TypeError):
-        return out
-
-
-def spawn(argv):
-    """Start a process detached from nethosd.
-
-    Deliberately not `swaymsg exec` -- routing an argv through sway's IPC means
-    flattening it to a string and having sh re-split it, which silently dropped
-    every argument after the binary name. nethosd is started inside the sway
-    session, so it already carries WAYLAND_DISPLAY/SWAYSOCK.
+    This is what removes the taskbar's polling: the panel no longer asks "what
+    windows exist" every second and a half, it is told when that changes.
     """
-    try:
-        subprocess.Popen(
-            argv, start_new_session=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return True
-    except OSError:
-        return False
+    while True:
+        try:
+            sock = SwayIPC.connect()
+            sock.settimeout(None)
+            SwayIPC.send(sock, SwayIPC.SUBSCRIBE, b'["window","workspace"]')
+            SwayIPC.recv(sock)                      # subscription ack
+            while True:
+                mtype, data = SwayIPC.recv(sock)
+                if not (mtype & 0x80000000):
+                    continue
+                if isinstance(data, dict) and data.get("change") == "new":
+                    apply_window_rules(data.get("container") or {})
+                EVENTS.publish("windows", {})
+        except (OSError, struct.error):
+            EVENTS.publish("disconnected", {})
+            time.sleep(2)
 
+
+# --------------------------------------------------------------------------
+# window model
+# --------------------------------------------------------------------------
 
 def walk_tree(node, out, workspace=None):
     if node is None:
@@ -224,13 +332,14 @@ def walk_tree(node, out, workspace=None):
                 "focused": bool(node.get("focused")),
                 "workspace": workspace,
                 "floating": node.get("type") == "floating_con",
+                "nethos_app": nethos_app_for(app_id),
             })
     for kid in (node.get("nodes") or []) + (node.get("floating_nodes") or []):
         walk_tree(kid, out, workspace)
 
 
 def list_windows():
-    tree = sway("-t", "get_tree")
+    tree = SWAY.get_tree()
     if not isinstance(tree, dict):
         return []
     out = []
@@ -248,12 +357,126 @@ def walk_all_app_ids(node, out):
 
 
 def output_size(default=(1440, 900)):
-    outputs = sway("-t", "get_outputs")
+    outputs = SWAY.get_outputs()
     if isinstance(outputs, list) and outputs:
         rect = outputs[0].get("rect") or {}
         if rect.get("width") and rect.get("height"):
             return rect["width"], rect["height"]
     return default
+
+
+def nethos_app_for(app_id):
+    """Which NETHOS app, if any, a Chromium app_id belongs to.
+
+    Chromium builds app_id from the URL, so /apps/system/index.html becomes
+    chrome-127.0.0.1__apps_system_index.html-Default. Rather than parse that
+    fragile string, check it against the app ids we already know about.
+    """
+    if not app_id or "__apps_" not in app_id:
+        return ""
+    for app in load_apps():
+        if app.get("source") == "nethos" and ("_apps_%s_" % app["id"]) in app_id:
+            return app["id"]
+    return ""
+
+
+def apply_window_rules(container):
+    """Place a newly mapped NETHOS app window according to its manifest.
+
+    sway's own for_window rules cannot read our manifests, so window vs widget
+    placement is decided here, on the sway event stream.
+    """
+    app_id = container.get("app_id") or ""
+    which = nethos_app_for(app_id)
+    if not which:
+        return
+    app = find_app(which)
+    if not app:
+        return
+
+    con_id = container.get("id")
+    if not isinstance(con_id, int):
+        return
+    sel = "[con_id=%d]" % con_id
+
+    if app.get("mode") == "widget":
+        # A widget is furniture: it floats above the desktop, follows you
+        # between workspaces, has no border, and never takes focus.
+        ow, oh = output_size()
+        w, h = app["width"], app["height"]
+        margin = 12
+        panel_h = 44
+        positions = {
+            "top-right":     (ow - w - margin, panel_h + margin),
+            "top-left":      (margin, panel_h + margin),
+            "bottom-right":  (ow - w - margin, oh - h - margin),
+            "bottom-left":   (margin, oh - h - margin),
+            "center":        ((ow - w) // 2, (oh - h) // 2),
+        }
+        x, y = positions.get(app.get("position", "top-right"), positions["top-right"])
+        SWAY.command(
+            "%s floating enable, border none, sticky enable, "
+            "resize set width %d px height %d px, move absolute position %d %d"
+            % (sel, w, h, x, y)
+        )
+    elif app.get("floating"):
+        SWAY.command(
+            "%s floating enable, border pixel 2, "
+            "resize set width %d px height %d px, move position center"
+            % (sel, app["width"], app["height"])
+        )
+    else:
+        # A real window: leave it to the tiling layout like any other program.
+        SWAY.command("%s border pixel 2" % sel)
+
+
+# --------------------------------------------------------------------------
+# icons
+# --------------------------------------------------------------------------
+
+_icon_index = {"built": False, "map": {}, "lock": threading.Lock()}
+ICON_EXT_RANK = {".svg": 3, ".png": 2, ".xpm": 1}
+
+
+def build_icon_index():
+    """Index every icon file once, best format and largest size winning.
+
+    Walking the icon themes on demand for each app would be slow; doing it once
+    in the background costs a second at startup and makes lookups a dict hit.
+    """
+    index = {}
+    for base in ICON_DIRS:
+        if not os.path.isdir(base):
+            continue
+        for dirpath, _dirs, files in os.walk(base):
+            # crude size hint from paths like .../128x128/apps/foo.png
+            size = 0
+            m = re.search(r"/(\d+)x\1/", dirpath)
+            if m:
+                size = int(m.group(1))
+            if "scalable" in dirpath:
+                size = 1024
+            for name in files:
+                stem, ext = os.path.splitext(name)
+                rank = ICON_EXT_RANK.get(ext.lower())
+                if not rank:
+                    continue
+                score = (rank, size)
+                current = index.get(stem)
+                if current is None or score > current[0]:
+                    index[stem] = (score, os.path.join(dirpath, name))
+    with _icon_index["lock"]:
+        _icon_index["map"] = {k: v[1] for k, v in index.items()}
+        _icon_index["built"] = True
+
+
+def resolve_icon(name):
+    if not name:
+        return None
+    if os.path.isabs(name) and os.path.isfile(name):
+        return name
+    with _icon_index["lock"]:
+        return _icon_index["map"].get(name)
 
 
 # --------------------------------------------------------------------------
@@ -264,7 +487,6 @@ SAFE_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 
 def app_root(app_id):
-    """Resolve an app id to its directory, user apps taking precedence."""
     if not SAFE_ID.match(app_id or ""):
         return None
     for base in APP_DIRS_WEB:
@@ -275,9 +497,8 @@ def app_root(app_id):
 
 
 def read_manifest(directory):
-    path = os.path.join(directory, "app.json")
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(os.path.join(directory, "app.json"), "r", encoding="utf-8") as fh:
             manifest = json.load(fh)
     except (OSError, ValueError):
         return None
@@ -287,15 +508,30 @@ def read_manifest(directory):
         return None
 
     window = manifest.get("window") or {}
+    mode = manifest.get("mode", "window")
+    if mode not in ("window", "widget"):
+        mode = "window"
+
+    icon = manifest.get("icon", "")
+    icon_url = ""
+    # A manifest icon can be a file shipped with the app, or one or two
+    # characters used as a text tile.
+    if icon and os.path.isfile(os.path.join(directory, icon)):
+        icon_url = "/apps/%s/%s" % (manifest["id"], icon)
+
     return {
         "id": manifest["id"],
         "name": manifest.get("name") or manifest["id"],
         "comment": manifest.get("description", ""),
-        "icon": manifest.get("icon", ""),
+        "icon": icon,
+        "icon_url": icon_url,
         "version": manifest.get("version", "0.0.0"),
         "categories": manifest.get("categories") or ["NETHOS"],
         "entry": manifest.get("entry", "index.html"),
         "permissions": manifest.get("permissions") or [],
+        "mode": mode,
+        "position": manifest.get("position", "top-right"),
+        "floating": bool(window.get("floating", False)),
         "width": int(window.get("width", 960)),
         "height": int(window.get("height", 640)),
         "source": "nethos",
@@ -320,26 +556,21 @@ def load_web_apps():
 
 
 def launch_web_app(app):
-    width, height = app["width"], app["height"]
     url = "http://%s:%d/apps/%s/%s" % (HOST, PORT, app["id"], app["entry"])
     return spawn(CHROME_BASE + [
         "--app=" + url,
-        "--window-size=%d,%d" % (width, height),
-        # One shared profile for every app window: separate profiles would mean
-        # a separate Chromium instance per app, which this VM cannot afford.
-        "--user-data-dir=" + os.path.expanduser("~/.config/nethos-chromium-apps"),
+        "--window-size=%d,%d" % (app["width"], app["height"]),
     ])
 
 
 # --------------------------------------------------------------------------
-# .desktop parsing
+# .desktop apps
 # --------------------------------------------------------------------------
 
 EXEC_FIELD_CODES = re.compile(r"%[fFuUdDnNickvm]")
 
 
 def parse_desktop(path):
-    """Minimal .desktop reader: only the [Desktop Entry] group, no locale merging."""
     entry, in_group = {}, False
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
@@ -364,20 +595,22 @@ def parse_desktop(path):
     if not entry.get("Exec") or not entry.get("Name"):
         return None
 
+    icon = entry.get("Icon", "")
     return {
         "id": os.path.basename(path),
         "name": entry["Name"],
         "comment": entry.get("Comment", ""),
-        "icon": entry.get("Icon", ""),
+        "icon": icon,
+        "icon_url": "/api/icon/" + urllib.parse.quote(icon) if resolve_icon(icon) else "",
         "categories": [c for c in entry.get("Categories", "").split(";") if c],
         "terminal": entry.get("Terminal", "").lower() == "true",
+        "mode": "window",
         "source": "desktop",
         "_exec": entry["Exec"],
     }
 
 
 def load_apps(force=False):
-    """Every launchable thing: NETHOS web apps first, then .desktop entries."""
     now = time.time()
     if not force and now - _app_cache["at"] < 30 and _app_cache["apps"]:
         return _app_cache["apps"]
@@ -421,11 +654,14 @@ def launch_desktop_app(app):
 
 
 # --------------------------------------------------------------------------
-# menu window
+# launcher
 # --------------------------------------------------------------------------
 
-def menu_is_open():
-    tree = sway("-t", "get_tree")
+MENU_STATE = {"open": False}
+
+
+def menu_window_exists():
+    tree = SWAY.get_tree()
     if not isinstance(tree, dict):
         return False
     found = []
@@ -433,23 +669,43 @@ def menu_is_open():
     return any(MENU_MARK in a for a in found)
 
 
+def menu_prewarm():
+    """Open the launcher once and park it in the scratchpad.
+
+    Opening it later is then a compositor operation instead of a Chromium
+    start, which is the difference between instant and several seconds.
+    """
+    if menu_window_exists():
+        return
+    ow, oh = output_size()
+    spawn(CHROME_BASE + [
+        "--app=http://%s:%d/menu.html" % (HOST, PORT),
+        "--window-size=%d,%d" % (int(ow * 0.78), int(oh * 0.74)),
+    ])
+
+
 def menu_toggle(force=None):
-    open_now = menu_is_open()
-    want = (not open_now) if force is None else force
-    if want and not open_now:
-        ow, oh = output_size()
-        spawn(CHROME_BASE + [
-            "--app=http://%s:%d/menu.html" % (HOST, PORT),
-            "--window-size=%d,%d" % (int(ow * 0.78), int(oh * 0.74)),
-            "--user-data-dir=" + os.path.expanduser("~/.config/nethos-chromium-menu"),
-        ])
-    elif not want and open_now:
-        sway(MENU_SELECTOR, "kill")
+    want = (not MENU_STATE["open"]) if force is None else bool(force)
+
+    if not menu_window_exists():
+        # Lost it (crash, or the session restarted): bring one back.
+        menu_prewarm()
+        MENU_STATE["open"] = True
+        EVENTS.publish("menu", {"open": True})
+        return True
+
+    if want:
+        SWAY.command("%s scratchpad show, move position center" % MENU_CRITERIA)
+    else:
+        SWAY.command("%s move scratchpad" % MENU_CRITERIA)
+
+    MENU_STATE["open"] = want
+    EVENTS.publish("menu", {"open": want})
     return want
 
 
 # --------------------------------------------------------------------------
-# per-app storage
+# storage
 # --------------------------------------------------------------------------
 
 def storage_path(app_id):
@@ -479,7 +735,7 @@ def storage_write(app_id, data):
     try:
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2)
-        os.replace(tmp, path)     # atomic: never leave a half-written file
+        os.replace(tmp, path)
         return True
     except (OSError, TypeError):
         return False
@@ -514,13 +770,11 @@ def status():
     uptime = float(raw.split()[0]) if raw else 0.0
 
     battery = None
-    bat_dir = "/sys/class/power_supply/BAT0"
-    if os.path.isdir(bat_dir):
-        cap = read_first(os.path.join(bat_dir, "capacity"))
-        battery = {
-            "percent": int(cap) if cap and cap.isdigit() else None,
-            "state": read_first(os.path.join(bat_dir, "status")) or "Unknown",
-        }
+    for bat in sorted(glob.glob("/sys/class/power_supply/BAT*")):
+        cap = read_first(os.path.join(bat, "capacity"))
+        battery = {"percent": int(cap) if cap and cap.isdigit() else None,
+                   "state": read_first(os.path.join(bat, "status")) or "Unknown"}
+        break
 
     return {
         "time": time.time(),
@@ -549,20 +803,19 @@ MIME = {
     ".svg": "image/svg+xml",
     ".png": "image/png",
     ".jpg": "image/jpeg",
+    ".xpm": "image/x-xpixmap",
     ".webp": "image/webp",
     ".woff2": "font/woff2",
-    ".ttf": "font/ttf",
 }
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "nethosd/2.0"
+    server_version = "nethosd/3.0"
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
         pass
 
-    # -- helpers ---------------------------------------------------------
     def send_json(self, obj, code=200):
         body = json.dumps(obj).encode()
         self.send_response(code)
@@ -579,13 +832,7 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, OSError):
             return {}
 
-    def send_file(self, base, rel, fallback=None):
-        rel = urllib.parse.unquote(rel).lstrip("/") or (fallback or "")
-        full = os.path.normpath(os.path.join(base, rel))
-        if not full.startswith(os.path.realpath(base)) and not full.startswith(base):
-            return self.send_error(403)
-        if os.path.isdir(full):
-            full = os.path.join(full, "index.html")
+    def send_path(self, full, cache=False):
         if not os.path.isfile(full):
             return self.send_error(404)
         try:
@@ -595,14 +842,25 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error(404)
         self.send_response(200)
         self.send_header("Content-Type",
-                         MIME.get(os.path.splitext(full)[1], "application/octet-stream"))
+                         MIME.get(os.path.splitext(full)[1].lower(),
+                                  "application/octet-stream"))
         self.send_header("Content-Length", str(len(body)))
-        # Never cache: hot reload is worthless if the browser serves stale files.
-        self.send_header("Cache-Control", "no-store, must-revalidate")
+        # Icons never change under us; everything else must not go stale or
+        # hot reload silently stops working.
+        self.send_header("Cache-Control",
+                         "public, max-age=86400" if cache else "no-store, must-revalidate")
         self.end_headers()
         self.wfile.write(body)
 
-    # -- server-sent events ----------------------------------------------
+    def send_file(self, base, rel, fallback=""):
+        rel = urllib.parse.unquote(rel).lstrip("/") or fallback
+        full = os.path.normpath(os.path.join(base, rel))
+        if not full.startswith(base):
+            return self.send_error(403)
+        if os.path.isdir(full):
+            full = os.path.join(full, "index.html")
+        self.send_path(full)
+
     def serve_events(self):
         q = EVENTS.subscribe()
         try:
@@ -618,14 +876,13 @@ class Handler(BaseHTTPRequestHandler):
                     msg = q.get(timeout=20)
                     self.wfile.write(("data: %s\n\n" % msg).encode())
                 except queue.Empty:
-                    self.wfile.write(b": keepalive\n\n")   # keep proxies/clients alive
+                    self.wfile.write(b": keepalive\n\n")
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
             EVENTS.unsubscribe(q)
 
-    # -- routes ----------------------------------------------------------
     def do_GET(self):
         route = urllib.parse.urlparse(self.path).path
 
@@ -641,10 +898,15 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/status":
             return self.send_json(status())
         if route == "/api/menu":
-            return self.send_json({"open": menu_is_open()})
+            return self.send_json({"open": MENU_STATE["open"]})
         if route == "/api/version":
             return self.send_json({"generation": EVENTS.generation,
                                    "version": read_first("/etc/nethos-release") or "unknown"})
+        if route.startswith("/api/icon/"):
+            path = resolve_icon(urllib.parse.unquote(route[len("/api/icon/"):]))
+            if not path:
+                return self.send_error(404)
+            return self.send_path(path, cache=True)
         if route.startswith("/api/storage/"):
             return self.send_json({"data": storage_read(route[len("/api/storage/"):])})
 
@@ -652,8 +914,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_file(LIB_DIR, route[len("/lib/"):])
 
         if route.startswith("/apps/"):
-            rest = route[len("/apps/"):]
-            app_id, _, sub = rest.partition("/")
+            app_id, _, sub = route[len("/apps/"):].partition("/")
             root = app_root(app_id)
             if not root:
                 return self.send_error(404)
@@ -664,9 +925,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self):
         route = urllib.parse.urlparse(self.path).path
         if route.startswith("/api/storage/"):
-            app_id = route[len("/api/storage/"):]
             data = self.read_json()
-            ok = storage_write(app_id, data.get("data", {}))
+            ok = storage_write(route[len("/api/storage/"):], data.get("data", {}))
             return self.send_json({"ok": ok}, 200 if ok else 400)
         return self.send_error(404)
 
@@ -698,11 +958,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "bad id"}, 400)
             sel = "[con_id=%d]" % wid
             if action == "focus":
-                sway(sel, "focus")
+                SWAY.command("%s focus" % sel)
             elif action == "close":
-                sway(sel, "kill")
+                SWAY.command("%s kill" % sel)
             elif action == "fullscreen":
-                sway(sel, "fullscreen", "toggle")
+                SWAY.command("%s fullscreen toggle" % sel)
+            elif action == "popout":
+                # Turn a widget into an ordinary managed window.
+                SWAY.command("%s floating disable, sticky disable, border pixel 2, focus" % sel)
+            elif action == "float":
+                SWAY.command("%s floating enable, border pixel 2" % sel)
             else:
                 return self.send_json({"error": "bad action"}, 400)
             return self.send_json({"ok": True})
@@ -715,18 +980,39 @@ class Handler(BaseHTTPRequestHandler):
                                    "generation": EVENTS.bump(data.get("reason", "manual"))})
 
         if route == "/api/notify":
-            EVENTS.publish("notify", {
-                "text": str(data.get("text", ""))[:300],
-                "level": data.get("level", "info"),
-            })
+            EVENTS.publish("notify", {"text": str(data.get("text", ""))[:300],
+                                      "level": data.get("level", "info")})
             return self.send_json({"ok": True})
 
         return self.send_error(404)
 
 
+def prewarm_when_ready(timeout=90):
+    """Park a launcher window in the scratchpad once the panel is up.
+
+    Waiting for the panel matters: Chromium's first window owns the shared
+    profile, and we want that to be the panel rather than a hidden launcher.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        tree = SWAY.get_tree()
+        if isinstance(tree, dict):
+            found = []
+            walk_all_app_ids(tree, found)
+            if any(PANEL_MARK in a for a in found):
+                time.sleep(2)
+                menu_prewarm()
+                return
+        time.sleep(1)
+
+
 def main():
     os.chdir("/")
     os.makedirs(STATE_DIR, exist_ok=True)
+
+    threading.Thread(target=build_icon_index, daemon=True).start()
+    threading.Thread(target=sway_event_loop, daemon=True).start()
+    threading.Thread(target=prewarm_when_ready, daemon=True).start()
 
     watched = [d for d in [SHELL_DIR, LIB_DIR] + APP_DIRS_WEB if os.path.isdir(d)]
     if watched:

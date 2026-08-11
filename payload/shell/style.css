@@ -204,6 +204,13 @@ body[data-view="menu"] { background: var(--bg); }
   font-size: 14px;
   font-weight: 700;
   color: var(--accent);
+  overflow: hidden;
+}
+/* Real application icons resolved from the icon themes by nethosd. */
+.app .icon img {
+  width: 26px; height: 26px;
+  object-fit: contain;
+  display: block;
 }
 .app.app-nethos .icon { color: var(--accent); border-color: var(--accent-dk); }
 .app .meta { min-width: 0; }
