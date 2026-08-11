@@ -146,7 +146,7 @@ if [ ! -f /etc/nethos/update.conf ]; then
     cat >/etc/nethos/update.conf <<'EOF'
 # Where `nethos-update` pulls system files from. Change REPO_URL to your own
 # fork and NETHOS updates from your repository instead.
-REPO_URL="__REPO_URL__"
+REPO_URL="https://github.com/Caleb22589/nethos.git"
 BRANCH="main"
 EOF
 fi
