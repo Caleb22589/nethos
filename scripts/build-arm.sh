@@ -115,7 +115,10 @@ trap 'rm -rf "$STAGE"' EXIT
 
 mkdir -p "$STAGE/payload"
 cp -R "$ROOT/payload/." "$STAGE/payload/"
-cp "$ALARM_TARBALL" "$STAGE/alarm.tar.gz"
+# The 830MB rootfs tarball is NOT put on the seed ISO. It was, and the guest
+# could not read it back even though macOS could -- rather than fight ISO9660's
+# naming and size rules, the tarball is attached as a raw disk and read as a
+# stream. No filesystem, nothing to misinterpret, and no second download.
 
 cat > "$STAGE/bootstrap.sh" <<'BOOTSTRAP'
 #!/bin/bash
@@ -154,10 +157,22 @@ mount "${TARGET}2" "$ROOTFS"
 mkdir -p "$ROOTFS/boot"
 mount "${TARGET}1" "$ROOTFS/boot"
 
-echo "--- unpacking Arch Linux ARM ---"
-# --numeric-owner and -p keep the ownership and modes the rootfs ships with;
-# losing them is what makes a hand-built Arch root fail to boot.
-tar -xpf "$SRC/alarm.tar.gz" -C "$ROOTFS" --numeric-owner
+echo "--- seed contents ---"
+ls -la "$SRC"
+
+echo "--- unpacking Arch Linux ARM from /dev/vdc ---"
+# The tarball is a raw disk rather than a file: gzip reads the stream and stops
+# at its end, ignoring the disk padding after it. --numeric-owner and -p keep
+# the ownership and modes the rootfs ships with; losing them is what makes a
+# hand-built Arch root fail to boot.
+[ -b /dev/vdc ] || { echo "FATAL: /dev/vdc (rootfs tarball) missing"; lsblk; exit 1; }
+mkdir -p "$ROOTFS/dev/pts" "$ROOTFS/proc" "$ROOTFS/sys"
+gzip -dc < /dev/vdc 2>/dev/null | tar -xp --numeric-owner -C "$ROOTFS" || true
+
+# Trust the result, not the exit status: a stream that ends in disk padding
+# makes tar grumble even when every file landed correctly.
+[ -x "$ROOTFS/usr/bin/pacman" ] || { echo "FATAL: rootfs did not unpack"; ls -la "$ROOTFS"; exit 1; }
+echo "rootfs unpacked: $(du -sh "$ROOTFS" 2>/dev/null | cut -f1)"
 
 echo "--- preparing the chroot ---"
 mount --bind /dev  "$ROOTFS/dev"
@@ -277,6 +292,7 @@ qemu-system-aarch64 \
     -drive if=pflash,format=raw,file="$FW_VARS" \
     -drive file="$BUILDER_WORK",if=virtio,format=qcow2 \
     -drive file="$DISK",if=virtio,format=qcow2 \
+    -drive file="$ALARM_TARBALL",if=virtio,format=raw,readonly=on \
     -drive file="$SEED",if=none,id=seed,format=raw,media=cdrom,readonly=on \
     -device virtio-scsi-pci -device scsi-cd,drive=seed \
     -device virtio-net-pci,netdev=net0 \
