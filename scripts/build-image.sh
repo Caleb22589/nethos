@@ -177,6 +177,7 @@ echo "--- inside the NETHOS root ---"
 # systemd refuses to boot without a machine-id; empty is the documented way to
 # say "generate one on first boot".
 : > /etc/machine-id
+mkdir -p /etc/systemd/system /etc/systemd/network /etc/tmpfiles.d /etc/modules-load.d
 ln -sfn /usr/lib/systemd/system/multi-user.target /etc/systemd/system/default.target
 
 # /sbin/init is what the kernel executes. Our layout merges sbin into bin, so

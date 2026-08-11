@@ -606,11 +606,28 @@ class Transaction:
                 os.path.join(self.db.root, CACHE_DIR)) else None)
         try:
             pkg.extract(staging)
-            files = []
-            for base, _dirs, names in os.walk(staging):
+            files, directories = [], []
+            for base, dirnames, names in os.walk(staging):
+                for d in dirnames:
+                    directories.append(os.path.relpath(os.path.join(base, d), staging))
                 for n in names:
                     full = os.path.join(base, n)
                     files.append(os.path.relpath(full, staging))
+
+            # Create directories first, including the empty ones. A package
+            # shipping an empty directory means it: systemd ships
+            # /etc/systemd/system empty and expects to find it later. Walking
+            # only for files silently drops those, and the breakage surfaces
+            # much later as something unrelated failing to write there.
+            for rel in sorted(directories):
+                target = os.path.join(self.db.root, rel)
+                if os.path.isdir(target):
+                    continue                  # already there, or a symlink to it
+                os.makedirs(target, exist_ok=True)
+                try:
+                    shutil.copystat(os.path.join(staging, rel), target)
+                except OSError:
+                    pass
 
             for rel in files:
                 src = os.path.join(staging, rel)
