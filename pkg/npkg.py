@@ -687,11 +687,27 @@ class Transaction:
             self.say(f"  removed {name} ({len(files)} files)")
         return names
 
-    def _run_script(self, script: str, name: str, phase: str) -> None:
+    def _run_script(self, script: str, name: str, phase: str,
+                    timeout: int = 60) -> None:
         import subprocess
         self.say(f"  running {phase} script for {name}")
-        result = subprocess.run(["/bin/sh", "-c", script], cwd=self.db.root,
-                                capture_output=True, text=True)
+        env = dict(os.environ,
+                   DEBIAN_FRONTEND="noninteractive",
+                   DEBCONF_NONINTERACTIVE_SEEN="true",
+                   PATH="/usr/bin:/usr/local/bin")
+        try:
+            result = subprocess.run(
+                ["/bin/sh", "-c", script], cwd=self.db.root,
+                capture_output=True, text=True, env=env,
+                # A hook must never be able to wait on input: debconf's postinst
+                # blocks on stdin forever, which stalls the whole install with
+                # no error and no output. And a hook that runs away is capped
+                # rather than allowed to hang the transaction.
+                stdin=subprocess.DEVNULL, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            print(f"warning: {phase} script for {name} timed out after "
+                  f"{timeout}s and was killed", file=sys.stderr)
+            return
         if result.returncode != 0:
             # A failed hook is a warning, not a rollback: the files are already
             # in place and removing them would be more destructive than useful.

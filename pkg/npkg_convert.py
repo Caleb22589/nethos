@@ -242,7 +242,8 @@ def strip_epoch(version: str) -> str:
     return version.split(":", 1)[1] if ":" in version else version
 
 
-def convert_deb(path: str, outdir: str, layout: str = "native") -> str:
+def convert_deb(path: str, outdir: str, layout: str = "native",
+                scripts: bool = False) -> str:
     entries = read_ar(path)
 
     control_name = next((n for n in entries if n.startswith("control.tar")), None)
@@ -257,8 +258,8 @@ def convert_deb(path: str, outdir: str, layout: str = "native") -> str:
         if member is None:
             raise NpkgError(f"{path}: no control file")
         fields = parse_control(tar.extractfile(member).read().decode("utf-8", "replace"))
-        scripts = {}
-        for hook in ("postinst", "prerm"):
+        hooks = {}
+        for hook in ("postinst", "prerm") if scripts else ():
             m = next((m for m in tar.getmembers()
                       if os.path.basename(m.name) == hook), None)
             if m:
@@ -266,7 +267,7 @@ def convert_deb(path: str, outdir: str, layout: str = "native") -> str:
                 # Only carry over plain shell; anything else is Debian-specific
                 # machinery that will not mean the same thing here.
                 if blob.lstrip().startswith("#!/bin/sh"):
-                    scripts[hook] = blob
+                    hooks[hook] = blob
 
     staging = tempfile.mkdtemp(prefix="npkg-deb-")
     try:
@@ -296,8 +297,8 @@ def convert_deb(path: str, outdir: str, layout: str = "native") -> str:
             provides=deb_requirements(fields.get("Provides", "")),
             conflicts=deb_requirements(fields.get("Conflicts", "")),
             replaces=deb_requirements(fields.get("Replaces", "")),
-            post_install=scripts.get("postinst", ""),
-            pre_remove=scripts.get("prerm", ""),
+            post_install=hooks.get("postinst", ""),
+            pre_remove=hooks.get("prerm", ""),
         )
         return _write(manifest, staging, outdir, source="deb", layout=layout)
     finally:
@@ -399,9 +400,10 @@ def _write(manifest: Manifest, staging: str, outdir: str, source: str,
     return out
 
 
-def convert(path: str, outdir: str = "packages", layout: str = "native") -> str:
+def convert(path: str, outdir: str = "packages", layout: str = "native",
+            scripts: bool = False) -> str:
     if path.endswith(".deb"):
-        return convert_deb(path, outdir, layout)
+        return convert_deb(path, outdir, layout, scripts)
     if ".pkg.tar" in path:
         return convert_arch(path, outdir, layout)
     raise NpkgError(f"{path}: unrecognised package (expected .deb or .pkg.tar.*)")
