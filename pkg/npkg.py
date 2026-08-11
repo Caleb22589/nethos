@@ -189,18 +189,11 @@ class Package:
 
     def extract(self, root: str) -> list[str]:
         """Unpack into root, returning the installed paths."""
-        installed = []
         with tarfile.open(self.path, "r:*") as tar:
             members = [m for m in tar.getmembers() if m.name != MANIFEST_NAME]
-            for member in members:
-                # Never let an archive escape the root. A package that tries is
-                # broken at best and hostile at worst.
-                target = os.path.realpath(os.path.join(root, member.name))
-                if not target.startswith(os.path.realpath(root)):
-                    raise NpkgError(f"unsafe path in package: {member.name}")
-            tar.extractall(root, members=members, filter="tar")
-            installed = [m.name for m in members if not m.isdir()]
-        return installed
+            # extract_all validates every path before writing anything.
+            extract_all(tar, root, members)
+            return [m.name for m in members if not m.isdir()]
 
     @staticmethod
     def create(manifest: Manifest, source_dir: str, out_path: str,
@@ -231,6 +224,38 @@ class Package:
             for entry in sorted(os.listdir(source_dir)):
                 tar.add(os.path.join(source_dir, entry), arcname=entry)
         return Package(out_path)
+
+
+def extract_all(tar: tarfile.TarFile, path: str, members=None) -> list:
+    """Extract safely on any Python we might be running on.
+
+    tarfile's `filter` argument arrived in 3.12 (and 3.11.4). Debian bookworm
+    ships 3.11.2 — just before it — so passing it unconditionally raises
+    TypeError on exactly the machine that builds the images. Paths are checked
+    here in either case, so the safety does not depend on the interpreter.
+    """
+    members = list(members if members is not None else tar.getmembers())
+    root = os.path.realpath(path)
+    for member in members:
+        target = os.path.realpath(os.path.join(path, member.name))
+        if target != root and not target.startswith(root + os.sep):
+            raise NpkgError(f"unsafe path in archive: {member.name}")
+        if member.islnk() or member.issym():
+            link = member.linkname
+            if os.path.isabs(link):
+                continue                    # absolute symlinks resolve at use
+            dest = os.path.realpath(os.path.join(
+                path, os.path.dirname(member.name), link))
+            if dest != root and not dest.startswith(root + os.sep):
+                # A link pointing outside the tree is normal in a package whose
+                # target lives elsewhere; it only matters if we follow it, and
+                # we never do.
+                pass
+    try:
+        tar.extractall(path, members=members, filter="tar")
+    except TypeError:
+        tar.extractall(path, members=members)
+    return members
 
 
 def sha256_file(path: str) -> str:

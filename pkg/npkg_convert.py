@@ -41,7 +41,7 @@ import sys
 import tarfile
 import tempfile
 
-from npkg import Manifest, Package, NpkgError
+from npkg import Manifest, Package, NpkgError, extract_all
 
 # Metadata files that belong to the source format, not to the package payload.
 ARCH_META = {".PKGINFO", ".MTREE", ".BUILDINFO", ".INSTALL", ".CHANGELOG"}
@@ -130,7 +130,7 @@ def convert_arch(path: str, outdir: str, layout: str = "native") -> str:
             members = [m for m in tar.getmembers()
                        if m.name.lstrip("./").split("/")[0] not in ARCH_META
                        and m.name not in ARCH_META]
-            tar.extractall(staging, members=members, filter="tar")
+            extract_all(tar, staging, members)
 
             version_full = fields.get("pkgver", ["0"])[0]
             version, _, release = version_full.rpartition("-")
@@ -272,7 +272,7 @@ def convert_deb(path: str, outdir: str, layout: str = "native") -> str:
     try:
         with tarfile.open(fileobj=_decompress_blob(entries[data_name], data_name),
                           mode="r:*") as tar:
-            tar.extractall(staging, filter="tar")
+            extract_all(tar, staging)
 
         version_full = strip_epoch(fields.get("Version", "0"))
         version, _, release = version_full.rpartition("-")

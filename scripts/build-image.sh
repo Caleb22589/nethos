@@ -1,0 +1,272 @@
+#!/bin/bash
+# Build a bootable NETHOS disk image from converted Debian packages.
+#
+#     scripts/build-image.sh
+#     scripts/run.sh --arch aarch64
+#
+# The work happens inside a throwaway Debian arm64 VM under HVF, because it has
+# to happen as root: setuid bits survive a tarball but file *ownership* does
+# not, and a sudo owned by anyone but root refuses to run. macOS also cannot
+# mount ext4, so there is nowhere to install to from the host.
+#
+#     Debian arm64 (builder, HVF, root)
+#          ├── partitions /dev/vdb: ESP + ext4 root
+#          ├── npkg-bootstrap: resolve, download, convert, install
+#          ├── chroot: initramfs, machine-id, fstab, default target
+#          └── GRUB for arm64-efi, then powers off
+#
+# Options:
+#   --clean          start from an empty disk
+#   --size 20G       disk size (default 20G)
+#   --user NAME      the account to create (default neth)
+#   --sets "a b"     package sets (default "base system kernel")
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BUILD="$ROOT/build"
+DISK="$BUILD/nethos-arm.qcow2"
+BUILDER="$BUILD/debian-arm64-builder.qcow2"
+BUILDER_WORK="$BUILD/debian-arm64-work.qcow2"
+SEED="$BUILD/seed-image.iso"
+BUILDER_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-arm64.qcow2"
+
+DISK_SIZE="20G"
+USERNAME="neth"
+SETS="base system kernel"
+CLEAN=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --clean) CLEAN=1; shift ;;
+        --size) DISK_SIZE="${2:?}"; shift 2 ;;
+        --user) USERNAME="${2:?}"; shift 2 ;;
+        --sets) SETS="${2:?}"; shift 2 ;;
+        -h|--help) sed -n '2,24p' "$0" | sed 's/^# \?//'; exit 0 ;;
+        *) echo "unknown option: $1" >&2; exit 2 ;;
+    esac
+done
+
+say() { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
+die() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+command -v qemu-system-aarch64 >/dev/null || die "brew install qemu"
+FW_CODE=/opt/homebrew/share/qemu/edk2-aarch64-code.fd
+[ -f "$FW_CODE" ] || FW_CODE=/usr/local/share/qemu/edk2-aarch64-code.fd
+[ -f "$FW_CODE" ] || die "edk2-aarch64-code.fd not found"
+
+ACCEL=tcg; CPU=max
+if [ "$(uname -m)" = "arm64" ] && [ "$(sysctl -n kern.hv_support 2>/dev/null)" = "1" ]; then
+    ACCEL=hvf; CPU=host
+fi
+
+mkdir -p "$BUILD"
+[ "$CLEAN" -eq 1 ] && rm -f "$DISK"
+
+if [ ! -f "$BUILDER" ]; then
+    say "Downloading the Debian arm64 builder (~430 MB, once)"
+    curl -fL --retry 3 -o "$BUILDER" "$BUILDER_URL"
+fi
+
+say "Creating the target disk ($DISK_SIZE)"
+rm -f "$DISK"
+qemu-img create -f qcow2 "$DISK" "$DISK_SIZE" >/dev/null
+
+rm -f "$BUILDER_WORK"
+qemu-img create -f qcow2 -F qcow2 -b "$BUILDER" "$BUILDER_WORK" >/dev/null
+qemu-img resize "$BUILDER_WORK" 16G >/dev/null
+
+FW_VARS="$BUILD/edk2-arm-vars-build.fd"
+rm -f "$FW_VARS"
+dd if=/dev/zero of="$FW_VARS" bs=1m count=64 2>/dev/null
+
+# --------------------------------------------------------------------------
+say "Staging npkg and the build plan"
+STAGE="$(mktemp -d "${TMPDIR:-/tmp}/nethos-image.XXXXXX")"
+trap 'rm -rf "$STAGE"' EXIT
+
+mkdir -p "$STAGE/pkg"
+cp "$ROOT"/pkg/*.py "$STAGE/pkg/"
+
+cat > "$STAGE/build.sh" <<BOOTSTRAP
+#!/bin/bash
+# Runs as root inside the builder. /dev/vdb is the target disk.
+set -euo pipefail
+exec > >(tee -a /var/log/nethos-image.log) 2>&1
+echo "=== NETHOS image build starting \$(date -u) ==="
+
+USERNAME="$USERNAME"
+SETS="$SETS"
+BOOTSTRAP
+cat >> "$STAGE/build.sh" <<'BOOTSTRAP'
+
+export DEBIAN_FRONTEND=noninteractive
+
+# Debian's cloud image fires unattended-upgrades and apt-daily on first boot,
+# and they hold the apt lock. Without this the build blocks on the lock at 0%
+# CPU forever, which looks exactly like a hang.
+echo "--- quieting Debian's background apt jobs ---"
+systemctl stop apt-daily.service apt-daily-upgrade.service \
+    unattended-upgrades.service 2>/dev/null || true
+systemctl disable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+pkill -9 -f unattended-upgrade 2>/dev/null || true
+# Belt and braces: wait for the lock rather than failing if something else
+# grabbed it first.
+APT="apt-get -o DPkg::Lock::Timeout=600 -y -qq"
+
+echo "--- installing build tools ---"
+$APT update
+$APT install parted dosfstools e2fsprogs python3 >/dev/null
+echo "--- build tools ready ---"
+
+SRC=/mnt/src
+mkdir -p "$SRC"
+mount -o ro /dev/sr0 "$SRC" || { echo "FATAL: cannot mount seed"; exit 1; }
+
+TARGET=/dev/vdb
+echo "--- partitioning ---"
+wipefs -a "$TARGET"
+parted -s "$TARGET" mklabel gpt
+parted -s "$TARGET" mkpart ESP fat32 1MiB 513MiB
+parted -s "$TARGET" set 1 esp on
+parted -s "$TARGET" mkpart root ext4 513MiB 100%
+sleep 2; partprobe "$TARGET" || true; sleep 2
+
+mkfs.fat -F32 -n NETHOSEFI "${TARGET}1"
+mkfs.ext4 -q -F -L NETHOS "${TARGET}2"
+
+R=/mnt/target
+mkdir -p "$R"
+mount "${TARGET}2" "$R"
+mkdir -p "$R/boot"
+# The ESP is mounted before the bootstrap so the kernel package lands its
+# vmlinuz straight onto it, with no copying afterwards.
+mount "${TARGET}1" "$R/boot"
+
+echo "--- bootstrapping (as root, so ownership and setuid are real) ---"
+python3 "$SRC/pkg/npkg_bootstrap.py" "$R" \
+    $(for s in $SETS; do printf -- '--set %s ' "$s"; done) \
+    --arch arm64 --user "$USERNAME" --work /var/tmp/nethos-work
+
+echo "--- preparing the chroot ---"
+mkdir -p "$R/dev/pts" "$R/proc" "$R/sys" "$R/run"
+mount --bind /dev "$R/dev"
+mount --bind /dev/pts "$R/dev/pts"
+mount -t proc proc "$R/proc"
+mount -t sysfs sys "$R/sys"
+mount -t tmpfs tmpfs "$R/run"
+cp /etc/resolv.conf "$R/etc/resolv.conf"
+
+ROOT_UUID=$(blkid -s UUID -o value "${TARGET}2")
+ESP_UUID=$(blkid -s UUID -o value "${TARGET}1")
+cat > "$R/etc/fstab" <<FSTAB
+UUID=$ROOT_UUID  /      ext4  rw,relatime  0 1
+UUID=$ESP_UUID   /boot  vfat  rw,relatime,fmask=0022,dmask=0022  0 2
+FSTAB
+
+cat > "$R/root/inside.sh" <<'INSIDE'
+#!/bin/bash
+set -euo pipefail
+echo "--- inside the NETHOS root ---"
+
+# systemd refuses to boot without a machine-id; empty is the documented way to
+# say "generate one on first boot".
+: > /etc/machine-id
+ln -sfn /usr/lib/systemd/system/multi-user.target /etc/systemd/system/default.target
+
+# /sbin/init is what the kernel executes. Our layout merges sbin into bin, so
+# make sure the name it looks for resolves.
+if [ ! -e /usr/bin/init ] && [ -e /usr/lib/systemd/systemd ]; then
+    ln -sf /usr/lib/systemd/systemd /usr/bin/init
+fi
+
+# Users that systemd's own units expect to exist.
+for u in systemd-network:998 systemd-resolve:997 systemd-timesync:996; do
+    name=${u%:*}; id=${u#*:}
+    grep -q "^$name:" /etc/passwd || \
+        echo "$name:x:$id:$id:$name:/:/usr/bin/nologin" >> /etc/passwd
+    grep -q "^$name:" /etc/group || echo "$name:x:$id:" >> /etc/group
+done
+
+ldconfig || true
+
+KVER=$(ls /usr/lib/modules 2>/dev/null | head -1)
+echo "kernel modules: ${KVER:-none}"
+[ -n "$KVER" ] || { echo "FATAL: no kernel installed"; exit 1; }
+
+echo "--- initramfs ---"
+# Without this the kernel cannot reach the root filesystem: Debian builds
+# virtio_blk as a module, so something has to load it before the pivot.
+update-initramfs -c -k "$KVER" || {
+    echo "update-initramfs failed; falling back to a bare initramfs"
+    mkinitramfs -o "/boot/initrd.img-$KVER" "$KVER"
+}
+ls -la /boot/ | head
+
+echo "--- bootloader ---"
+grub-install --target=arm64-efi --efi-directory=/boot \
+             --bootloader-id=NETHOS --removable --no-nvram
+cat > /etc/default/grub <<GRUB
+GRUB_DEFAULT=0
+GRUB_TIMEOUT=1
+GRUB_DISTRIBUTOR="NETHOS"
+GRUB_CMDLINE_LINUX_DEFAULT="console=tty0 console=ttyAMA0,115200"
+GRUB_CMDLINE_LINUX=""
+GRUB_TERMINAL="console serial"
+GRUB
+grub-mkconfig -o /boot/grub/grub.cfg
+grep -c "^menuentry" /boot/grub/grub.cfg | xargs echo "grub menu entries:"
+
+date -u +'%Y-%m-%dT%H:%M:%SZ' > /etc/nethos-release
+echo "--- done inside ---"
+INSIDE
+
+chmod +x "$R/root/inside.sh"
+chroot "$R" /root/inside.sh
+rm -f "$R/root/inside.sh"
+
+echo "--- sanity ---"
+ls -l "$R/usr/bin/sudo" "$R/usr/bin/su"
+ls "$R/boot" | head
+sync
+umount -R "$R" || true
+echo "=== NETHOS image build finished $(date -u) ==="
+poweroff
+BOOTSTRAP
+
+cat > "$STAGE/user-data" <<'USERDATA'
+#cloud-config
+datasource_list: [ NoCloud, None ]
+runcmd:
+  - [ mkdir, -p, /mnt/seed ]
+  - [ mount, -o, ro, /dev/sr0, /mnt/seed ]
+  - [ bash, /mnt/seed/build.sh ]
+USERDATA
+printf 'instance-id: nethos-image\nlocal-hostname: nethos-builder\n' > "$STAGE/meta-data"
+
+rm -f "$SEED"
+hdiutil makehybrid -quiet -iso -joliet -default-volume-name CIDATA -o "$SEED" "$STAGE"
+
+# --------------------------------------------------------------------------
+say "Building (accel=$ACCEL). Downloads and installs a full base system."
+
+qemu-system-aarch64 \
+    -name nethos-image-builder \
+    -machine virt,accel="$ACCEL",highmem=on \
+    -cpu "$CPU" -smp 4 -m 4096 \
+    -drive if=pflash,format=raw,readonly=on,file="$FW_CODE" \
+    -drive if=pflash,format=raw,file="$FW_VARS" \
+    -drive file="$BUILDER_WORK",if=virtio,format=qcow2 \
+    -drive file="$DISK",if=virtio,format=qcow2 \
+    -drive file="$SEED",if=none,id=seed,format=raw,media=cdrom,readonly=on \
+    -device virtio-scsi-pci -device scsi-cd,drive=seed \
+    -device virtio-net-pci,netdev=net0 \
+    -netdev user,id=net0,hostfwd=tcp::2223-:22 \
+    -device virtio-rng-pci \
+    -nographic
+
+rm -f "$BUILDER_WORK"
+say "Built: $DISK"
+echo
+echo "  Boot it:  scripts/run.sh --arch aarch64"
+echo "  Log in:   $USERNAME / nethos   (root also nethos)"
+echo

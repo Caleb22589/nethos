@@ -55,11 +55,20 @@ SETS = {
         "debianutils", "hostname", "init-system-helpers",
     ],
     "system": [
-        "systemd", "systemd-sysv", "dbus", "kmod", "libcap2-bin",
+        # systemd is pid 1. systemd-sysv is what provides /sbin/init, which is
+        # what the kernel actually looks for.
+        "systemd", "systemd-sysv", "udev", "dbus", "kmod", "libcap2-bin",
         "iproute2", "iputils-ping", "netbase", "ca-certificates",
-        "nano", "less", "procps", "psmisc",
+        "nano", "less", "procps", "psmisc", "e2fsprogs", "mount",
     ],
-    "kernel": ["linux-image-arm64"],
+    "kernel": [
+        # {arch} is substituted for the Debian architecture being built.
+        "linux-image-{arch}",
+        # Debian's arm64 kernel has virtio as modules, so the root device is
+        # unreachable without an initramfs to load them first.
+        "initramfs-tools", "busybox", "zstd",
+        "grub-efi-{arch}-bin", "grub-common", "grub2-common", "efibootmgr",
+    ],
     "net": ["network-manager", "wpasupplicant", "iw", "wireless-regdb"],
 }
 
@@ -366,7 +375,7 @@ def bootstrap(root: str, sets: list[str], arch: str, username: str,
     for name in sets:
         if name not in SETS:
             raise NpkgError(f"unknown set '{name}' (have: {', '.join(SETS)})")
-        seeds += SETS[name]
+        seeds += [s.format(arch=arch) for s in SETS[name]]
 
     print(f"\n== resolving {len(seeds)} seed packages ==")
     resolved = archive.resolve(seeds)
