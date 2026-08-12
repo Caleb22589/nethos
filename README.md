@@ -1,228 +1,157 @@
 # NETHOS
 
-A custom Arch Linux distribution whose desktop environment is written in HTML,
-CSS and JavaScript and rendered by Chromium — running as a real Wayland desktop,
-not a kiosk.
+A Linux distribution with its own package manager and a desktop written in
+HTML and CSS.
 
-## The idea
-
-NETHOS is **hybrid**: sway (a wlroots compositor) does the actual window
-management, while the visible desktop — the panel, the taskbar, the application
-launcher — is a web page. Native Linux applications open as ordinary managed
-windows, and the web shell can see and control them.
-
-The piece that makes this work is `nethosd`, a small stdlib-only Python daemon:
-
-```
-  Chromium (--app, app_id=nethos-panel)   <- the desktop you see
-        |  fetch() over 127.0.0.1:7777
-        v
-  nethosd                                 <- the bridge
-        |  swaymsg / .desktop files / /proc
-        v
-  sway + the real system
-```
-
-The shell is just a web page, so **you customise the desktop by editing HTML and
-CSS**. No recompiling, no widget toolkit.
-
-### Why a daemon instead of letting the page do it
-
-A web page cannot list installed applications, spawn processes, or move windows.
-`nethosd` provides exactly those operations and nothing more. It deliberately
-**never executes an arbitrary command string from the page** — a launch request
-names a `.desktop` id that must already exist on disk, or one of a fixed table of
-builtins (`poweroff`, `reboot`, `logout`, `lock`, `terminal`, `menu-toggle`). It
-binds loopback only. So a hostile page inside the shell can do no more than a
-user clicking through the application menu.
-
-## This repository is the operating system
-
-`payload/` is not a copy of the system — it *is* the system. A machine running
-NETHOS tracks this repo and applies it with `nethos-update`, so shipping a
-change to your OS is a `git push`.
-
-```
-nethos/
-  scripts/
-    build.sh              build the disk + seed ISO on macOS
-    run.sh                boot the VM under QEMU
-  cloud-init/             first-boot provisioning
-  payload/                >>> THE OPERATING SYSTEM <<<
-    install-nethos.sh     stock Arch -> NETHOS; --files-only for updates
-    nethosd/nethosd.py    the bridge: API, app host, live-reload engine
-    shell/                THE DESKTOP: panel.html, menu.html, style.css, shell.js
-    lib/nethos.js         THE APP SDK
-    lib/nethos.css        the design system apps build on
-    apps/system/          example app: live dashboard using most of the SDK
-    apps/template/        the starting point `nethos-app new` copies
-    bin/nethos-app        create / list / run apps
-    bin/nethos-reload     apply changes to a running system, no reboot
-    bin/nethos-update     pull this repo and apply it
-    bin/nethos-session    starts the shell inside sway
-    systemd/nethosd.service
-    sway/config           compositor rules
-  docs/
-    APPS.md               how to build apps  <- start here
-    UPDATING.md           how updates and hot reload work
-  build/                  images (large, gitignored)
-```
-
-## Building on top
+It boots on real x86-64 and arm64 hardware, installs, persists, and manages
+itself. Packages come from Debian's archive; almost nothing else does.
 
 ```bash
-nethos-app new notes "Notes"        # scaffold; appears in the launcher at once
-$EDITOR ~/.local/share/nethos/apps/notes/index.html
+scripts/build-x86.sh      # a bootable image, ~3 minutes with KVM
+scripts/make-usb.sh       # a flashable disk image
+scripts/run.sh            # or try it in a VM first
 ```
 
-Save the file and the running window reloads itself in under a second. An app
-is a web page plus a manifest:
+Log in as `neth` / `nethos`.
 
-```html
-<link rel="stylesheet" href="/lib/nethos.css">
-<script src="/lib/nethos.js"></script>
-<script>
-  const os = await nethos.ready();
-  await os.system.notify("hello from my app");
-  const windows = await os.windows.list();   // real sway windows
-  await os.storage.set("count", 1);          // real file on disk
-</script>
+---
+
+## What is actually different here
+
+Plenty of distributions are a familiar base with new defaults. These are the
+parts of NETHOS that are not that.
+
+### Dependencies resolve by soname, not by package name
+
+Package names disagree between distributions and always will:
+
+```
+Debian  libssl3        Arch  openssl      Fedora  openssl-libs
 ```
 
-Full reference: **[docs/APPS.md](docs/APPS.md)**.
+They all install a file that calls itself `libssl.so.3`, and every binary
+linked against it asks for exactly that string. So npkg indexes what is
+*installed* rather than what somebody called it. At install time it reads the
+ELF `DT_SONAME` of every library it lays down, and a requirement is satisfied
+by, in order:
 
-## Changing the system without rebooting
+1. an installed package of that name at an acceptable version
+2. a virtual name something declares in `Provides`
+3. a **soname** carried by an installed library
+4. a **file path** owned by an installed package
 
-| You changed | Command | Cost |
-| --- | --- | --- |
-| Shell, an app, the CSS | *nothing — just save* | < 1s, automatic |
-| Force it now | `nethos-reload` | instant |
-| `nethosd` / the API | `nethos-reload --daemon` | ~1s |
-| sway config | `swaymsg reload` | instant |
-| Packages, branding | `nethos-update --packages` | minutes |
-
-`nethosd` watches the served tree, bumps a generation counter, and pushes an
-event over SSE; every open surface is subscribed and reloads itself. Details in
-**[docs/UPDATING.md](docs/UPDATING.md)**.
-
-## Updating from this repository
+Three and four are why a Fedora package can install onto a Debian-derived root.
+Verified end to end: `tree` from **Rocky Linux**, converted from `.rpm`,
+requiring `libc.so.6` and `ld-linux-aarch64.so.1`, installed onto a root built
+entirely from Debian packages — its requirements resolved against Debian's
+`libc6`, and `npkg check` confirmed all 282 binaries across the installed set
+could find every library they ask for.
 
 ```bash
-nethos-update              # fetch, install, restart daemon, reload windows
-nethos-update --status     # installed vs available
-nethos-update --ref v2     # any branch, tag or commit — also how you roll back
+npkg provides libc.so.6      # libc.so.6 is provided by libc6
+npkg check                   # every binary can find its libraries
 ```
 
-Point `/etc/nethos/update.conf` at your own fork and your machines track you.
+### One tool reads three package formats, from the format specs
 
-## Building and running
+`.deb`, Arch's `.pkg.tar.zst`, and `.rpm` are all read directly — an `ar`
+archive, a tarball with a `.PKGINFO`, and a lead plus binary headers plus a
+compressed cpio. No `dpkg`, no `rpm`, no `libalpm`, no `alien`. Pure Python
+standard library, because the system has to be able to read its own packages
+before any of those tools exist on it.
 
 ```bash
-cd nethos
-./scripts/build.sh
-./scripts/run.sh
+npkg convert firefox.deb
+npkg convert firefox.pkg.tar.zst
+npkg convert firefox.rpm
 ```
 
-`build.sh` copies the **official Arch Linux x86_64 cloud image** into a 40 GB
-working disk and bakes a cloud-init seed ISO carrying the payload. `run.sh` boots
-it with a GUI window plus the serial console in your terminal.
+`docs/MULTIDISTRO.md` is honest about where this works and where it does not.
 
-First boot runs the installer automatically (`nethos-install.service`), then
-reboots straight into the NETHOS desktop. Watch it with:
+### The desktop is HTML and CSS, and they are real desktop surfaces
+
+Not a browser in kiosk mode, and not Electron. The panel, dock, launcher and
+desktop are genuine `wlr-layer-shell` surfaces hosted by WebKitGTK: the
+compositor reserves space for the panel's exclusive zone, they never tile,
+never take focus by accident, and never appear in the window list. They are
+panels, drawn with CSS.
+
+Window management is real too — the taskbar lists and controls actual windows
+over sway's IPC.
+
+### The whole desktop reloads live
 
 ```bash
-./scripts/run.sh --console
+nethos-reload
 ```
 
-Log in as **`neth`** / **`nethos`** (root password is also `nethos`). Change both —
-they are throwaway VM credentials, not a security posture.
+Every surface reloads instantly. No session restart, no logout. Edit
+`/usr/share/nethos/shell/style.css`, run that, and the change is on screen.
+The shell is the part of the system that is *meant* to be edited.
 
-### A word on speed
+### It can tell you what it is doing
 
-This host is Apple Silicon and the guest is x86_64, so QEMU runs in **full TCG
-emulation** — there is no hardware acceleration for that pairing, and there
-cannot be. The first-boot install (a full `pacman -Syu` plus Chromium) is the
-worst of it and takes a long while. Once installed, the desktop is usable but
-noticeably slow; Chromium is doing software rendering on an emulated CPU.
+```bash
+nethos-doctor
+```
 
-If responsiveness ever matters more than being byte-for-byte official Arch, the
-same payload runs on Arch Linux ARM at near-native speed under Apple's hypervisor.
+Prints whether the daemon is reachable, how many descriptors it holds, seconds
+since each surface last reported in, recent JavaScript errors, the recent
+request log, and which web process is burning CPU. A desktop that reports its
+own health is rarer than it should be — see `docs/INTERNALS.md` for the
+several days of guesswork that produced it.
 
-## Keys
+### Packages install without running maintainer scripts
 
-| Key | Action |
+npkg never executes a package's `postinst`. Installing a package cannot run
+arbitrary code as root.
+
+That is a real safety property with a real cost, and the cost is documented
+rather than hidden: ten separate things Debian does from maintainer scripts had
+to be reimplemented in the build, and each one first appeared as a completely
+unrelated-looking bug. `docs/INTERNALS.md` lists all ten.
+
+---
+
+## What it is built from, honestly
+
+- **Debian's binary packages and kernel.** NETHOS is Debian-derived, the way
+  Ubuntu and Mint are. Building from source is a different project.
+- **sway** as the compositor. Hyprland is not packaged in Debian at all, and of
+  the packaged wlroots compositors only sway exposes the IPC socket the panel
+  and dock need. Blur and rounded window corners are the price.
+- **WebKitGTK** for the shell, **Chromium** as the browser.
+
+## Layout
+
+```
+pkg/npkg.py            the package manager
+pkg/npkg_convert.py    .deb and Arch conversion, and the Arch relayout
+pkg/npkg_rpm.py        .rpm reading
+pkg/npkg_elf.py        DT_SONAME / DT_NEEDED - the capability index
+pkg/npkg_bootstrap.py  building a root filesystem from nothing
+pkg/npkg_service.py    enabling systemd units without systemctl
+payload/               the desktop: shell, nethosd, nethos-view, apps
+scripts/               build, run, and flash
+docs/                  everything below
+```
+
+The filesystem is Arch-shaped: merged `/usr`, Debian's multiarch triplet
+flattened away, `sbin` merged into `bin`, `wheel` for administrators.
+
+## Documentation
+
+| | |
 | --- | --- |
-| `Super`+`D` / `Super`+`Space` | Toggle the launcher |
-| `Super`+`Return` | Terminal (foot) |
-| `Super`+`Q` | Close window |
-| `Super`+`Arrows` | Move focus |
-| `Super`+`Shift`+`Arrows` | Move window |
-| `Super`+`F` | Fullscreen |
-| `Super`+`1..4` | Switch workspace |
-| `Super`+`R` | Resize mode |
+| `docs/INTERNALS.md` | how it works, and the bugs that shaped it |
+| `docs/PACKAGES.md` | npkg in use |
+| `docs/MULTIDISTRO.md` | cross-distribution packages, including the limits |
+| `docs/APPS.md` | writing apps for the shell |
+| `docs/SYSTEM.md` | the system layout |
+| `docs/UPDATING.md` | updating from the repository |
+| `docs/HANDOFF.md` | current state and open problems |
 
-## Customising the desktop
+## Status
 
-Everything visible lives in `/usr/share/nethos/shell/` on the guest.
-
-```bash
-sudo nano /usr/share/nethos/shell/style.css   # then re-open the panel
-swaymsg '[app_id="nethos-panel"] kill' && nethos-session &
-```
-
-The colour system is the `:root` block at the top of `style.css`; the sway
-config reuses the same hex values for window borders so the two read as one
-system.
-
-### nethosd API
-
-| Method | Endpoint | Purpose |
-| --- | --- | --- |
-| `GET` | `/api/apps` | installed applications (parsed `.desktop`) |
-| `GET` | `/api/windows` | live sway windows |
-| `GET` | `/api/status` | clock, load, memory, battery |
-| `GET` | `/api/menu` | is the launcher open |
-| `POST` | `/api/launch` | `{"id": "foot.desktop"}` or `{"builtin": "reboot"}` |
-| `POST` | `/api/window` | `{"action": "focus\|close\|fullscreen", "id": 12}` |
-| `POST` | `/api/menu` | `{"open": true\|false}` |
-
-Adding a widget to the panel is: add an endpoint to `nethosd.py`, then render it
-in `shell.js`.
-
-## Notes from bringing this up
-
-Four things bit during the first build. They are all fixed in the payload, but
-they are the kind of thing that will bite again if you change that code:
-
-1. **`install -d -o user a/b` only chowns the leaf.** A root-owned `~/.config`
-   left behind by the installer makes Chromium fail to resolve its crashpad
-   database path and abort at startup with `SIGTRAP` — a spectacularly
-   misleading symptom for a permissions bug. The installer now creates each
-   level explicitly and chowns the home directory at the end.
-2. **Chromium ignores `--class` in `--app` mode.** It derives its own app_id
-   from the URL (`chrome-127.0.0.1__panel.html-Default`), so the sway rules and
-   `nethosd` both key off the page name instead.
-3. **A Wayland client sizes itself.** `resize set` from sway is undone the
-   moment Chromium reasserts its own size, so the panel and launcher pass
-   `--window-size` instead. Position still comes from sway, and must be `move
-   absolute position` — plain `move position` is workspace-relative and lands
-   below the reserved top gap.
-4. **Don't route an argv through `swaymsg exec`.** It gets flattened to a
-   string and re-split by `sh`, which silently dropped every argument after
-   `chromium`. `nethosd` spawns processes directly instead; it is started by
-   sway, so it already has the session environment.
-
-`grim` and `epiphany` are also present in the running VM — they were installed
-while diagnosing the above (`grim` takes the screenshots). Neither is part of
-the distro definition, so a clean rebuild will not include them.
-
-## Developing the shell without booting the VM
-
-The shell is ordinary web code, so it can be driven against a fake backend on
-your Mac — far faster than iterating inside an emulated VM:
-
-```bash
-python3 tools/mock_nethosd.py payload/shell
-```
-
-Then open <http://127.0.0.1:7777/panel.html> or `/menu.html`.
+Boots and runs on real hardware. Not finished. `docs/HANDOFF.md` keeps the
+current list of what is known to be broken.
