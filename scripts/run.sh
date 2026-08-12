@@ -37,6 +37,7 @@ while [ $# -gt 0 ]; do
         --arch) ARCH="${2:?--arch needs x86_64 or aarch64}"; shift 2 ;;
         --console) CONSOLE=1; shift ;;
         --reset-uefi) RESET_UEFI=1; shift ;;
+        --no-gl) NO_GL=1; shift ;;
         -h|--help) sed -n '2,20p' "$0" | sed 's/^# \?//'; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
@@ -75,6 +76,19 @@ case "$(uname -s)" in
     *)      DISP=$(pick_display gtk sdl) ;;
 esac
 
+# Hardware GL for the guest, when every link in the chain is present: a GL
+# capable virtio device in this QEMU, virglrenderer on the host, and a display
+# backend that can hand over a GL context. This is the single biggest thing
+# available to NETHOS performance -- without it sway composites and WebKit
+# renders every page through llvmpipe on the CPU.
+GL=0
+if [ "${NO_GL:-0}" != "1" ] && [ "$CONSOLE" -eq 0 ]; then
+    if "$QEMU_BIN" -device help 2>/dev/null | grep -q "virtio-vga-gl\|virtio-gpu-gl-pci" \
+       && ls /usr/lib*/libvirglrenderer.so* /usr/lib/*/libvirglrenderer.so* >/dev/null 2>&1; then
+        GL=1
+    fi
+fi
+
 if [ "$CONSOLE" -eq 1 ]; then
     DISPLAY_ARGS=(-display none)
 elif [ -z "$DISP" ]; then
@@ -84,8 +98,22 @@ elif [ -z "$DISP" ]; then
   Or run headless on the serial console:  $0 --console"
 elif [ "$DISP" = "cocoa" ]; then
     DISPLAY_ARGS=(-display cocoa,show-cursor=on)
+elif [ "$GL" -eq 1 ]; then
+    DISPLAY_ARGS=(-display "$DISP,gl=on")
 else
     DISPLAY_ARGS=(-display "$DISP")
+fi
+
+# The video device has to match: virtio-vga-gl is the one that carries GL
+# through to the host, and pairing gl=on with a plain virtio-vga gets you a
+# window with no acceleration and no complaint about it.
+if [ "$GL" -eq 1 ]; then
+    X86_VIDEO=(-device virtio-vga-gl,xres=1600,yres=1000)
+    ARM_VIDEO=(-device virtio-gpu-gl-pci,xres=1600,yres=1000)
+    say "GPU: virgl enabled (hardware GL in the guest)"
+else
+    X86_VIDEO=(-device virtio-vga,xres=1440,yres=900)
+    ARM_VIDEO=(-device virtio-gpu-pci,xres=1600,yres=1000)
 fi
 
 NET=(-device virtio-net-pci,netdev=net0
@@ -143,7 +171,7 @@ Build it with:  scripts/build-arm.sh"
         -drive if=pflash,format=raw,readonly=on,file="$FW_CODE" \
         -drive if=pflash,format=raw,file="$FW_VARS" \
         -drive file="$ARM_DISK",if=virtio,format=qcow2,cache=writeback,discard=unmap \
-        -device virtio-gpu-pci,xres=1600,yres=1000 \
+        "${ARM_VIDEO[@]}" \
         -device qemu-xhci -device usb-kbd -device usb-tablet \
         -device virtio-rng-pci \
         "${NET[@]}" \
@@ -225,7 +253,7 @@ Add it to the search list in $0"
         -drive if=pflash,format=raw,readonly=on,file="$FW_CODE" \
         -drive if=pflash,format=raw,file="$FW_VARS" \
         -drive file="$X86_NPKG_DISK",if=virtio,format=qcow2,cache=writeback,discard=unmap \
-        -device virtio-vga,xres=1440,yres=900 \
+        "${X86_VIDEO[@]}" \
         -device virtio-rng-pci \
         -usb -device usb-tablet -device usb-kbd \
         "${NET[@]}" \
@@ -251,7 +279,7 @@ exec qemu-system-x86_64 \
     -drive file="$X86_DISK",if=virtio,format=qcow2,cache=writeback,discard=unmap \
     -drive file="$SEED",if=none,id=seed,format=raw,media=cdrom,readonly=on \
     -device ide-cd,drive=seed \
-    -device virtio-vga,xres=1440,yres=900 \
+    "${X86_VIDEO[@]}" \
     -device virtio-rng-pci \
     -usb -device usb-tablet -device usb-kbd \
     "${NET[@]}" \

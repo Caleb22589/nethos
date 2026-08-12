@@ -105,6 +105,15 @@ SETS = {
         "gir1.2-gtk4layershell-1.0", "libgtk4-layer-shell0",
         "gir1.2-webkit-6.0", "libwebkitgtk-6.0-4",
 
+        # Mesa, named rather than left to arrive as somebody's dependency.
+        # These carry the guest half of virgl: with QEMU's virtio-vga-gl and
+        # virglrenderer on the host, libgl1-mesa-dri provides the virtio_gpu
+        # driver that turns the guest's GL into the host GPU's. Without it
+        # everything falls back to llvmpipe on the CPU and the acceleration is
+        # present on the host but unused, which is indistinguishable from not
+        # having set it up at all.
+        "libgl1-mesa-dri", "libegl-mesa0", "libglx-mesa0", "mesa-utils",
+
         # a real browser, and the everyday applications
         "chromium", "foot", "thunar", "mousepad", "imv", "htop",
         "wl-clipboard", "brightnessctl", "xdg-utils",
