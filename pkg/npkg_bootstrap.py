@@ -247,8 +247,20 @@ class DebianArchive:
     def download(self, fields: dict, outdir: str) -> str:
         filename = fields["Filename"]
         target = os.path.join(outdir, os.path.basename(filename))
+
+        # A cached file is only usable if it is the whole file. An interrupted
+        # download leaves a short .deb behind, and "does it exist" then keeps
+        # it forever: conversion fails with "Compressed file ended before the
+        # end-of-stream marker was reached", the package is skipped with a
+        # warning nobody reads, and it is missing from every image built from
+        # that cache afterwards. The archive tells us the size, so check it.
+        want = int(fields.get("Size", 0) or 0)
         if os.path.isfile(target):
-            return target
+            if not want or os.path.getsize(target) == want:
+                return target
+            say(f"  re-fetching {os.path.basename(filename)} "
+                f"({os.path.getsize(target)} bytes, expected {want})")
+            os.remove(target)
         os.makedirs(outdir, exist_ok=True)
         url = f"{self.mirror}/{filename}"
         tmp = target + ".part"
@@ -258,6 +270,13 @@ class DebianArchive:
             try:
                 with urllib.request.urlopen(url, timeout=120) as resp, open(tmp, "wb") as fh:
                     shutil.copyfileobj(resp, fh)
+                # A connection closed early gives a short file and no
+                # exception at all, so retrying on errors alone is not
+                # enough -- that is how a truncated .deb reaches the cache
+                # and stays there. Check the length the archive promised.
+                got = os.path.getsize(tmp)
+                if want and got != want:
+                    raise OSError(f"truncated: got {got} bytes, expected {want}")
                 os.replace(tmp, target)
                 return target
             except (urllib.error.URLError, OSError) as exc:
