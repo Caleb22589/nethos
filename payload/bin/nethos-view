@@ -41,6 +41,9 @@ Pages can talk back:
 
 import json
 import os
+import urllib.request
+import time
+import threading
 import sys
 
 # gtk4-layer-shell has to be loaded before GTK touches Wayland. When GTK4 is
@@ -384,6 +387,43 @@ class App(Gtk.Application):
         # view wakes it. So the shell's periodic work is driven from here: the
         # page exposes window.nethosTick and we call it.
         GLib.timeout_add_seconds(3, self._tick)
+        threading.Thread(target=self._events, daemon=True).start()
+
+    def _events(self):
+        """Hold the one event stream, outside the browser's connection pool.
+
+        WebKit shares a single network process across every surface, so the
+        handful of connections it allows per host are shared too -- and
+        /api/events never returns. With one stream per surface the pool was
+        full before the shell fetched anything, and every later request queued
+        in the browser without ever being sent. nethosd's log showed them never
+        arriving, which is what identified the queue as client-side.
+
+        One connection here, forwarded into every page, costs the pages none.
+        """
+        url = os.environ.get("NETHOS_API", "http://127.0.0.1:7777") + "/api/events"
+        while True:
+            try:
+                with urllib.request.urlopen(url, timeout=None) as stream:
+                    for raw in stream:
+                        line = raw.decode("utf-8", "replace").strip()
+                        if not line.startswith("data:"):
+                            continue
+                        payload = line[5:].strip()
+                        if payload:
+                            GLib.idle_add(self._deliver, payload)
+            except Exception:                 # noqa: BLE001 - nethosd restarts
+                time.sleep(2)
+
+    def _deliver(self, payload):
+        script = "window.nethosEvent && window.nethosEvent(%s);" % payload
+        for surface in self.surfaces:
+            try:
+                surface.view.evaluate_javascript(script, -1, None, None, None,
+                                                 None, None)
+            except Exception:                 # noqa: BLE001
+                pass
+        return False
 
     def _tick(self):
         for surface in self.surfaces:

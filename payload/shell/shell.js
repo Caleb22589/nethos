@@ -406,9 +406,25 @@ function initDesktop() {
 let stream = null;
 const handlers = new Set();
 
+// Events arrive from nethos-view, not over a connection of our own.
+//
+// WebKit runs one network process for every surface, so the ~6 connections per
+// host are shared across the whole shell -- and /api/events never returns. Four
+// surfaces each holding a stream left almost nothing for actual requests, and
+// every fetch after the first handful queued forever: the clock stopped, the
+// widgets stopped, and button POSTs never left the browser. nethosd's log shows
+// them never arriving, which is what told us the queue was on this side.
+//
+// nethos-view holds a single stream outside the browser and calls this. One
+// connection for the whole desktop instead of one per surface.
+window.nethosEvent = function (msg) {
+  handlers.forEach((fn) => { try { fn(msg); } catch (e) { console.error(e); } });
+};
+
 function onEvent(handler) {
   handlers.add(handler);
-  if (stream || typeof EventSource === "undefined") return;
+  return;                       // no EventSource; see window.nethosEvent above
+  /* eslint-disable no-unreachable */
   // Not from inside a widget iframe. /api/events never returns, so every
   // document that opens one holds a connection for the life of the session,
   // and a browser allows only about six per host. The desktop carries three
@@ -430,6 +446,7 @@ function onEvent(handler) {
     }
     handlers.forEach((fn) => { try { fn(msg); } catch (e) { console.error(e); } });
   };
+  /* eslint-enable no-unreachable */
 }
 
 function toast(text, level) {
