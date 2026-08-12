@@ -519,6 +519,22 @@ def install_desktop(root: str, payload: str, username: str) -> None:
                  f"ExecStart=-/usr/bin/agetty --autologin {username} "
                  "--noclear %I $TERM\n")
 
+    # ...and getty@tty1 itself, which nothing else turns on. systemd's own
+    # getty-generator only covers the console named by console= on the kernel
+    # command line -- here that is ttyAMA0, so the serial getty starts and the
+    # graphical one does not. The tty1 instance normally comes from `systemctl
+    # preset` in Debian's postinst, which we do not run, so the drop-in above
+    # would patch a service that never starts and .bash_profile would never run.
+    #
+    # Written as a symlink rather than `systemctl enable`: getty@ is a template
+    # unit, and enabling it means exactly this symlink.
+    wants = os.path.join(root, "etc/systemd/system/getty.target.wants")
+    os.makedirs(wants, exist_ok=True)
+    link = os.path.join(wants, "getty@tty1.service")
+    if os.path.lexists(link):
+        os.remove(link)
+    os.symlink("/usr/lib/systemd/system/getty@.service", link)
+
 
 def setup_pam(root: str) -> None:
     """Write the PAM stacks Debian would have generated.
