@@ -419,6 +419,17 @@ if command -v update-mime-database >/dev/null; then
     update-mime-database /usr/share/mime >/dev/null 2>&1 || true
 fi
 
+# Chromium, like WebKit, draws nothing when its GPU compositor is broken --
+# verified on real hardware, where plain `chromium` gave a blank window and
+# `chromium --disable-gpu` rendered correctly. Debian's launcher sources
+# /etc/chromium.d/*, so this covers every way it can be started.
+mkdir -p /etc/chromium.d
+cat > /etc/chromium.d/nethos <<'CHROMEFLAGS'
+# NETHOS: the GPU compositor cannot be trusted on the hardware this runs on.
+# Remove this file to get acceleration back once your driver is known good.
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-gpu --disable-gpu-compositing"
+CHROMEFLAGS
+
 # File capabilities do not survive the .deb -> .npk conversion, and ping is the
 # one that shows: without cap_net_raw it cannot open a raw socket and reports
 # "Operation not permitted". Debian's dpkg applies these from package metadata;

@@ -57,13 +57,20 @@ true
 # are how the work leaves the CPU. Disabling compositing on a machine that has
 # virgl keeps the whole shell rendering in software and is the difference
 # between a desktop that responds and one that does not.
-# Keyed off the renderer rather than the device. /dev/dri/renderD128 exists
-# even when Mesa falls back to llvmpipe -- which is what happens in this VM
-# despite virgl being enabled on the host -- and under llvmpipe accelerated
-# compositing costs more than it saves: WebKit keeps extra layer buffers and
-# blends them on the CPU.
-if command -v glxinfo >/dev/null 2>&1 && \
-   ! glxinfo -B 2>/dev/null | grep -qi llvmpipe; then
+# GPU compositing is off unless explicitly asked for.
+#
+# Verified on real hardware: `chromium` opened a blank window and logged
+# "Frame latency is negative" from its display compositor, while
+# `chromium --disable-gpu` rendered perfectly. WebKit fails the same way, and
+# that is the frozen clock and the dead buttons -- the surfaces paint once and
+# then never again. Thunar was fine throughout, because it has no GPU
+# compositor of its own.
+#
+# This used to be keyed off the GL renderer, which was exactly backwards: on a
+# machine with a real GPU the check passed and turned acceleration on, into the
+# broken path. Correctness first; NETHOS_GPU_COMPOSITING=1 for anyone whose
+# driver actually works.
+if [ "${NETHOS_GPU_COMPOSITING:-0}" = "1" ]; then
     NETHOS_GPU=1; export NETHOS_GPU
 else
     export WEBKIT_DISABLE_COMPOSITING_MODE=1
