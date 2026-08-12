@@ -57,10 +57,24 @@ say "Converting $(basename "$SRC") to a raw disk image"
 rm -f "$IMG"
 qemu-img convert -p -O raw "$SRC" "$IMG"
 
-# qcow2 is sparse; raw is not. Report both so the size is not a surprise.
-apparent=$(du -h "$IMG" | cut -f1)
-actual=$(du -h --apparent-size "$IMG" 2>/dev/null | cut -f1 || echo "$apparent")
-say "Wrote $IMG ($actual)"
+# Two different numbers, and confusing them wastes real time: the file is
+# sparse, so it costs little on disk, but dd reads it end to end and writes
+# every empty byte to the stick. What matters for flashing is the apparent
+# size, so trim the file to where the partitions actually end.
+end=$(partx -g -o END "$IMG" 2>/dev/null | tail -1 | tr -d ' ' || true)
+if [ -n "$end" ]; then
+    # +34 sectors for the GPT backup header at the end of the disk.
+    bytes=$(( (end + 34) * 512 ))
+    if [ "$bytes" -gt 0 ] && [ "$bytes" -lt "$(stat -c%s "$IMG" 2>/dev/null || stat -f%z "$IMG")" ]; then
+        truncate -s "$bytes" "$IMG"
+        command -v sgdisk >/dev/null && sgdisk -e "$IMG" >/dev/null 2>&1 || true
+        say "Trimmed to the end of the last partition"
+    fi
+fi
+on_disk=$(du -h "$IMG" | cut -f1)
+to_write=$(du -h --apparent-size "$IMG" 2>/dev/null | cut -f1 || echo "$on_disk")
+say "Wrote $IMG"
+say "  $to_write to flash   ($on_disk actually occupied here -- the file is sparse)"
 
 if [ -z "$TARGET" ]; then
     cat <<EOF

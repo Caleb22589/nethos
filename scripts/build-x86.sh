@@ -21,7 +21,7 @@
 #
 # Options:
 #   --clean          start from an empty disk
-#   --size 20G       disk size (default 20G)
+#   --size 12G       disk size (default 6G; ~2.5G is used)
 #   --user NAME      the account to create (default neth)
 #   --sets "a b"     package sets (default "base system kernel desktop")
 set -euo pipefail
@@ -40,7 +40,7 @@ CACHE="$BUILD/nethos-pkgcache-x86.qcow2"
 SEED="$BUILD/seed-x86.iso"
 BUILDER_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
 
-DISK_SIZE="20G"
+DISK_SIZE="6G"
 USERNAME="neth"
 SETS="base system kernel desktop"
 CLEAN=0
