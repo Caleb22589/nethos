@@ -409,6 +409,16 @@ const handlers = new Set();
 function onEvent(handler) {
   handlers.add(handler);
   if (stream || typeof EventSource === "undefined") return;
+  // Not from inside a widget iframe. /api/events never returns, so every
+  // document that opens one holds a connection for the life of the session,
+  // and a browser allows only about six per host. The desktop carries three
+  // widget iframes: with one stream each plus the page's own, the pool is
+  // nearly full before any data is fetched, and every later request queues
+  // forever -- a clock that stops, buttons that do nothing, and in the
+  // inspector a column of requests that never complete.
+  //
+  // Widgets get the host tick, which costs no connection at all.
+  if (window.top !== window.self) return;
   let generation = null;
   stream = new EventSource(API + "/api/events");
   stream.onmessage = (ev) => {
@@ -471,16 +481,14 @@ document.addEventListener("DOMContentLoaded", () => {
     send("beat", "host");
     try { window.dispatchEvent(new Event("nethos-tick")); } catch (e) {}
   };
-  // Both a timer and the server tick. If only the timer beats, this surface's
-  // timers are alive; if only the tick beats, they have been throttled away.
-  // The difference is visible in nethos-doctor rather than guessed at.
+  // One beat source, and no new connection for it.
+  //
+  // This used to open its own EventSource, which was actively harmful: a
+  // browser allows about six connections per host, /api/events never returns,
+  // and the desktop already holds one plus one per widget iframe. A second
+  // permanent stream per surface pushed the pool over the edge, and every
+  // fetch after that queued forever -- visible in the inspector as requests
+  // that never complete, and on screen as a clock that stops and buttons that
+  // do nothing. The host tick needs no connection at all.
   setInterval(() => send("beat", "timer"), 10000);
-  try {
-    const es = new EventSource("/api/events");
-    es.onmessage = (ev) => {
-      try {
-        if (JSON.parse(ev.data).type === "tick") send("beat", "tick");
-      } catch (e) { /* not ours */ }
-    };
-  } catch (e) { /* no event stream; the timer beat still tells us something */ }
 })();
