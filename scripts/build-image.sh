@@ -121,6 +121,12 @@ cat >> "$STAGE/build.sh" <<'BOOTSTRAP'
 
 export DEBIAN_FRONTEND=noninteractive
 
+# A failed build must still power the VM down. Without this the builder sits at
+# a login prompt holding a write lock on the target and cache disks, and the
+# next build dies instantly with 'Failed to get "write" lock' -- which looks
+# like a corrupt image rather than a leftover process.
+trap 'st=$?; echo "=== NETHOS image build FAILED (status $st) ==="; sync; poweroff -f' ERR
+
 # Debian's cloud image fires unattended-upgrades and apt-daily on first boot,
 # and they hold the apt lock. Without this the build blocks on the lock at 0%
 # CPU forever, which looks exactly like a hang.
