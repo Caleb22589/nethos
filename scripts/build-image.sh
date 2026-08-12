@@ -473,7 +473,19 @@ USERDATA
 printf 'instance-id: nethos-image\nlocal-hostname: nethos-builder\n' > "$STAGE/meta-data"
 
 rm -f "$SEED"
-hdiutil makehybrid -quiet -iso -joliet -default-volume-name CIDATA -o "$SEED" "$STAGE"
+# hdiutil is macOS only; use whatever this machine has.
+if command -v hdiutil >/dev/null 2>&1; then
+    hdiutil makehybrid -quiet -iso -joliet -default-volume-name CIDATA -o "$SEED" "$STAGE"
+elif command -v xorriso >/dev/null 2>&1; then
+    xorriso -as mkisofs -quiet -output "$SEED" -volid CIDATA -joliet -rational-rock "$STAGE"
+elif command -v genisoimage >/dev/null 2>&1; then
+    genisoimage -quiet -output "$SEED" -volid CIDATA -joliet -rock "$STAGE"
+elif command -v mkisofs >/dev/null 2>&1; then
+    mkisofs -quiet -output "$SEED" -volid CIDATA -joliet -rock "$STAGE"
+else
+    die "No tool to build the cloud-init seed ISO (hdiutil/xorriso/genisoimage)"
+fi
+[ -s "$SEED" ] || die "seed ISO was not created at $SEED"
 
 # --------------------------------------------------------------------------
 say "Building (accel=$ACCEL). Downloads and installs a full base system."
