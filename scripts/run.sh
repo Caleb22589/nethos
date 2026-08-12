@@ -119,6 +119,19 @@ fi
 NET=(-device virtio-net-pci,netdev=net0
      -netdev user,id=net0,hostfwd=tcp::2222-:22)
 
+# An optional QMP socket. The desktop has no ssh in it, so when something is
+# wrong on screen the only ways to look are a camera or this: QMP can take a
+# screenshot and inject keyboard and pointer events without anything running
+# inside the guest.
+#
+#   NETHOS_QMP=/tmp/nethos-qmp.sock scripts/run.sh
+QMP=()
+if [ -n "${NETHOS_QMP:-}" ]; then
+    rm -f "$NETHOS_QMP"
+    QMP=(-qmp "unix:$NETHOS_QMP,server,nowait")
+    say "QMP socket: $NETHOS_QMP"
+fi
+
 # ---------------------------------------------------------------- aarch64 --
 if [ "$ARCH" = "aarch64" ]; then
     [ -f "$ARM_DISK" ] || die "no ARM image yet: $ARM_DISK
@@ -176,6 +189,7 @@ Build it with:  scripts/build-arm.sh"
         -device virtio-rng-pci \
         "${NET[@]}" \
         -serial mon:stdio \
+        "${QMP[@]}" \
         "${DISPLAY_ARGS[@]}"
 fi
 
@@ -258,6 +272,7 @@ Add it to the search list in $0"
         -usb -device usb-tablet -device usb-kbd \
         "${NET[@]}" \
         -serial mon:stdio \
+        "${QMP[@]}" \
         "${DISPLAY_ARGS[@]}" \
         -boot order=c
 fi
