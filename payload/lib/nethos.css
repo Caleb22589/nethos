@@ -137,8 +137,20 @@ body { padding: 22px 24px; }
 }
 .neth-card, .card { padding: 16px 18px; }
 
-/* Where the surface is not its own compositor window, ask the engine. */
-.glass-blur {
+/* Where the surface is not its own compositor window, ask the engine.
+ *
+ * backdrop-filter is by a wide margin the most expensive thing this stylesheet
+ * can ask for: it re-reads and re-blurs everything behind the element on every
+ * repaint. With a GPU that is nearly free. Under llvmpipe -- which is what the
+ * guest actually falls back to, virgl on the host notwithstanding -- it is
+ * per-frame CPU work over the whole surface, and it is why the shell takes
+ * seconds to respond to a click while native applications stay instant.
+ *
+ * So it is opt-in now, keyed off a class the session sets when there is real
+ * hardware behind the compositor. Everything else keeps the translucent
+ * background, which gives most of the look for none of the cost.
+ */
+html.neth-gpu .glass-blur {
   -webkit-backdrop-filter: blur(24px) saturate(180%);
   backdrop-filter: blur(24px) saturate(180%);
 }

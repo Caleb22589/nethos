@@ -226,7 +226,13 @@ class Surface:
               JSON.stringify({type: "show"})),
           surface: %s,
         };
-        """ % json.dumps(self.name)
+        // The stylesheet keys its backdrop-filter off this class, so the
+        // expensive effect only runs where a GPU can absorb it. The session
+        // sets NETHOS_GPU after checking the actual GL renderer -- a render
+        // node existing is not the same as it being hardware.
+        if (%s) { document.documentElement.classList.add("neth-gpu"); }
+        """ % (json.dumps(self.name),
+               "true" if os.environ.get("NETHOS_GPU") else "false")
         manager.add_script(WebKit.UserScript.new(
             shim,
             WebKit.UserContentInjectedFrames.TOP_FRAME,

@@ -44,7 +44,15 @@ fi
 # are how the work leaves the CPU. Disabling compositing on a machine that has
 # virgl keeps the whole shell rendering in software and is the difference
 # between a desktop that responds and one that does not.
-if [ ! -e /dev/dri/renderD128 ]; then
+# Keyed off the renderer rather than the device. /dev/dri/renderD128 exists
+# even when Mesa falls back to llvmpipe -- which is what happens in this VM
+# despite virgl being enabled on the host -- and under llvmpipe accelerated
+# compositing costs more than it saves: WebKit keeps extra layer buffers and
+# blends them on the CPU.
+if command -v glxinfo >/dev/null 2>&1 && \
+   ! glxinfo -B 2>/dev/null | grep -qi llvmpipe; then
+    NETHOS_GPU=1; export NETHOS_GPU
+else
     export WEBKIT_DISABLE_COMPOSITING_MODE=1
 fi
 
