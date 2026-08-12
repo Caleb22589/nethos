@@ -162,8 +162,11 @@ if [ -z "${WAYLAND_DISPLAY:-}" ] && [ "$(tty)" = "/dev/tty1" ]; then
 
     # Without a GPU, wlroots refuses a software renderer unless told to.
     export WLR_RENDERER_ALLOW_SOFTWARE=1
-    export LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-1}
     export WEBKIT_DISABLE_COMPOSITING_MODE=1
+    # LIBGL_ALWAYS_SOFTWARE is not forced: Mesa refuses it once the compositor
+    # has opened a real DRM node ("Not allowed to force software rendering when
+    # API explicitly selects a hardware device"), EGL fails, and the compositor
+    # exits immediately to a black screen. Let Mesa fall back on its own.
 
     # Hyprland is the NETHOS look: it is the only one of the two that can round
     # a corner or blur behind the glass. sway stays as a fallback, and nethosd

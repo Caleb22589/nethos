@@ -27,6 +27,12 @@ BUILD="$ROOT/build"
 DISK="$BUILD/nethos-arm.qcow2"
 BUILDER="$BUILD/debian-arm64-builder.qcow2"
 BUILDER_WORK="$BUILD/debian-arm64-work.qcow2"
+# The package cache, and the one disk here that deliberately outlives a build.
+# The builder overlay is thrown away and recreated every run, so anything on it
+# -- including several hundred megabytes of downloaded .deb -- was being fetched
+# again from scratch every single time. This holds them across builds; a rebuild
+# with no version changes downloads nothing at all.
+CACHE="$BUILD/nethos-pkgcache.qcow2"
 SEED="$BUILD/seed-image.iso"
 BUILDER_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-arm64.qcow2"
 
@@ -81,6 +87,12 @@ rm -f "$BUILDER_WORK"
 qemu-img create -f qcow2 -F qcow2 -b "$BUILDER" "$BUILDER_WORK" >/dev/null
 qemu-img resize "$BUILDER_WORK" 16G >/dev/null
 
+# Created once and then kept. Deleting it only costs a re-download.
+if [ ! -f "$CACHE" ]; then
+    say "Creating the package cache (kept between builds; rm $CACHE to reset)."
+    qemu-img create -f qcow2 "$CACHE" 24G >/dev/null
+fi
+
 FW_VARS="$BUILD/edk2-arm-vars-build.fd"
 rm -f "$FW_VARS"
 dd if=/dev/zero of="$FW_VARS" bs=1m count=64 2>/dev/null
@@ -130,6 +142,21 @@ SRC=/mnt/src
 mkdir -p "$SRC"
 mount -o ro /dev/sr0 "$SRC" || { echo "FATAL: cannot mount seed"; exit 1; }
 
+# /dev/vdc is the package cache, and the only disk that survives a build. It is
+# mounted before the bootstrap so downloads and converted packages land on it
+# instead of on the builder overlay, which is deleted the moment we power off.
+WORK=/var/tmp/nethos-work
+mkdir -p "$WORK"
+if ! blkid /dev/vdc >/dev/null 2>&1; then
+    echo "--- formatting the package cache (first build) ---"
+    mkfs.ext4 -q -F -L NETHOSCACHE /dev/vdc
+fi
+if mount /dev/vdc "$WORK"; then
+    echo "cache: $(du -sh "$WORK" 2>/dev/null | cut -f1) already present"
+else
+    echo "WARNING: package cache would not mount; downloading everything fresh"
+fi
+
 TARGET=/dev/vdb
 echo "--- partitioning ---"
 wipefs -a "$TARGET"
@@ -153,7 +180,7 @@ mount "${TARGET}1" "$R/boot"
 echo "--- bootstrapping (as root, so ownership and setuid are real) ---"
 python3 -u "$SRC/pkg/npkg_bootstrap.py" "$R" \
     $(for s in $SETS; do printf -- '--set %s ' "$s"; done) \
-    --arch arm64 --user "$USERNAME" --work /var/tmp/nethos-work
+    --arch arm64 --user "$USERNAME" --work "$WORK" --keep
 
 echo "--- preparing the chroot ---"
 mkdir -p "$R/dev/pts" "$R/proc" "$R/sys" "$R/run"
@@ -197,6 +224,21 @@ for u in systemd-network:998 systemd-resolve:997 systemd-timesync:996; do
 done
 
 ldconfig || true
+
+# GSettings schemas ship as .gschema.xml and are useless until compiled into a
+# single gschemas.compiled -- normally by libglib2.0-0's postinst, which we do
+# not run. GLib treats the absence as fatal ("No GSettings schemas are
+# installed on the system") and kills the process, so parts of the desktop die
+# on startup while the schema files sit right there on disk.
+if command -v glib-compile-schemas >/dev/null && \
+   [ -d /usr/share/glib-2.0/schemas ]; then
+    glib-compile-schemas /usr/share/glib-2.0/schemas || true
+    if [ -f /usr/share/glib-2.0/schemas/gschemas.compiled ]; then
+        echo "gschemas.compiled: $(ls -l /usr/share/glib-2.0/schemas/gschemas.compiled | awk '{print $5}') bytes"
+    else
+        echo "WARNING: GSettings schemas did not compile; the shell may not start"
+    fi
+fi
 
 # File capabilities do not survive the .deb -> .npk conversion, and ping is the
 # one that shows: without cap_net_raw it cannot open a raw socket and reports
@@ -335,6 +377,10 @@ ls -l "$R/usr/bin/sudo" "$R/usr/bin/su"
 ls "$R/boot" | head
 sync
 umount -R "$R" || true
+# Flush the cache before the power is cut, or the next build finds a dirty
+# filesystem and re-downloads the lot.
+umount "$WORK" 2>/dev/null || true
+sync
 echo "=== NETHOS image build finished $(date -u) ==="
 poweroff
 BOOTSTRAP
@@ -377,6 +423,7 @@ qemu-system-aarch64 \
     -drive if=pflash,format=raw,file="$FW_VARS" \
     -drive file="$BUILDER_WORK",if=virtio,format=qcow2 \
     -drive file="$DISK",if=virtio,format=qcow2 \
+    -drive file="$CACHE",if=virtio,format=qcow2 \
     -drive file="$SEED",if=none,id=seed,format=raw,media=cdrom,readonly=on \
     -device virtio-scsi-pci -device scsi-cd,drive=seed \
     -device virtio-net-pci,netdev=net0 \

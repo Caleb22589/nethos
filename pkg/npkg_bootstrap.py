@@ -25,7 +25,9 @@ you rather than root will refuse to run.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures as futures
 import gzip
+import multiprocessing
 import os
 import shutil
 import subprocess
@@ -89,7 +91,12 @@ SETS = {
         "seatd", "libseat1",
 
         # the shell: WebKit + GTK4 layer-shell, driven from Python
-        "python3-gi", "python3-dbus", "libgtk-4-1",
+        # libglib2.0-bin carries glib-compile-schemas. GTK apps abort outright
+        # with "No GSettings schemas are installed on the system" until the
+        # .gschema.xml files on disk have been compiled, and nothing else in
+        # the set can do it -- neither at build time nor after npkg installs
+        # some later application that ships schemas of its own.
+        "python3-gi", "python3-dbus", "libgtk-4-1", "libglib2.0-bin",
         "gir1.2-gtk4layershell-1.0", "libgtk4-layer-shell0",
         "gir1.2-webkit-6.0", "libwebkitgtk-6.0-4",
 
@@ -492,12 +499,32 @@ def install_desktop(root: str, payload: str, username: str) -> None:
             "    export XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=sway\n"
             "    export MOZ_ENABLE_WAYLAND=1 QT_QPA_PLATFORM=wayland\n"
             "    export GDK_BACKEND=wayland _JAVA_AWT_WM_NONREPARENTING=1\n"
-            "    # No GPU in a VM: wlroots refuses a software renderer unless\n"
-            "    # told, and WebKit's compositing buffers are dear without one.\n"
+            "    # wlroots refuses a software renderer unless told it may use\n"
+            "    # one, and WebKit's compositing buffers are dear without a GPU.\n"
             "    export WLR_RENDERER_ALLOW_SOFTWARE=1\n"
-            "    export LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-1}\n"
             "    export WEBKIT_DISABLE_COMPOSITING_MODE=1\n"
-            "    exec sway\n"
+            "    # No at-spi on NETHOS, so GTK's attempt to reach the\n"
+            "    # accessibility bus only produces warnings on every launch.\n"
+            "    export GTK_A11Y=none\n"
+            "    # LIBGL_ALWAYS_SOFTWARE is deliberately NOT set. Mesa refuses\n"
+            "    # it once wlroots opens a real DRM node -- 'Not allowed to\n"
+            "    # force software rendering when API explicitly selects a\n"
+            "    # hardware device' -- so EGL never initialises and sway exits\n"
+            "    # in under a tenth of a second. The screen stays black, the\n"
+            "    # session closes, getty restarts it, and systemd eventually\n"
+            "    # gives up with start-limit-hit. virtio_gpu is a real DRM\n"
+            "    # device even under emulation; let Mesa pick llvmpipe itself.\n"
+            "    mkdir -p ~/.cache\n"
+            "    # Logged, because a compositor that dies on tty1 writes its\n"
+            "    # reason to a screen that is cleared before anyone reads it.\n"
+            "    sway >~/.cache/sway.log 2>&1 && exit\n"
+            "    # Second chance on the pixman renderer, which is CPU-only and\n"
+            "    # touches no EGL at all. Slower, but a desktop.\n"
+            "    echo '--- retrying with WLR_RENDERER=pixman ---' "
+            ">>~/.cache/sway.log\n"
+            "    WLR_RENDERER=pixman sway >>~/.cache/sway.log 2>&1 && exit\n"
+            "    echo 'The desktop failed to start. Reason:'\n"
+            "    tail -20 ~/.cache/sway.log\n"
             "fi\n")
 
     if os.geteuid() == 0:
@@ -669,15 +696,65 @@ def setup_etc(root: str, hostname: str) -> None:
                        "ENCRYPT_METHOD SHA512\nUMASK 022\nCREATE_HOME yes\n"),
         "profile": ('export PATH="/usr/bin:/usr/local/bin"\n'
                     "export EDITOR=nano\numask 022\n"),
+        # pam_env reads these on every login and complains to the journal for
+        # each one it cannot open. Harmless, but it is noise sitting on top of
+        # every real login problem, which is exactly where you do not want it.
+        "environment": 'PATH="/usr/bin:/usr/local/bin"\nLANG="C.UTF-8"\n',
     }
     for name, body in writes.items():
         with open(os.path.join(etc, name), "w") as fh:
             fh.write(body)
 
+    os.makedirs(os.path.join(etc, "default"), exist_ok=True)
+    with open(os.path.join(etc, "default", "locale"), "w") as fh:
+        fh.write('LANG="C.UTF-8"\n')
+
     # ld.so must be told where libraries live now that the triplet is gone.
     os.makedirs(os.path.join(etc, "ld.so.conf.d"), exist_ok=True)
     with open(os.path.join(etc, "ld.so.conf"), "w") as fh:
         fh.write("/usr/lib\n/usr/local/lib\ninclude /etc/ld.so.conf.d/*.conf\n")
+
+
+# ---------------------------------------------------------------------------
+# conversion, in parallel
+# ---------------------------------------------------------------------------
+
+def _convert_one(job: tuple[str, str]) -> tuple[str | None, str | None]:
+    """Convert one .deb. Returns (npk path, None) or (None, reason).
+
+    Top level and taking a single tuple so it can be handed to a process pool:
+    a closure or a bound method cannot be sent to a worker.
+    """
+    path, npks = job
+    try:
+        return convert_deb(path, npks, layout="arch"), None
+    except Exception as exc:                  # noqa: BLE001 - one bad package
+        return None, f"{os.path.basename(path)}: {exc}"
+
+
+def _convert_many(paths: list[str], npks: str):
+    """Convert every .deb, using every core, yielding results as they land.
+
+    Falls back to converting in this process if a pool cannot be started. The
+    build taking longer is a far better outcome than the build not happening,
+    and process pools have more ways to fail than the work itself does.
+    """
+    workers = min(len(paths), os.cpu_count() or 4)
+    jobs = [(p, npks) for p in paths]
+    if workers > 1:
+        try:
+            # fork, so the workers inherit this module already imported rather
+            # than re-executing a script that was run by path.
+            ctx = multiprocessing.get_context("fork")
+            with futures.ProcessPoolExecutor(max_workers=workers,
+                                             mp_context=ctx) as pool:
+                yield from pool.map(_convert_one, jobs, chunksize=4)
+            return
+        except (OSError, ValueError, ImportError,
+                futures.process.BrokenProcessPool) as exc:
+            say(f"  (parallel conversion unavailable: {exc}; using one core)")
+    for job in jobs:
+        yield _convert_one(job)
 
 
 # ---------------------------------------------------------------------------
@@ -711,21 +788,34 @@ def bootstrap(root: str, sets: list[str], arch: str, username: str,
     total = sum(int(f.get("Size", 0)) for f in resolved)
     say(f"  {len(resolved)} packages, {total/1e6:.0f} MB to download")
 
+    # Downloads are latency-bound: several hundred small files, each paying a
+    # connection setup, against a mirror that is perfectly happy to serve them
+    # at once. Threads rather than processes because none of this is our CPU.
     say("\n== downloading ==")
-    paths = []
-    for i, fields in enumerate(resolved, 1):
-        paths.append(archive.download(fields, debs))
-        if i % 25 == 0 or i == len(resolved):
-            say(f"  {i}/{len(resolved)}")
+    paths: list[str] = [""] * len(resolved)
+    done = 0
+    with futures.ThreadPoolExecutor(max_workers=16) as pool:
+        jobs = {pool.submit(archive.download, f, debs): i
+                for i, f in enumerate(resolved)}
+        for job in futures.as_completed(jobs):
+            paths[jobs[job]] = job.result()   # a failed download still raises
+            done += 1
+            if done % 50 == 0 or done == len(resolved):
+                say(f"  {done}/{len(resolved)}")
 
+    # Conversion is the opposite: xz and zstd decompression of every data.tar,
+    # which is pure CPU and pinned to one core. Processes, because the work is
+    # inside C decompressors and Python's own tar loop.
     say("\n== converting to npkg, Arch layout ==")
-    for i, path in enumerate(paths, 1):
-        try:
-            convert_deb(path, npks, layout="arch")
-        except NpkgError as exc:
-            say(f"  skipped {os.path.basename(path)}: {exc}")
-        if i % 25 == 0 or i == len(paths):
-            say(f"  {i}/{len(paths)}")
+    npk_paths, done = [], 0
+    for npk, err in _convert_many(paths, npks):
+        if err:
+            say(f"  skipped {err}")
+        else:
+            npk_paths.append(npk)
+        done += 1
+        if done % 50 == 0 or done == len(paths):
+            say(f"  {done}/{len(paths)}")
     build_index(npks)
 
     say("\n== building the root ==")
@@ -734,14 +824,16 @@ def bootstrap(root: str, sets: list[str], arch: str, username: str,
     db = Database(root)
     tx = Transaction(db, [], verbose=False)
     installed = 0
-    for name in sorted(os.listdir(npks)):
-        if not name.endswith(".npk"):
-            continue
+    # Installed from what we just converted, not from whatever is lying in the
+    # directory. With the package cache persisting across builds, a listdir
+    # here would install last week's leftovers alongside this build's set --
+    # including packages that have since been dropped or superseded.
+    for path in sorted(npk_paths):
         try:
-            tx.install_files([os.path.join(npks, name)])
+            tx.install_files([path])
             installed += 1
         except NpkgError as exc:
-            say(f"  {name}: {exc}")
+            say(f"  {os.path.basename(path)}: {exc}")
     say(f"  installed {installed} packages")
 
     say("\n== users, sudo, /etc ==")

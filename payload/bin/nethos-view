@@ -48,13 +48,35 @@ import sys
 # so the library documents LD_PRELOAD as the supported route. Without this
 # init_for_window() silently does nothing and every panel becomes an ordinary
 # window -- which is exactly how it fails: no error, just wrong behaviour.
-_PRELOAD = "/usr/lib/libgtk4-layer-shell.so"
-if os.path.exists(_PRELOAD) and _PRELOAD not in os.environ.get("LD_PRELOAD", ""):
+#
+# The bare .so name belongs to the -dev package and is not installed on a
+# running system; the runtime package ships libgtk4-layer-shell.so.0. Testing
+# only for the bare name meant os.path.exists() was False, the preload was
+# skipped without a word, and every surface came up as a plain tiled window.
+# So search, and say so when nothing is found rather than failing quietly.
+def _find_layer_shell() -> str | None:
+    import glob                              # noqa: PLC0415
+    for pattern in ("/usr/lib/libgtk4-layer-shell.so*",
+                    "/usr/lib/*/libgtk4-layer-shell.so*",
+                    "/usr/local/lib/libgtk4-layer-shell.so*"):
+        # .so.0 before .so.0.1.2, and either before a bare .so that may not
+        # exist; any of them work as a preload.
+        for path in sorted(glob.glob(pattern), key=len):
+            if os.path.exists(path):
+                return path
+    return None
+
+
+_PRELOAD = _find_layer_shell()
+if _PRELOAD and _PRELOAD not in os.environ.get("LD_PRELOAD", ""):
     os.environ["LD_PRELOAD"] = (
         _PRELOAD + ":" + os.environ["LD_PRELOAD"]
         if os.environ.get("LD_PRELOAD") else _PRELOAD
     )
     os.execv(sys.executable, [sys.executable] + sys.argv)
+elif not _PRELOAD:
+    print("warning: libgtk4-layer-shell not found; panels will be plain "
+          "windows rather than docked surfaces", file=sys.stderr)
 
 import gi
 

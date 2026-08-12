@@ -40,10 +40,15 @@ if [ "$i" -ge 150 ]; then
     exit 1
 fi
 
-# Software rendering everywhere: there is no GPU in a VM, and WebKit's
-# compositing buffers are expensive without one.
+# WebKit's compositing buffers are expensive without a GPU, so keep those off.
 export WEBKIT_DISABLE_COMPOSITING_MODE=1
-export LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-1}
+
+# LIBGL_ALWAYS_SOFTWARE is *not* forced here. It used to be, on the assumption
+# that a VM has no GPU -- but virtio_gpu is a real DRM device, and Mesa rejects
+# the combination outright: "Not allowed to force software rendering when API
+# explicitly selects a hardware device". EGL then fails for everything started
+# from this session. Only honour it if the caller genuinely wants it.
+[ -n "${LIBGL_ALWAYS_SOFTWARE:-}" ] && export LIBGL_ALWAYS_SOFTWARE
 
 # The glass shell needs WebKit and gtk4-layer-shell. A files-only update
 # installs new scripts without new packages, so check rather than assume --
