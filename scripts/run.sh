@@ -120,11 +120,17 @@ fi
 # through to the host, and pairing gl=on with a plain virtio-vga gets you a
 # window with no acceleration and no complaint about it.
 if [ "$GL" -eq 1 ]; then
-    X86_VIDEO=(-device virtio-vga-gl,xres=1600,yres=1000)
+    # virtio-gpu-gl-pci rather than virtio-vga-gl: the VGA-compatible variant
+    # starts in 640x480 text-mode VGA and the guest never modesets past it, so
+    # sway lays the whole desktop out for a 640x480 screen and the dock renders
+    # as overlapping garbage. Verified on the same machine -- switching the
+    # device is the entire difference. OVMF drives it through VirtioGpuDxe, so
+    # GRUB and the firmware still display.
+    X86_VIDEO=(-device virtio-gpu-gl-pci,xres=1600,yres=1000)
     ARM_VIDEO=(-device virtio-gpu-gl-pci,xres=1600,yres=1000)
     say "GPU: virgl enabled (hardware GL in the guest)"
 else
-    X86_VIDEO=(-device virtio-vga,xres=1440,yres=900)
+    X86_VIDEO=(-device virtio-gpu-pci,xres=1600,yres=1000)
     ARM_VIDEO=(-device virtio-gpu-pci,xres=1600,yres=1000)
 fi
 
