@@ -152,6 +152,11 @@ function initPanel() {
   // stops when WebKit decides this surface is hidden, and the tick is the one
   // that keeps arriving. Both call the same refreshers, and they are cheap.
   let lastTick = 0;
+  window.addEventListener("nethos-tick", () => {
+    const now = Date.now();
+    refreshStatus();
+    if (now - lastTick > 15000) { lastTick = now; refreshTasks(); refreshTray(); }
+  });
   onEvent((msg) => {
     if (msg.type !== "tick") return;
     const now = Date.now();
@@ -271,6 +276,10 @@ function initDock() {
   loadPrefs().then(refresh);
   window.addEventListener("resize", applyHostGeometry);
   let widgetTick = 0;
+  window.addEventListener("nethos-tick", () => {
+    const now = Date.now();
+    if (now - widgetTick > 30000) { widgetTick = now; refresh(); }
+  });
   onEvent((msg) => {
     if (msg.type !== "tick") return;
     const now = Date.now();
@@ -455,6 +464,13 @@ document.addEventListener("DOMContentLoaded", () => {
     send("reject", String(e.reason)));
   send("start", "loaded " + new Date().toISOString());
   send("beat", "");
+  // Called from nethos-view, which is not throttled. This is the only thing
+  // that reliably runs once WebKit has suspended the page, so everything
+  // periodic hangs off it.
+  window.nethosTick = function () {
+    send("beat", "host");
+    try { window.dispatchEvent(new Event("nethos-tick")); } catch (e) {}
+  };
   // Both a timer and the server tick. If only the timer beats, this surface's
   // timers are alive; if only the tick beats, they have been throttled away.
   // The difference is visible in nethos-doctor rather than guessed at.

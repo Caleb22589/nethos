@@ -371,6 +371,29 @@ class App(Gtk.Application):
     def do_activate(self):
         for spec in self.specs:
             self.surfaces.append(Surface(self, spec))
+        # Wake the pages from out here.
+        #
+        # WebKit suspends the web process of a page it considers hidden, and a
+        # layer-shell surface never takes focus, so all four are suspended
+        # moments after they load: measured at 0.3% CPU with no timers, no
+        # network, and no errors. Nothing *inside* the page can fix that --
+        # setInterval is throttled and a server-pushed event is never read,
+        # because the process that would read it is asleep.
+        #
+        # This process is plain GTK and is never throttled, and calling into a
+        # view wakes it. So the shell's periodic work is driven from here: the
+        # page exposes window.nethosTick and we call it.
+        GLib.timeout_add_seconds(3, self._tick)
+
+    def _tick(self):
+        for surface in self.surfaces:
+            try:
+                surface.view.evaluate_javascript(
+                    "window.nethosTick && window.nethosTick();",
+                    -1, None, None, None, None, None)
+            except Exception:                 # noqa: BLE001 - a dead surface
+                pass
+        return True                            # keep ticking
 
 
 def main():
