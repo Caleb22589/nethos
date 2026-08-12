@@ -261,6 +261,11 @@ if command -v update-ca-certificates >/dev/null; then
     # ca-certificates postinst, not shipped in the .deb. Without it the command
     # succeeds and produces an empty trust store, and every https client fails
     # while the certificates sit unused in /usr/share/ca-certificates.
+    # update-ca-certificates cds into /etc/ssl/certs and dies if it is not
+    # there. The directory comes from the ca-certificates postinst, not the
+    # .deb, so on a root we assembled ourselves it simply does not exist:
+    #   /usr/sbin/update-ca-certificates: 122: cd: can't cd to /etc/ssl/certs
+    mkdir -p /etc/ssl/certs /usr/local/share/ca-certificates
     if [ -d /usr/share/ca-certificates ] && [ ! -s /etc/ca-certificates.conf ]; then
         ( cd /usr/share/ca-certificates && find . -name '*.crt' | sed 's|^\./||' | sort ) \
             > /etc/ca-certificates.conf
