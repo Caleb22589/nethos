@@ -196,6 +196,19 @@ done
 
 ldconfig || true
 
+# File capabilities do not survive the .deb -> .npk conversion, and ping is the
+# one that shows: without cap_net_raw it cannot open a raw socket and reports
+# "Operation not permitted". Debian's dpkg applies these from package metadata;
+# we apply the handful that matter.
+if command -v setcap >/dev/null; then
+    for pair in "/usr/bin/ping cap_net_raw+ep" \
+                "/usr/bin/ping6 cap_net_raw+ep" \
+                "/usr/bin/dumpcap cap_net_raw,cap_net_admin+eip"; do
+        set -- $pair
+        [ -f "$1" ] && setcap "$2" "$1" 2>/dev/null || true
+    done
+fi
+
 KVER=$(ls /usr/lib/modules 2>/dev/null | head -1)
 echo "kernel modules: ${KVER:-none}"
 [ -n "$KVER" ] || { echo "FATAL: no kernel installed"; exit 1; }

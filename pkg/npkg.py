@@ -464,6 +464,16 @@ class Solver:
             if entry:
                 return repo, entry
         want = f"{name}{op}{version}" if op else name
+        if not self.repos:
+            # The common case on a fresh system: nothing is configured, so
+            # `install` has nowhere to look. Say that, rather than implying the
+            # package does not exist.
+            raise DependencyError(
+                f"no repositories are configured, so there is nowhere to find "
+                f"'{want}'.\n"
+                f"  To install from Debian's archive:  npkg fetch {name}\n"
+                f"  To install a local file:           npkg install ./{name}.npk\n"
+                f"  To configure a repository:         edit /etc/npkg/repos.json")
         raise DependencyError(f"no package satisfies '{want}'")
 
     def resolve(self, names: list[str], reinstall: bool = False
@@ -848,6 +858,32 @@ def cmd_verify(args, db, repos):
 def cmd_search(args, db, repos):
     q = args.query.lower()
     seen = set()
+
+    if not repos:
+        # Nothing configured locally: search what `npkg fetch` would install
+        # from, so search is useful on a fresh system rather than always empty.
+        import platform                                # noqa: PLC0415
+        from npkg_bootstrap import DebianArchive       # noqa: PLC0415
+        arch = DEB_ARCH.get(platform.machine(), "arm64")
+        work = os.path.join(db.root, CACHE_DIR, "debian")
+        os.makedirs(work, exist_ok=True)
+        archive = DebianArchive(arch=arch, cache=work)
+        archive.load()
+        hits = 0
+        for name, fields in sorted(archive.packages.items()):
+            summary = fields.get("Description", "").split("\n")[0]
+            if q in name.lower() or q in summary.lower():
+                mark = "*" if db.is_installed(name) else " "
+                print(f"{mark} {name:<28} {fields.get('Version',''):<22} {summary[:60]}")
+                hits += 1
+                if hits >= 40:
+                    print("  … more matches; narrow the search")
+                    break
+        if not hits:
+            print("nothing found")
+        else:
+            print(f"\ninstall with:  npkg fetch <name>")
+        return
     for repo in repos:
         for name, entries in repo.packages.items():
             entry = entries[0]
