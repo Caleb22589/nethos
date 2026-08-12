@@ -83,8 +83,20 @@ esac
 # renders every page through llvmpipe on the CPU.
 GL=0
 if [ "${NO_GL:-0}" != "1" ] && [ "$CONSOLE" -eq 0 ]; then
-    if "$QEMU_BIN" -device help 2>/dev/null | grep -q "virtio-vga-gl\|virtio-gpu-gl-pci" \
-       && ls /usr/lib*/libvirglrenderer.so* /usr/lib/*/libvirglrenderer.so* >/dev/null 2>&1; then
+    # Check each location separately. `ls a* b*` returns non-zero when *either*
+    # pattern matches nothing, so testing several paths in one ls reports
+    # failure even when the library is sitting in the first one -- which is
+    # exactly how this silently ran without acceleration while reporting
+    # nothing, and the guest came up with "[drm] features: -virgl".
+    have_virgl=0
+    for d in /usr/lib /usr/lib64 /usr/local/lib /usr/lib/x86_64-linux-gnu \
+             /usr/lib/aarch64-linux-gnu /opt/homebrew/lib; do
+        for f in "$d"/libvirglrenderer.so*; do
+            [ -e "$f" ] && { have_virgl=1; break 2; }
+        done
+    done
+    if [ "$have_virgl" -eq 1 ] && \
+       "$QEMU_BIN" -device help 2>/dev/null | grep -q "virtio-vga-gl\|virtio-gpu-gl-pci"; then
         GL=1
     fi
 fi
