@@ -275,9 +275,20 @@ ls -la /boot/ | head
 # Verify the initramfs can actually reach a disk before calling this a build.
 # Finding out at boot costs a full cycle; finding out here costs a grep.
 if command -v lsinitramfs >/dev/null; then
-    if lsinitramfs "/boot/initrd.img-$KVER" 2>/dev/null | grep -q "virtio_blk"; then
-        echo "initramfs contains virtio_blk"
-    else
+    # grep -c, not grep -q, and the count captured before it is tested.
+    #
+    # This script runs under `set -o pipefail`, and `grep -q` exits the moment
+    # it finds a match. That closes the pipe, lsinitramfs dies of SIGPIPE, and
+    # pipefail turns the whole pipeline non-zero -- so the test failed
+    # *because* the match succeeded. It reported a missing driver on an
+    # initramfs that had it, and cost two rebuilds chasing a bug that was in
+    # the check. grep -c consumes all of its input, so nothing gets a SIGPIPE.
+    found=$(lsinitramfs "/boot/initrd.img-$KVER" 2>/dev/null \
+            | grep -c "virtio_blk" || true)
+    total=$(lsinitramfs "/boot/initrd.img-$KVER" 2>/dev/null \
+            | grep -c "\.ko" || true)
+    echo "initramfs: ${total:-0} modules, virtio_blk x${found:-0}"
+    if [ "${found:-0}" -lt 1 ]; then
         echo "FATAL: initramfs has no virtio_blk -- it would not find the root"
         exit 1
     fi
