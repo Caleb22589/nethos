@@ -73,7 +73,10 @@ Build it with:  scripts/build-arm.sh"
     FW_CODE=""
     for c in /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
              /usr/local/share/qemu/edk2-aarch64-code.fd \
-             /usr/share/qemu/edk2-aarch64-code.fd; do
+             /usr/share/qemu/edk2-aarch64-code.fd \
+             /usr/share/AAVMF/AAVMF_CODE.fd \
+             /usr/share/edk2/aarch64/QEMU_EFI.fd \
+             /usr/share/edk2-armvirt/aarch64/QEMU_EFI.fd; do
         [ -f "$c" ] && FW_CODE="$c" && break
     done
     [ -n "$FW_CODE" ] || die "edk2-aarch64-code.fd not found (brew install qemu)"
@@ -136,13 +139,33 @@ if [ -f "$X86_NPKG_DISK" ]; then
              /usr/local/share/qemu/edk2-x86_64-code.fd \
              /usr/share/qemu/edk2-x86_64-code.fd \
              /usr/share/OVMF/OVMF_CODE.fd \
-             /usr/share/edk2-ovmf/x64/OVMF_CODE.fd; do
+             /usr/share/edk2-ovmf/x64/OVMF_CODE.fd \
+             /usr/share/edk2/x64/OVMF_CODE.4m.fd \
+             /usr/share/edk2/x64/OVMF_CODE.fd \
+             /usr/share/edk2/OVMF_CODE_4M.fd \
+             /usr/share/edk2/ovmf/OVMF_CODE.fd; do
         [ -f "$c" ] && FW_CODE="$c" && break
     done
-    [ -n "$FW_CODE" ] || die "edk2-x86_64-code.fd not found (brew install qemu)"
+    if [ -z "$FW_CODE" ]; then
+        found=$(find /usr/share -maxdepth 4 -iname 'OVMF_CODE*.fd' 2>/dev/null | head -5)
+        [ -n "$found" ] && die "UEFI firmware is installed but at an unexpected path:
+$found
+Add it to the search list in $0"
+        die "No UEFI firmware (OVMF_CODE.fd).
+  Arch/CachyOS:   sudo pacman -S edk2-ovmf
+  Debian/Ubuntu:  sudo apt install ovmf
+  macOS:          brew install qemu"
+    fi
 
     FW_VARS="$BUILD/edk2-x86-vars.fd"
-    FW_TEMPLATE="$(dirname "$FW_CODE")/edk2-i386-vars.fd"
+    # The variable store must match the code file. A 4MB OVMF_CODE.4m.fd with a
+    # 2MB VARS does not error -- it boots to a UEFI shell and sits there.
+    case "$FW_CODE" in
+        *OVMF_CODE.4m.fd) FW_TEMPLATE="${FW_CODE%OVMF_CODE.4m.fd}OVMF_VARS.4m.fd" ;;
+        *OVMF_CODE_4M.fd) FW_TEMPLATE="${FW_CODE%OVMF_CODE_4M.fd}OVMF_VARS_4M.fd" ;;
+        *OVMF_CODE.fd)    FW_TEMPLATE="${FW_CODE%OVMF_CODE.fd}OVMF_VARS.fd" ;;
+        *)                FW_TEMPLATE="$(dirname "$FW_CODE")/edk2-i386-vars.fd" ;;
+    esac
     if [ "${RESET_UEFI:-0}" = "1" ]; then
         rm -f "$FW_VARS"
     fi

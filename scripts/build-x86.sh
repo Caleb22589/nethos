@@ -367,6 +367,17 @@ fi
 # TLS client reports "System trust contains zero trusted certificates" -- so
 # npkg fetch over https, and the news and stock widgets, all fail.
 if command -v update-ca-certificates >/dev/null; then
+    # update-ca-certificates trusts what /etc/ca-certificates.conf lists, and
+    # that file is written by ca-certificates' postinst (through debconf), not
+    # shipped in the .deb. Without it the command runs, reports nothing wrong,
+    # and produces an empty trust store -- so every https client fails with
+    # "System trust contains zero trusted certificates" while the certificates
+    # themselves sit unused in /usr/share/ca-certificates.
+    if [ -d /usr/share/ca-certificates ] && [ ! -s /etc/ca-certificates.conf ]; then
+        ( cd /usr/share/ca-certificates && find . -name '*.crt' | sed 's|^\./||' | sort ) \
+            > /etc/ca-certificates.conf
+        echo "ca-certificates.conf: $(wc -l < /etc/ca-certificates.conf) certificates listed"
+    fi
     update-ca-certificates --fresh >/dev/null 2>&1 || true
     certs=$( (find /etc/ssl/certs -maxdepth 1 -name '*.0' 2>/dev/null || true) | wc -l )
     bundle=/etc/ssl/certs/ca-certificates.crt
