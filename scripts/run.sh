@@ -19,7 +19,8 @@
 #   for testing what you will actually install. Use ARM for daily work on the
 #   Mac.
 #
-# Build the ARM image with scripts/build-arm.sh, the x86 one with build.sh.
+# Build the ARM image with scripts/build-arm.sh, the x86 one with build-x86.sh
+# (npkg/Debian) or build.sh (Arch cloud).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -42,6 +43,7 @@ while [ $# -gt 0 ]; do
 done
 
 X86_DISK="$BUILD/nethos.qcow2"
+X86_NPKG_DISK="$BUILD/nethos-x86.qcow2"
 ARM_DISK="$BUILD/nethos-arm.qcow2"
 SEED="$BUILD/seed.iso"
 
@@ -121,13 +123,71 @@ Build it with:  scripts/build-arm.sh"
 fi
 
 # ----------------------------------------------------------------- x86_64 --
-[ -f "$X86_DISK" ] || die "no x86 image. Run scripts/build.sh first."
-[ -f "$SEED" ] || die "no seed ISO. Run scripts/build.sh first."
 
 if [ "$(uname -m)" = "arm64" ]; then
     say "x86_64 under TCG emulation on an ARM Mac — this will be slow."
     say "For speed:  scripts/build-arm.sh && scripts/run.sh --arch aarch64"
 fi
+
+# npkg/Debian image: UEFI-booted, no seed ISO needed.
+if [ -f "$X86_NPKG_DISK" ]; then
+    FW_CODE=""
+    for c in /opt/homebrew/share/qemu/edk2-x86_64-code.fd \
+             /usr/local/share/qemu/edk2-x86_64-code.fd \
+             /usr/share/qemu/edk2-x86_64-code.fd \
+             /usr/share/OVMF/OVMF_CODE.fd \
+             /usr/share/edk2-ovmf/x64/OVMF_CODE.fd; do
+        [ -f "$c" ] && FW_CODE="$c" && break
+    done
+    [ -n "$FW_CODE" ] || die "edk2-x86_64-code.fd not found (brew install qemu)"
+
+    FW_VARS="$BUILD/edk2-x86-vars.fd"
+    FW_TEMPLATE="$(dirname "$FW_CODE")/edk2-i386-vars.fd"
+    if [ "${RESET_UEFI:-0}" = "1" ]; then
+        rm -f "$FW_VARS"
+    fi
+    if [ ! -f "$FW_VARS" ]; then
+        say "Creating the UEFI variable store"
+        if [ -f "$FW_TEMPLATE" ]; then
+            cp "$FW_TEMPLATE" "$FW_VARS"
+        else
+            # x86_64 pflash has an 8 MB combined limit; match the code file size.
+            CODE_SIZE=$(stat -f%z "$FW_CODE" 2>/dev/null || stat -c%s "$FW_CODE")
+            dd if=/dev/zero of="$FW_VARS" bs=1 count="$CODE_SIZE" 2>/dev/null
+        fi
+    fi
+
+    ACCEL="tcg,thread=multi"
+    CPU=Nehalem
+    if [ "$(uname -s)" = "Linux" ] && [ -w /dev/kvm ]; then
+        ACCEL=kvm; CPU=host
+    elif [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "x86_64" ] && \
+         [ "$(sysctl -n kern.hv_support 2>/dev/null)" = "1" ]; then
+        ACCEL=hvf; CPU=host
+    fi
+    say "x86_64 (npkg) · accel=$ACCEL · ${CPUS} cpus · ${MEM}MB"
+
+    exec qemu-system-x86_64 \
+        -name NETHOS \
+        -machine q35,accel="$ACCEL" \
+        -cpu "$CPU" \
+        -smp "$CPUS" \
+        -m "$MEM" \
+        -drive if=pflash,format=raw,readonly=on,file="$FW_CODE" \
+        -drive if=pflash,format=raw,file="$FW_VARS" \
+        -drive file="$X86_NPKG_DISK",if=virtio,format=qcow2,cache=writeback,discard=unmap \
+        -device virtio-vga,xres=1440,yres=900 \
+        -device virtio-rng-pci \
+        -usb -device usb-tablet -device usb-kbd \
+        "${NET[@]}" \
+        -serial mon:stdio \
+        "${DISPLAY_ARGS[@]}" \
+        -boot order=c
+fi
+
+# Arch cloud image: legacy path, requires seed ISO.
+[ -f "$X86_DISK" ] || die "no x86 image. Run scripts/build-x86.sh or scripts/build.sh first."
+[ -f "$SEED" ] || die "no seed ISO. Run scripts/build.sh first."
 
 # CPU model: Nehalem (x86-64-v2 — SSE4.2 + POPCNT, no AVX). `-cpu max` also
 # works, but under TCG it advertises AVX/AVX2 in CPUID while OSXSAVE is never

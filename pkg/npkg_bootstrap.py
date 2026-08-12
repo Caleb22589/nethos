@@ -41,9 +41,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from npkg import Database, Manifest, NpkgError, Package, Transaction, build_index  # noqa: E402
 from npkg_convert import convert_deb, parse_control  # noqa: E402
 
-def say(*args):
+def say(*args, **kwargs):
     """print(), but visible immediately even through a pipe."""
-    print(*args, flush=True)
+    kwargs.setdefault('flush', True)
+    print(*args, **kwargs)
 
 
 MIRROR = "http://deb.debian.org/debian"
@@ -96,10 +97,10 @@ SETS = {
         # .gschema.xml files on disk have been compiled, and nothing else in
         # the set can do it -- neither at build time nor after npkg installs
         # some later application that ships schemas of its own.
-        # libgdk-pixbuf-2.0-bin carries gdk-pixbuf-query-loaders, the last of
+        # libgdk-pixbuf2.0-bin carries gdk-pixbuf-query-loaders, the last of
         # the cache builders we need; fontconfig carries fc-cache.
         "python3-gi", "python3-dbus", "libgtk-4-1", "libglib2.0-bin",
-        "libgdk-pixbuf-2.0-bin", "fontconfig", "shared-mime-info",
+        "libgdk-pixbuf2.0-bin", "fontconfig", "shared-mime-info",
         "desktop-file-utils",
         "gir1.2-gtk4layershell-1.0", "libgtk4-layer-shell0",
         "gir1.2-webkit-6.0", "libwebkitgtk-6.0-4",
@@ -251,13 +252,20 @@ class DebianArchive:
         os.makedirs(outdir, exist_ok=True)
         url = f"{self.mirror}/{filename}"
         tmp = target + ".part"
-        try:
-            with urllib.request.urlopen(url, timeout=120) as resp, open(tmp, "wb") as fh:
-                shutil.copyfileobj(resp, fh)
-        except (urllib.error.URLError, OSError) as exc:
-            raise NpkgError(f"download failed: {url}: {exc}") from exc
-        os.replace(tmp, target)
-        return target
+        
+        last_exc = None
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(url, timeout=120) as resp, open(tmp, "wb") as fh:
+                    shutil.copyfileobj(resp, fh)
+                os.replace(tmp, target)
+                return target
+            except (urllib.error.URLError, OSError) as exc:
+                last_exc = exc
+                import time
+                time.sleep(1 * (attempt + 1))
+        
+        raise NpkgError(f"download failed after 3 attempts: {url}: {last_exc}") from last_exc
 
 
 # ---------------------------------------------------------------------------
