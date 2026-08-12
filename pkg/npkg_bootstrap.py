@@ -71,6 +71,13 @@ SETS = {
         # npkg is Python, so the system needs one to manage itself. curl and
         # ca-certificates are what it fetches packages with.
         "python3", "python3-minimal", "curl", "wget", "ca-certificates",
+        # update-ca-certificates is a shell script that shells out to openssl.
+        # Without the binary it exits non-zero and writes no bundle, so
+        # /etc/ssl/certs stays empty and every TLS client reports zero trusted
+        # certificates -- with the certificates themselves present the whole
+        # time. ca-certificates depends on openssl only as Recommends, and we
+        # do not install recommends.
+        "openssl",
     ],
     "kernel": [
         # {arch} is substituted for the Debian architecture being built.

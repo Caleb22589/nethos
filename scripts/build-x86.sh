@@ -378,7 +378,9 @@ if command -v update-ca-certificates >/dev/null; then
             > /etc/ca-certificates.conf
         echo "ca-certificates.conf: $(wc -l < /etc/ca-certificates.conf) certificates listed"
     fi
-    update-ca-certificates --fresh >/dev/null 2>&1 || true
+    # Not silenced: hiding this is why an empty trust store looked like a
+    # success for so long.
+    update-ca-certificates --fresh 2>&1 | tail -2 || true
     certs=$( (find /etc/ssl/certs -maxdepth 1 -name '*.0' 2>/dev/null || true) | wc -l )
     bundle=/etc/ssl/certs/ca-certificates.crt
     if [ -s "$bundle" ]; then

@@ -266,7 +266,9 @@ if command -v update-ca-certificates >/dev/null; then
             > /etc/ca-certificates.conf
         echo "ca-certificates.conf: $(wc -l < /etc/ca-certificates.conf) certificates listed"
     fi
-    update-ca-certificates --fresh >/dev/null 2>&1 || true
+    # Not silenced: hiding this is why an empty trust store looked like a
+    # success for so long.
+    update-ca-certificates --fresh 2>&1 | tail -2 || true
     # Count what Debian actually writes: the concatenated bundle every TLS
     # library reads, plus the c_rehash symlinks. Counting *.pem reported zero
     # on a perfectly good trust store, because Debian does not put any there.
