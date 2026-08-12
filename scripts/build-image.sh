@@ -215,6 +215,42 @@ KVER=$(ls /usr/lib/modules 2>/dev/null | head -1)
 echo "kernel modules: ${KVER:-none}"
 [ -n "$KVER" ] || { echo "FATAL: no kernel installed"; exit 1; }
 
+echo "--- module map ---"
+# Debian's kernel package generates modules.dep in its postinst; we do not run
+# postinsts, so without this initramfs-tools has no dependency map, silently
+# builds an initramfs with no virtio_blk in it, and the kernel then cannot find
+# the root filesystem at all: "ALERT! UUID=... does not exist".
+depmod -a "$KVER"
+ls /usr/lib/modules/$KVER/modules.dep >/dev/null && echo "modules.dep generated"
+
+# Say explicitly what the initramfs must contain rather than trusting
+# autodetection inside a chroot, where /sys belongs to the builder and not to
+# the machine this image will boot on.
+mkdir -p /etc/initramfs-tools/conf.d
+cat > /etc/initramfs-tools/initramfs.conf <<CONF
+MODULES=most
+BUSYBOX=auto
+COMPRESS=zstd
+DEVICE=
+NFSROOT=auto
+RUNSIZE=10%
+CONF
+cat > /etc/initramfs-tools/modules <<MODS
+virtio
+virtio_pci
+virtio_blk
+virtio_scsi
+virtio_net
+virtio_gpu
+virtio_console
+ext4
+nvme
+ahci
+sd_mod
+usbhid
+xhci_pci
+MODS
+
 echo "--- initramfs ---"
 # Without this the kernel cannot reach the root filesystem: Debian builds
 # virtio_blk as a module, so something has to load it before the pivot.
@@ -223,6 +259,17 @@ update-initramfs -c -k "$KVER" || {
     mkinitramfs -o "/boot/initrd.img-$KVER" "$KVER"
 }
 ls -la /boot/ | head
+
+# Verify the initramfs can actually reach a disk before calling this a build.
+# Finding out at boot costs a full cycle; finding out here costs a grep.
+if command -v lsinitramfs >/dev/null; then
+    if lsinitramfs "/boot/initrd.img-$KVER" 2>/dev/null | grep -q "virtio_blk"; then
+        echo "initramfs contains virtio_blk"
+    else
+        echo "FATAL: initramfs has no virtio_blk -- it would not find the root"
+        exit 1
+    fi
+fi
 
 echo "--- bootloader ---"
 grub-install --target=arm64-efi --efi-directory=/boot \
