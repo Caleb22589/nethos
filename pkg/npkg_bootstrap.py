@@ -329,6 +329,45 @@ def setup_users(root: str, username: str, password: str,
     os.chmod(home, 0o750)
 
 
+def setup_network(root: str) -> None:
+    """Bring the wired interface up with DHCP.
+
+    Without this the system boots with an interface and no address: the kernel
+    renames eth0 to enp0s4 and then nothing configures it, so there is no
+    default route and no DNS. `npkg fetch` fails at the first download and it
+    looks like a package manager bug rather than a missing network.
+
+    systemd-networkd rather than NetworkManager, because it is already present
+    (systemd is pid 1) and needs one config file instead of a daemon and a
+    dependency chain.
+    """
+    netdir = os.path.join(root, "etc/systemd/network")
+    os.makedirs(netdir, exist_ok=True)
+    with open(os.path.join(netdir, "20-wired.network"), "w") as fh:
+        fh.write("[Match]\n"
+                 "Name=en* eth*\n\n"
+                 "[Network]\n"
+                 "DHCP=yes\n"
+                 "IPv6AcceptRA=yes\n\n"
+                 "[DHCPv4]\n"
+                 "UseDNS=yes\n"
+                 "UseNTP=yes\n")
+
+    # `systemctl enable` is only a symlink into a .wants directory, and we
+    # cannot run systemctl against a root that is not booted -- so make the
+    # symlinks directly.
+    def enable(unit: str, target: str) -> None:
+        wants = os.path.join(root, "etc/systemd/system", target + ".wants")
+        os.makedirs(wants, exist_ok=True)
+        link = os.path.join(wants, unit)
+        if not os.path.islink(link) and not os.path.exists(link):
+            os.symlink("/usr/lib/systemd/system/" + unit, link)
+
+    enable("systemd-networkd.service", "multi-user.target")
+    enable("systemd-networkd.socket", "sockets.target")
+    enable("systemd-resolved.service", "multi-user.target")
+
+
 def install_npkg(root: str) -> None:
     """Put npkg on the system it just built.
 
@@ -572,6 +611,7 @@ def bootstrap(root: str, sets: list[str], arch: str, username: str,
     setup_users(root, username, password, root_password)
     setup_pam(root)
     setup_sudo(root)
+    setup_network(root)
     install_npkg(root)
 
     if os.geteuid() != 0:
