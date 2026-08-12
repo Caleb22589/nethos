@@ -201,6 +201,10 @@ FSTAB
 cat > "$R/root/inside.sh" <<'INSIDE'
 #!/bin/bash
 set -euo pipefail
+# set -e aborts with no message at all, which turns any mistake in here into
+# "the build stopped after the last thing it printed" and nothing more. Say
+# which line died and what it was running.
+trap 'echo "FATAL: inside.sh line $LINENO failed (status $?): $BASH_COMMAND"' ERR
 echo "--- inside the NETHOS root ---"
 
 # systemd refuses to boot without a machine-id; empty is the documented way to
@@ -250,7 +254,12 @@ if command -v update-ca-certificates >/dev/null; then
     update-ca-certificates --fresh >/dev/null 2>&1 || true
     certs=$(ls /etc/ssl/certs/*.pem 2>/dev/null | wc -l)
     echo "ca-certificates: $certs trusted"
-    [ "$certs" -eq 0 ] && echo "WARNING: no CA certificates; https will fail"
+    # Written as if/fi rather than `[ test ] && echo`: under set -e a trailing
+    # && list that evaluates false is a non-zero status for the whole block,
+    # so the success case would abort the build.
+    if [ "$certs" -eq 0 ]; then
+        echo "WARNING: no CA certificates; https will fail"
+    fi
 fi
 
 # The rest of the caches Debian builds from postinsts and dpkg triggers. None
