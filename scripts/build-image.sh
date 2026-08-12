@@ -223,6 +223,18 @@ echo "--- module map ---"
 depmod -a "$KVER"
 ls /usr/lib/modules/$KVER/modules.dep >/dev/null && echo "modules.dep generated"
 
+# initramfs-tools expects its scripts directories to exist. They ship as empty
+# directories in the package, and empty directories are exactly what a
+# conversion is most likely to lose. When they are missing mkinitramfs fails a
+# cd early on -- printing a line that reads like a warning -- and never gets as
+# far as honouring the module list, so the initramfs comes out without a disk
+# driver. That one "harmless" message cost three build cycles.
+mkdir -p /etc/initramfs-tools/hooks
+for d in init-top init-premount init-bottom local-top local-premount \
+         local-block local-bottom panic; do
+    mkdir -p "/etc/initramfs-tools/scripts/$d"
+done
+
 # Say explicitly what the initramfs must contain rather than trusting
 # autodetection inside a chroot, where /sys belongs to the builder and not to
 # the machine this image will boot on.
