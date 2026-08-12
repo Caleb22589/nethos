@@ -107,7 +107,7 @@ if ! shell_ready; then
 fi
 
 exec nethos-view \
-    "url=$API/desktop.html,role=widget,name=desktop,layer=background,anchor=top,exclusive=-1" \
+    "url=$API/desktop.html,role=widget,name=desktop,layer=bottom,anchor=top,exclusive=-1" \
     "url=$API/panel.html,role=panel,name=panel,height=54,anchor=top,exclusive=46" \
     "url=$API/dock.html,role=dock,name=dock,height=110,anchor=bottom,exclusive=0" \
     "url=$API/menu.html,role=overlay,name=menu,keyboard=on,exclusive=0"

@@ -24,6 +24,16 @@ gaps inner 6
 # reserve the top strip for the panel so tiled windows are never covered
 gaps top 44
 
+# swaybg draws a full-screen surface on the *background* layer, and the NETHOS
+# desktop used to sit on that same layer. Two full-screen surfaces on one layer
+# stack by creation order, and exec_always re-creates swaybg's on every reload
+# -- putting it over the desktop, where it silently ate every click aimed at a
+# widget. Verified with a pointerdown probe: panel and dock received events,
+# desktop received none.
+#
+# The desktop is on the bottom layer now, above this. swaybg stays as the thing
+# behind it, so a failed desktop surface still gives a coloured screen rather
+# than a black one.
 exec_always swaybg -c "#0b0e14"
 
 ### the shell ---------------------------------------------------------------
