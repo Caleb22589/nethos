@@ -26,6 +26,7 @@ NOT a security boundary: every local app shares one origin and one API, so app
 "permissions" are scoping and hygiene, not a sandbox.
 """
 
+import contextlib
 import glob
 import json
 import os
@@ -248,19 +249,26 @@ class HyprIPC:
         if not base:
             return None
         path = os.path.join(base, ".socket.sock")
+        # closing() rather than a bare close() at the end: the close used to sit
+        # on the success path only, so every failed connect, timeout or short
+        # read leaked a file descriptor. A daemon that leaks descriptors keeps
+        # working until it hits its limit and then cannot accept() any more --
+        # at which point already-open connections carry on and new ones are
+        # refused. The clock stops, buttons do nothing, and the event stream
+        # still works, which reads as "the API died" when it is still running.
         try:
             with self._lock:
-                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                sock.settimeout(5)
-                sock.connect(path)
-                sock.sendall(text.encode())
-                chunks = []
-                while True:
-                    chunk = sock.recv(65536)
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                sock.close()
+                with contextlib.closing(
+                        socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)) as sock:
+                    sock.settimeout(5)
+                    sock.connect(path)
+                    sock.sendall(text.encode())
+                    chunks = []
+                    while True:
+                        chunk = sock.recv(65536)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
             return b"".join(chunks).decode("utf-8", "replace")
         except OSError:
             return None
