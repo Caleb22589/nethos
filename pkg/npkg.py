@@ -670,9 +670,20 @@ class Transaction:
                 f"{', '.join(sorted(paths)[:3])}")
 
         for conflict in manifest.conflicts:
-            cname = parse_requirement(conflict)[0]
-            if self.db.is_installed(cname):
-                raise ConflictError(f"{manifest.name} conflicts with {cname}")
+            # Honour the version constraint. Debian's conflicts are nearly
+            # always bounded -- udev declares "Conflicts: systemd (<< 255)",
+            # meaning it conflicts with *old* systemd, not with systemd. Reading
+            # only the name refuses packages that are perfectly compatible, and
+            # the damage is silent: refusing udev cost udevadm, systemd-udevd
+            # and every udev rule, so the initramfs had nothing to populate
+            # /dev/disk/by-uuid with and root=UUID= could never resolve.
+            cname, op, cversion = parse_requirement(conflict)
+            other = self.db.get(cname)
+            if other and satisfies(other.version, op, cversion):
+                detail = f" ({cname} {other.version} matches {op}{cversion})" \
+                    if op else ""
+                raise ConflictError(
+                    f"{manifest.name} conflicts with {cname}{detail}")
 
         previous = self.db.get(manifest.name)
         old_files = set(self.db.files(manifest.name)) if previous else set()
