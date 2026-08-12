@@ -258,11 +258,20 @@ fi
 # npkg fetch over https, and the news and stock widgets, all fail.
 if command -v update-ca-certificates >/dev/null; then
     update-ca-certificates --fresh >/dev/null 2>&1 || true
-    # find, not `ls *.pem`: with pipefail set, ls exits 2 when the glob matches
-    # nothing and the pipeline inherits that rather than wc's zero, so counting
-    # an empty directory aborted the whole build.
-    certs=$( (find /etc/ssl/certs -maxdepth 1 -name '*.pem' 2>/dev/null || true) | wc -l )
-    echo "ca-certificates: $certs trusted"
+    # Count what Debian actually writes: the concatenated bundle every TLS
+    # library reads, plus the c_rehash symlinks. Counting *.pem reported zero
+    # on a perfectly good trust store, because Debian does not put any there.
+    #
+    # find, not `ls glob`: with pipefail set, ls exits 2 when a glob matches
+    # nothing and the pipeline inherits that rather than wc's zero, which
+    # aborted the whole build on an empty directory.
+    certs=$( (find /etc/ssl/certs -maxdepth 1 -name '*.0' 2>/dev/null || true) | wc -l )
+    bundle=/etc/ssl/certs/ca-certificates.crt
+    if [ -s "$bundle" ]; then
+        echo "ca-certificates: $certs hashed, bundle $(wc -c < "$bundle") bytes"
+    else
+        echo "WARNING: no CA bundle at $bundle; https will fail"
+    fi
     # Written as if/fi rather than `[ test ] && echo`: under set -e a trailing
     # && list that evaluates false is a non-zero status for the whole block,
     # so the success case would abort the build.
