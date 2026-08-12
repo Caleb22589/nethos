@@ -1417,6 +1417,21 @@ def main():
     if watched:
         threading.Thread(target=watch_files, args=(watched,), daemon=True).start()
 
+    # A clock the surfaces can trust.
+    #
+    # WebKit throttles timers in pages it considers hidden, and layer-shell
+    # surfaces never take focus, so setInterval stops dead a moment after load:
+    # measured on real hardware as four surfaces that report in once and then
+    # never again, at 0.2% CPU with no errors. Event-driven code keeps running
+    # -- Super+D still opened the launcher -- so the periodic work moves onto
+    # the event stream, which is pushed from here and cannot be throttled away.
+    def ticker():
+        while True:
+            time.sleep(5)
+            EVENTS.publish("tick", {"t": time.time()})
+
+    threading.Thread(target=ticker, daemon=True).start()
+
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     srv.daemon_threads = True
     srv.serve_forever()

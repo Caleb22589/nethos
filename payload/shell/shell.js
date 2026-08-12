@@ -148,6 +148,16 @@ function initPanel() {
   });
 
   refreshTasks(); refreshStatus(); refreshTray();
+  // Driven by the server tick as well as a timer: the timer is the one that
+  // stops when WebKit decides this surface is hidden, and the tick is the one
+  // that keeps arriving. Both call the same refreshers, and they are cheap.
+  let lastTick = 0;
+  onEvent((msg) => {
+    if (msg.type !== "tick") return;
+    const now = Date.now();
+    refreshStatus();
+    if (now - lastTick > 15000) { lastTick = now; refreshTasks(); refreshTray(); }
+  });
   setInterval(refreshStatus, 15000);
   setInterval(refreshTasks, 20000);
 }
@@ -260,6 +270,12 @@ function initDock() {
 
   loadPrefs().then(refresh);
   window.addEventListener("resize", applyHostGeometry);
+  let widgetTick = 0;
+  onEvent((msg) => {
+    if (msg.type !== "tick") return;
+    const now = Date.now();
+    if (now - widgetTick > 30000) { widgetTick = now; refresh(); }
+  });
   setInterval(refresh, 30000);
 }
 
@@ -438,6 +454,17 @@ document.addEventListener("DOMContentLoaded", () => {
   window.addEventListener("unhandledrejection", (e) =>
     send("reject", String(e.reason)));
   send("start", "loaded " + new Date().toISOString());
-  setInterval(() => send("beat", ""), 10000);
   send("beat", "");
+  // Both a timer and the server tick. If only the timer beats, this surface's
+  // timers are alive; if only the tick beats, they have been throttled away.
+  // The difference is visible in nethos-doctor rather than guessed at.
+  setInterval(() => send("beat", "timer"), 10000);
+  try {
+    const es = new EventSource("/api/events");
+    es.onmessage = (ev) => {
+      try {
+        if (JSON.parse(ev.data).type === "tick") send("beat", "tick");
+      } catch (e) { /* not ours */ }
+    };
+  } catch (e) { /* no event stream; the timer beat still tells us something */ }
 })();
