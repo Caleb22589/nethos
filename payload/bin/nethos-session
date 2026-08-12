@@ -40,8 +40,13 @@ if [ "$i" -ge 150 ]; then
     exit 1
 fi
 
-# WebKit's compositing buffers are expensive without a GPU, so keep those off.
-export WEBKIT_DISABLE_COMPOSITING_MODE=1
+# WebKit's compositing buffers are expensive without a GPU -- but with one they
+# are how the work leaves the CPU. Disabling compositing on a machine that has
+# virgl keeps the whole shell rendering in software and is the difference
+# between a desktop that responds and one that does not.
+if [ ! -e /dev/dri/renderD128 ]; then
+    export WEBKIT_DISABLE_COMPOSITING_MODE=1
+fi
 
 # LIBGL_ALWAYS_SOFTWARE is *not* forced here. It used to be, on the assumption
 # that a VM has no GPU -- but virtio_gpu is a real DRM device, and Mesa rejects
