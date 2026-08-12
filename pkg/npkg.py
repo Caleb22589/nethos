@@ -96,6 +96,9 @@ class Manifest:
     # manifest stays readable and a package cannot smuggle in a binary hook.
     post_install: str = ""
     pre_remove: str = ""
+    # update-alternatives entries lifted out of the Debian postinst at
+    # conversion time: [{link, name, path, priority}, ...]
+    alternatives: list = field(default_factory=list)
     size: int = 0
     built: str = ""
 
@@ -670,9 +673,66 @@ class Transaction:
         verb = "upgraded" if previous else "installed"
         self.say(f"  {verb} {manifest.id} ({len(files)} files)")
 
+        if manifest.alternatives:
+            self._apply_alternatives(manifest)
+
         if manifest.post_install:
             self._run_script(manifest.post_install, manifest.name, "post-install")
         return manifest.name
+
+    def _apply_alternatives(self, manifest: Manifest) -> None:
+        """Create the symlinks update-alternatives would have made.
+
+        Debian packages ship /usr/bin/vim.basic and create /usr/bin/vim in the
+        postinst. We do not run postinsts, so without this the package installs
+        perfectly and the command does not exist -- which is exactly how it
+        looks from the outside: "installed 8 files", then "vim: command not
+        found".
+
+        The two-level layout is Debian's: link -> /etc/alternatives/name ->
+        the real binary, so switching an implementation is one symlink.
+        """
+        state_path = os.path.join(self.db.dir, "alternatives.json")
+        try:
+            with open(state_path) as fh:
+                state = json.load(fh)
+        except (OSError, ValueError):
+            state = {}
+
+        alt_dir = os.path.join(self.db.root, "etc", "alternatives")
+        os.makedirs(alt_dir, exist_ok=True)
+
+        for entry in manifest.alternatives:
+            name = entry.get("name")
+            link = entry.get("link", "")
+            target = entry.get("path", "")
+            priority = int(entry.get("priority", 0))
+            if not (name and link and target):
+                continue
+            if not os.path.exists(os.path.join(self.db.root, target.lstrip("/"))):
+                continue                      # the binary is in another package
+            # Highest priority wins, as update-alternatives does in auto mode.
+            if name in state and state[name]["priority"] > priority:
+                continue
+
+            alt = os.path.join(alt_dir, name)
+            link_path = os.path.join(self.db.root, link.lstrip("/"))
+            os.makedirs(os.path.dirname(link_path), exist_ok=True)
+            for path, dest in ((alt, target), (link_path, "/etc/alternatives/" + name)):
+                if os.path.islink(path) or os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        continue
+                os.symlink(dest, path)
+            state[name] = {"priority": priority, "path": target,
+                           "link": link, "package": manifest.name}
+
+        try:
+            with open(state_path, "w") as fh:
+                json.dump(state, fh, indent=2)
+        except OSError:
+            pass
 
     # -- remove ----------------------------------------------------------
     def remove(self, names: list[str], force: bool = False) -> list[str]:
@@ -962,11 +1022,17 @@ def cmd_fetch(args, db, repos):
     print("done")
 
 
+def cmd_service(args, db, repos):
+    from npkg_service import main as service_main    # noqa: PLC0415
+    service_main(args, db)
+
+
 def cmd_convert(args, db, repos):
     from npkg_convert import convert             # noqa: PLC0415
     for path in args.packages:
-        print(f"{os.path.basename(path)}  ->  "
-              f"{os.path.basename(convert(path, args.output))}")
+        out = convert(path, args.output, args.layout,
+                      getattr(args, "scripts", False))
+        print(f"{os.path.basename(path)}  ->  {os.path.basename(out)}")
 
 
 def main(argv=None):
@@ -1028,10 +1094,19 @@ def main(argv=None):
     p.add_argument("-y", "--yes", action="store_true")
     p.set_defaults(func=cmd_fetch)
 
+    p = sub.add_parser("service", help="enable/disable systemd units")
+    p.add_argument("action", choices=("list", "enable", "disable"))
+    p.add_argument("names", nargs="*")
+    p.add_argument("--user", action="store_true", help="the per-user manager")
+    p.set_defaults(func=cmd_service)
+
     p = sub.add_parser("convert",
                        help="convert Arch (.pkg.tar.*) or Debian (.deb) packages")
     p.add_argument("packages", nargs="+")
     p.add_argument("-o", "--output", default="./packages")
+    p.add_argument("--layout", choices=("native", "arch"), default="arch")
+    p.add_argument("--scripts", action="store_true",
+                   help="also carry maintainer scripts (they usually assume dpkg)")
     p.set_defaults(func=cmd_convert)
 
     args = parser.parse_args(argv)

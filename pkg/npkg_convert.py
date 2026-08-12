@@ -205,6 +205,50 @@ def parse_control(text: str) -> dict[str, str]:
 
 DEB_REQ = re.compile(r"^([A-Za-z0-9][A-Za-z0-9+.\-]*)(?::\w+)?\s*(?:\(([^)]*)\))?")
 
+# update-alternatives --install <link> <name> <path> <priority>
+ALT_INSTALL = re.compile(
+    r"update-alternatives\s+(?:[^\n]*?\s)?--install\s+"
+    r"(\S+)\s+(\S+)\s+(\S+)\s+(\d+)")
+ALT_SLAVE = re.compile(r"--slave\s+(\S+)\s+(\S+)\s+(\S+)")
+
+
+def parse_alternatives(script: str, layout: str = "native") -> list[dict]:
+    """Lift update-alternatives calls out of a Debian postinst.
+
+    Debian's vim package ships /usr/bin/vim.basic and creates /usr/bin/vim in
+    its postinst. We do not run postinsts, so the package installs perfectly
+    and the command does not exist -- "installed 8 files", then "vim: command
+    not found". Reading the calls out of the script gives us the links without
+    executing anything.
+    """
+    if not script:
+        return []
+    # Shell line continuations first, or a multi-line --install is invisible.
+    joined = re.sub(r"\\\s*\n\s*", " ", script)
+
+    out = []
+    for match in ALT_INSTALL.finditer(joined):
+        link, name, path, priority = match.groups()
+        entry = {"link": link, "name": name, "path": path,
+                 "priority": int(priority)}
+        # Slaves follow the --install on the same command; take the ones
+        # between this match and the next.
+        tail = joined[match.end():match.end() + 2000]
+        cut = tail.find("update-alternatives")
+        for slave in ALT_SLAVE.finditer(tail if cut < 0 else tail[:cut]):
+            slink, sname, spath = slave.groups()
+            out.append({"link": slink, "name": sname, "path": spath,
+                        "priority": int(priority)})
+        out.append(entry)
+
+    if layout == "arch":
+        # The links move with everything else: /usr/sbin/foo becomes
+        # /usr/bin/foo, so an alternative pointing at the old path would dangle.
+        for entry in out:
+            entry["link"] = "/" + arch_path(entry["link"])
+            entry["path"] = "/" + arch_path(entry["path"])
+    return out
+
 
 def deb_requirements(text: str) -> list[str]:
     """Translate a Debian dependency field into our requirement syntax.
@@ -259,6 +303,19 @@ def convert_deb(path: str, outdir: str, layout: str = "native",
             raise NpkgError(f"{path}: no control file")
         fields = parse_control(tar.extractfile(member).read().decode("utf-8", "replace"))
         hooks = {}
+        alternatives = []
+        # Always read postinst for alternatives, even when the script itself is
+        # not carried over: the links are data, the script is the risk.
+        postinst = next((m for m in tar.getmembers()
+                         if os.path.basename(m.name) == "postinst"), None)
+        if postinst is not None:
+            try:
+                alternatives = parse_alternatives(
+                    tar.extractfile(postinst).read().decode("utf-8", "replace"),
+                    layout)
+            except (OSError, UnicodeError):
+                alternatives = []
+
         for hook in ("postinst", "prerm") if scripts else ():
             m = next((m for m in tar.getmembers()
                       if os.path.basename(m.name) == hook), None)
@@ -302,6 +359,7 @@ def convert_deb(path: str, outdir: str, layout: str = "native",
             replaces=deb_requirements(fields.get("Replaces", "")),
             post_install=hooks.get("postinst", ""),
             pre_remove=hooks.get("prerm", ""),
+            alternatives=alternatives,
         )
         return _write(manifest, staging, outdir, source="deb", layout=layout)
     finally:
