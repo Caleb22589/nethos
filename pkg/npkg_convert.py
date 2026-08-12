@@ -463,11 +463,15 @@ def _write(manifest: Manifest, staging: str, outdir: str, source: str,
 
 def convert(path: str, outdir: str = "packages", layout: str = "native",
             scripts: bool = False) -> str:
+    if path.endswith(".rpm"):
+        from npkg_rpm import convert_rpm       # noqa: PLC0415
+        return convert_rpm(path, outdir, layout)
     if path.endswith(".deb"):
         return convert_deb(path, outdir, layout, scripts)
     if ".pkg.tar" in path:
         return convert_arch(path, outdir, layout)
-    raise NpkgError(f"{path}: unrecognised package (expected .deb or .pkg.tar.*)")
+    raise NpkgError(f"{path}: unrecognised package "
+                    f"(expected .deb, .rpm or .pkg.tar.*)")
 
 
 def main(argv=None):
