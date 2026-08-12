@@ -160,11 +160,24 @@ class Surface:
         # webkit_web_view_new_with_related_view() is a C constructor that the
         # GI bindings do not expose as a method; the same thing is reachable as
         # the construct-only "related-view" property.
-        if Surface._related_to is not None:
+        # Sharing a web process across all four surfaces saves roughly a
+        # hundred megabytes, and costs the whole shell when any one page
+        # misbehaves: a single hung or looping page freezes the panel's clock,
+        # the dock and every click at once, because they are all that same
+        # process. Reported from real hardware -- clock stopped at a specific
+        # minute, no button worked afterwards, while nethosd kept answering on
+        # its socket and Super+D still opened the launcher.
+        #
+        # A frozen desktop is worse than a hundred megabytes, so each surface
+        # gets its own process by default. Set NETHOS_SHARE_WEBPROCESS=1 to go
+        # back to sharing on a machine short of memory.
+        if os.environ.get("NETHOS_SHARE_WEBPROCESS") == "1" \
+                and Surface._related_to is not None:
             self.view = WebKit.WebView(related_view=Surface._related_to)
         else:
             self.view = WebKit.WebView()
-            Surface._related_to = self.view
+            if Surface._related_to is None:
+                Surface._related_to = self.view
 
         settings = self.view.get_settings()
         settings.set_enable_developer_extras(True)
