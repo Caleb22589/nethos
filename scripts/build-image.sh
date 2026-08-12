@@ -258,7 +258,10 @@ fi
 # npkg fetch over https, and the news and stock widgets, all fail.
 if command -v update-ca-certificates >/dev/null; then
     update-ca-certificates --fresh >/dev/null 2>&1 || true
-    certs=$(ls /etc/ssl/certs/*.pem 2>/dev/null | wc -l)
+    # find, not `ls *.pem`: with pipefail set, ls exits 2 when the glob matches
+    # nothing and the pipeline inherits that rather than wc's zero, so counting
+    # an empty directory aborted the whole build.
+    certs=$( (find /etc/ssl/certs -maxdepth 1 -name '*.pem' 2>/dev/null || true) | wc -l )
     echo "ca-certificates: $certs trusted"
     # Written as if/fi rather than `[ test ] && echo`: under set -e a trailing
     # && list that evaluates false is a non-zero status for the whole block,
@@ -275,7 +278,7 @@ fi
 # cache itself on first launch.
 if command -v fc-cache >/dev/null; then
     fc-cache -s -f >/dev/null 2>&1 || true
-    echo "fontconfig: $(ls /var/cache/fontconfig 2>/dev/null | wc -l) cache files"
+    echo "fontconfig: $( (find /var/cache/fontconfig -type f 2>/dev/null || true) | wc -l ) cache files"
 fi
 if command -v gdk-pixbuf-query-loaders >/dev/null; then
     gdk-pixbuf-query-loaders --update-cache >/dev/null 2>&1 || true
@@ -483,6 +486,18 @@ qemu-system-aarch64 \
     -nographic
 
 rm -f "$BUILDER_WORK"
+
+# QEMU exiting means the VM powered off, not that the build worked -- a failed
+# build powers off too, and this script cheerfully reported "Built:" over the
+# top of it. The guest prints a marker on the way out; require it.
+if ! grep -aq "=== NETHOS image build finished" "$LOG"; then
+    echo
+    echo "BUILD FAILED. The builder powered off without finishing." >&2
+    grep -aE "FATAL|WARNING|Failed to run module" "$LOG" | tail -5 >&2
+    echo "Full log: $LOG" >&2
+    exit 1
+fi
+
 say "Built: $DISK"
 echo
 echo "  Boot it:  scripts/run.sh --arch aarch64"
