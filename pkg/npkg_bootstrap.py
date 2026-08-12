@@ -96,7 +96,11 @@ SETS = {
         # .gschema.xml files on disk have been compiled, and nothing else in
         # the set can do it -- neither at build time nor after npkg installs
         # some later application that ships schemas of its own.
+        # libgdk-pixbuf-2.0-bin carries gdk-pixbuf-query-loaders, the last of
+        # the cache builders we need; fontconfig carries fc-cache.
         "python3-gi", "python3-dbus", "libgtk-4-1", "libglib2.0-bin",
+        "libgdk-pixbuf-2.0-bin", "fontconfig", "shared-mime-info",
+        "desktop-file-utils",
         "gir1.2-gtk4layershell-1.0", "libgtk4-layer-shell0",
         "gir1.2-webkit-6.0", "libwebkitgtk-6.0-4",
 

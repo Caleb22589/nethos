@@ -253,6 +253,29 @@ if command -v update-ca-certificates >/dev/null; then
     [ "$certs" -eq 0 ] && echo "WARNING: no CA certificates; https will fail"
 fi
 
+# The rest of the caches Debian builds from postinsts and dpkg triggers. None
+# of these are fatal on their own, which is what makes them worth doing here:
+# each one is instead paid for at runtime by the first program that needs it.
+# An empty /var/cache/fontconfig means every GUI application rebuilds the font
+# cache itself on first launch.
+if command -v fc-cache >/dev/null; then
+    fc-cache -s -f >/dev/null 2>&1 || true
+    echo "fontconfig: $(ls /var/cache/fontconfig 2>/dev/null | wc -l) cache files"
+fi
+if command -v gdk-pixbuf-query-loaders >/dev/null; then
+    gdk-pixbuf-query-loaders --update-cache >/dev/null 2>&1 || true
+fi
+for d in /usr/lib/*/gio/modules; do
+    [ -d "$d" ] && command -v gio-querymodules >/dev/null && \
+        gio-querymodules "$d" >/dev/null 2>&1 || true
+done
+if command -v update-desktop-database >/dev/null; then
+    update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+fi
+if command -v update-mime-database >/dev/null; then
+    update-mime-database /usr/share/mime >/dev/null 2>&1 || true
+fi
+
 # File capabilities do not survive the .deb -> .npk conversion, and ping is the
 # one that shows: without cap_net_raw it cannot open a raw socket and reports
 # "Operation not permitted". Debian's dpkg applies these from package metadata;
