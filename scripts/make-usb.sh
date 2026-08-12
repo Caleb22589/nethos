@@ -71,10 +71,27 @@ if [ -n "$end" ]; then
         say "Trimmed to the end of the last partition"
     fi
 fi
+on_disk_b=$(du -B1 "$IMG" 2>/dev/null | cut -f1)
+to_write_b=$(stat -c%s "$IMG" 2>/dev/null || stat -f%z "$IMG")
 on_disk=$(du -h "$IMG" | cut -f1)
 to_write=$(du -h --apparent-size "$IMG" 2>/dev/null | cut -f1 || echo "$on_disk")
 say "Wrote $IMG"
-say "  $to_write to flash   ($on_disk actually occupied here -- the file is sparse)"
+say "  $to_write to flash   ($on_disk of that is real data -- the rest is empty space)"
+
+# Trimming cannot help when the root partition spans the whole disk, which is
+# how the build lays it out. The only way to write less is to build a smaller
+# disk in the first place, so say so rather than quietly handing over an image
+# that is mostly zeroes.
+if [ -n "$on_disk_b" ] && [ "$to_write_b" -gt $(( on_disk_b * 2 )) ]; then
+    echo
+    say "This image is mostly empty space."
+    say "  Root fills the whole disk, so there is nothing here to trim."
+    say "  Rebuild smaller and dd will take a fraction of the time:"
+    case "$ARCH" in
+      x86_64)  say "      ./scripts/build-x86.sh --size 6G && ./scripts/make-usb.sh" ;;
+      aarch64) say "      ./scripts/build-image.sh --size 6G && ./scripts/make-usb.sh --arch aarch64" ;;
+    esac
+fi
 
 if [ -z "$TARGET" ]; then
     cat <<EOF
