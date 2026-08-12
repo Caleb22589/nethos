@@ -91,6 +91,40 @@ if [ "$ACCEL" = "tcg" ] && [ "$(uname -m)" = "arm64" ]; then
     say "The ARM build (scripts/build-image.sh) runs at native speed on this Mac."
 fi
 
+# Falling back to TCG on a machine that has KVM is the difference between a
+# four minute build and an hour, and the usual cause is a permission rather
+# than a missing feature: /dev/kvm is root:kvm 0660 on Arch and Debian, so a
+# user outside the kvm group fails the -w test above and gets emulation with
+# no indication that anything is wrong.
+if [ "$ACCEL" = "tcg" ] && [ "$(uname -s)" = "Linux" ] && \
+   [ "$(uname -m)" = "x86_64" ]; then
+    if [ -e /dev/kvm ]; then
+        say "WARNING: /dev/kvm exists but is not writable by $(id -un)."
+        say "         Running under TCG emulation, roughly 20x slower."
+        say "         Fix:  sudo usermod -aG kvm $(id -un)   (then log out and back in)"
+        say "         Or run this script with sudo."
+    else
+        say "WARNING: no /dev/kvm on this machine; running under TCG emulation."
+        say "         Check virtualisation is enabled in the firmware."
+    fi
+fi
+
+# The builder gets four cores regardless of the host, which wastes most of a
+# machine like a 5950X: conversion is the long pole and it scales across cores.
+# Take half the host's threads, within reason, and enough memory to match --
+# npkg extracts several packages at once and /tmp is usually a tmpfs.
+HOST_CPUS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+if [ "$ACCEL" = "tcg" ]; then
+    VM_CPUS=4                      # emulation does not scale; more just thrashes
+    VM_MEM=4096
+else
+    VM_CPUS=$(( HOST_CPUS / 2 )); [ "$VM_CPUS" -lt 4 ] && VM_CPUS=4
+    [ "$VM_CPUS" -gt 16 ] && VM_CPUS=16
+    VM_MEM=$(( VM_CPUS * 1024 )); [ "$VM_MEM" -lt 4096 ] && VM_MEM=4096
+    [ "$VM_MEM" -gt 16384 ] && VM_MEM=16384
+fi
+say "Builder: accel=$ACCEL, ${VM_CPUS} vCPU, ${VM_MEM}MB (host has $HOST_CPUS threads)"
+
 mkdir -p "$BUILD"
 [ "$CLEAN" -eq 1 ] && rm -f "$DISK"
 
@@ -487,7 +521,7 @@ say "Building (accel=$ACCEL). Downloads and installs a full base system."
 qemu-system-x86_64 \
     -name nethos-x86-builder \
     -machine q35,accel="$ACCEL" \
-    -cpu "$CPU" -smp 4 -m 4096 \
+    -cpu "$CPU" -smp "$VM_CPUS" -m "$VM_MEM" \
     -drive if=pflash,format=raw,readonly=on,file="$FW_CODE" \
     -drive if=pflash,format=raw,file="$FW_VARS" \
     -drive file="$BUILDER_WORK",if=virtio,format=qcow2 \
