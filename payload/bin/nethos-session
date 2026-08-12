@@ -40,6 +40,15 @@ if [ "$i" -ge 150 ]; then
     exit 1
 fi
 
+# virtio_gpu's atomic KMS does not always deliver page-flip completion events.
+# wlroots submits a frame, waits for a flip that never completes, and stops
+# scheduling repaints -- so the desktop paints one partial frame and then
+# freezes until an input event kicks it. That is the "white screen for twenty
+# seconds", the buttons that do nothing, and the half-drawn dock: the surfaces
+# are not slow, they are simply never asked to draw again. The legacy modeset
+# path does not have the problem.
+[ -e /dev/dri/card0 ] && export WLR_DRM_NO_ATOMIC=1
+
 # WebKit's compositing buffers are expensive without a GPU -- but with one they
 # are how the work leaves the CPU. Disabling compositing on a machine that has
 # virgl keeps the whole shell rendering in software and is the difference
