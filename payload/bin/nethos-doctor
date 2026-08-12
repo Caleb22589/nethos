@@ -1,0 +1,44 @@
+#!/bin/sh
+# What the shell is actually doing, when the screen will not say.
+#
+#     nethos-doctor
+#
+# Answers, in order: is the daemon up, is each surface's JavaScript still
+# running, what has it complained about, and what has the daemon been serving.
+API=http://127.0.0.1:7777
+
+printf '\033[1m--- nethosd ---\033[0m\n'
+if curl -sf -m3 "$API/api/status" >/dev/null 2>&1; then
+    echo "  responding on 7777"
+else
+    echo "  NOT RESPONDING -- systemctl --user status nethosd"
+    exit 1
+fi
+pid=$(pgrep -f "/usr/bin/nethosd" | head -1)
+[ -n "$pid" ] && echo "  pid $pid, $(ls /proc/$pid/fd 2>/dev/null | wc -l) descriptors"
+
+printf '\n\033[1m--- surfaces (seconds since last heartbeat) ---\033[0m\n'
+curl -sf -m3 "$API/api/health" 2>/dev/null | python3 -c '
+import json, sys
+try: h = json.load(sys.stdin)
+except Exception: print("  no health data"); raise SystemExit
+print("  daemon uptime: %ss" % h.get("uptime"))
+s = h.get("surfaces") or {}
+if not s:
+    print("  no surface has ever reported in -- the pages are not running the")
+    print("  diagnostics, so this image predates them or shell.js failed early")
+for name, age in sorted(s.items()):
+    state = "ok" if age < 30 else "STOPPED %.0fs ago" % age
+    print("  %-10s %6.1fs  %s" % (name, age, state))
+errs = h.get("client_errors") or []
+if errs:
+    print("\n  last JavaScript errors:")
+    for e in errs[-10:]:
+        print("   ", e)
+'
+
+printf '\n\033[1m--- recent requests ---\033[0m\n'
+tail -15 ~/.cache/nethos/nethosd.log 2>/dev/null || echo "  no log yet"
+
+printf '\n\033[1m--- web processes ---\033[0m\n'
+ps -eo pcpu,rss,comm --sort=-pcpu 2>/dev/null | grep -iE "webkit|nethos|COMMAND" | head -6

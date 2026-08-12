@@ -1179,12 +1179,40 @@ MIME = {
 }
 
 
+STARTED = time.time()
+DIAG_PATH = os.path.expanduser("~/.cache/nethos/nethosd.log")
+DIAG_LOCK = threading.Lock()
+# Last time each surface said it was alive, and what it last complained about.
+HEARTBEAT = {}
+CLIENT_ERRORS = []
+
+
+def diag(kind, message):
+    """Append one line to the daemon log, capped so it cannot fill the disk."""
+    line = "%s %-6s %s" % (time.strftime("%H:%M:%S"), kind, str(message)[:400])
+    try:
+        with DIAG_LOCK:
+            os.makedirs(os.path.dirname(DIAG_PATH), exist_ok=True)
+            if os.path.exists(DIAG_PATH) and os.path.getsize(DIAG_PATH) > 2_000_000:
+                with open(DIAG_PATH) as fh:
+                    tail = fh.readlines()[-2000:]
+                with open(DIAG_PATH, "w") as fh:
+                    fh.writelines(tail)
+            with open(DIAG_PATH, "a") as fh:
+                fh.write(line + "\n")
+    except OSError:
+        pass
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "nethosd/3.0"
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
-        pass
+        # Was `pass`. Silence is why several evenings went into guessing what
+        # the shell was doing: nothing anywhere recorded that a request had
+        # been made, succeeded, or stopped arriving.
+        diag("http", fmt % args)
 
     def send_json(self, obj, code=200):
         body = json.dumps(obj).encode()
@@ -1258,6 +1286,14 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "/api/events":
             return self.serve_events()
+        if route == "/api/health":
+            now = time.time()
+            return self.send_json({
+                "uptime": round(now - STARTED, 1),
+                "surfaces": {k: round(now - v, 1) for k, v in HEARTBEAT.items()},
+                "client_errors": CLIENT_ERRORS[-20:],
+                "log": DIAG_PATH,
+            })
         if route == "/api/apps":
             return self.send_json({"apps": [
                 {k: v for k, v in a.items() if not k.startswith("_")}
@@ -1305,6 +1341,24 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         route = urllib.parse.urlparse(self.path).path
         data = self.read_json()
+
+        if route == "/api/log":
+            # The pages have no other way to be heard: their console output goes
+            # to the compositor's stdout, which nothing collects on a running
+            # system. A heartbeat here is also the only way to tell "the page is
+            # idle" from "the page stopped running", which look identical on
+            # screen.
+            kind = str(data.get("kind", "log"))[:16]
+            surface = str(data.get("surface", "?"))[:24]
+            if kind == "beat":
+                HEARTBEAT[surface] = time.time()
+            else:
+                entry = "%s [%s] %s" % (time.strftime("%H:%M:%S"), surface,
+                                        str(data.get("message", ""))[:300])
+                CLIENT_ERRORS.append(entry)
+                del CLIENT_ERRORS[:-100]
+                diag(kind, "%s: %s" % (surface, data.get("message", "")))
+            return self.send_json({"ok": True})
 
         if route == "/api/launch":
             builtin = data.get("builtin", "")

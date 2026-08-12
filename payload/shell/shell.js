@@ -412,3 +412,32 @@ document.addEventListener("DOMContentLoaded", () => {
   else if (view === "menu") initMenu();
   else if (view === "desktop") initDesktop();
 });
+
+/* ---------------------------------------------------------- diagnostics --
+ * The shell surfaces have no visible output. Their console goes to the
+ * compositor's stdout, which nothing collects on a running machine, so a page
+ * whose timers have stopped looks exactly like a page with nothing to do. This
+ * reports errors to nethosd and beats every ten seconds; `nethos-doctor` reads
+ * both back. If a beat stops arriving, that page's JavaScript has stopped, and
+ * the timestamp says when.
+ */
+(function diagnostics() {
+  const surface = (location.pathname.replace(/^\/|\.html$/g, "") || "shell");
+  const send = (kind, message) => {
+    try {
+      fetch("/api/log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, surface, message }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch (e) { /* never let logging break the shell */ }
+  };
+  window.addEventListener("error", (e) =>
+    send("error", e.message + " @ " + (e.filename || "?") + ":" + (e.lineno || 0)));
+  window.addEventListener("unhandledrejection", (e) =>
+    send("reject", String(e.reason)));
+  send("start", "loaded " + new Date().toISOString());
+  setInterval(() => send("beat", ""), 10000);
+  send("beat", "");
+})();
