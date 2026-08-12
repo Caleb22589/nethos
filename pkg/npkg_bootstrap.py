@@ -65,6 +65,9 @@ SETS = {
         "systemd", "systemd-sysv", "udev", "dbus", "kmod", "libcap2-bin",
         "iproute2", "iputils-ping", "netbase", "ca-certificates",
         "nano", "less", "procps", "psmisc", "e2fsprogs", "mount",
+        # npkg is Python, so the system needs one to manage itself. curl and
+        # ca-certificates are what it fetches packages with.
+        "python3", "python3-minimal", "curl", "wget", "ca-certificates",
     ],
     "kernel": [
         # {arch} is substituted for the Debian architecture being built.
@@ -326,6 +329,36 @@ def setup_users(root: str, username: str, password: str,
     os.chmod(home, 0o750)
 
 
+def install_npkg(root: str) -> None:
+    """Put npkg on the system it just built.
+
+    Without this the image has a package database and no way to read it: you
+    could build a system but never install anything into it afterwards.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    dest = os.path.join(root, "usr/lib/nethos/pkg")
+    os.makedirs(dest, exist_ok=True)
+    for name in os.listdir(here):
+        if name.endswith(".py"):
+            shutil.copy2(os.path.join(here, name), os.path.join(dest, name))
+
+    wrapper = os.path.join(root, "usr/bin/npkg")
+    with open(wrapper, "w") as fh:
+        fh.write("#!/bin/sh\n"
+                 "# npkg lives in /usr/lib/nethos/pkg; this keeps its modules\n"
+                 "# together and off the general Python path.\n"
+                 'exec python3 /usr/lib/nethos/pkg/npkg.py "$@"\n')
+    os.chmod(wrapper, 0o755)
+
+    # Somewhere for repositories to be configured later.
+    conf = os.path.join(root, "etc/npkg")
+    os.makedirs(conf, exist_ok=True)
+    repos = os.path.join(conf, "repos.json")
+    if not os.path.exists(repos):
+        with open(repos, "w") as fh:
+            fh.write('{\n  "repos": []\n}\n')
+
+
 def setup_pam(root: str) -> None:
     """Write the PAM stacks Debian would have generated.
 
@@ -539,6 +572,7 @@ def bootstrap(root: str, sets: list[str], arch: str, username: str,
     setup_users(root, username, password, root_password)
     setup_pam(root)
     setup_sudo(root)
+    install_npkg(root)
 
     if os.geteuid() != 0:
         say("\n  ! not running as root: file ownership and setuid bits were "

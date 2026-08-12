@@ -866,6 +866,66 @@ def cmd_index(args, db, repos):
     print(f"indexed {len(index['packages'])} packages in {args.directory}")
 
 
+DEB_ARCH = {"aarch64": "arm64", "arm64": "arm64",
+            "x86_64": "amd64", "amd64": "amd64",
+            "armv7l": "armhf", "riscv64": "riscv64"}
+
+
+def cmd_fetch(args, db, repos):
+    """Install straight from Debian's archive: resolve, convert, install.
+
+    This is what makes npkg usable on the running system rather than only at
+    image-build time. Debian's index is the dependency authority; the packages
+    become npkg packages on the way in, and nothing Debian-specific is left
+    behind on disk.
+    """
+    import platform                                    # noqa: PLC0415
+    from npkg_bootstrap import DebianArchive           # noqa: PLC0415
+    from npkg_convert import convert_deb               # noqa: PLC0415
+
+    arch = args.arch or DEB_ARCH.get(platform.machine(), "arm64")
+    work = os.path.join(db.root, CACHE_DIR, "debian")
+    os.makedirs(work, exist_ok=True)
+
+    print(f"Debian {args.suite}/{arch}")
+    archive = DebianArchive(args.mirror, args.suite, arch, cache=work)
+    archive.load()
+
+    resolved = archive.resolve(args.names, with_recommends=args.recommends)
+    installed = db.installed()
+    todo = [f for f in resolved if f["Package"] not in installed]
+    if not todo:
+        print("nothing to do — already installed")
+        return
+
+    size = sum(int(f.get("Size", 0)) for f in todo) / 1e6
+    print(f"{len(todo)} packages to install ({size:.1f} MB)")
+    for f in todo:
+        print(f"  {f['Package']:<28} {f.get('Version','')}")
+    if args.dry_run:
+        return
+    if not args.yes:
+        try:
+            if input("continue? [Y/n] ").strip().lower() not in ("", "y", "yes"):
+                print("cancelled")
+                return
+        except EOFError:
+            pass
+
+    debs, npks = os.path.join(work, "debs"), os.path.join(work, "packages")
+    tx = Transaction(db, [])
+    for i, fields in enumerate(todo, 1):
+        name = fields["Package"]
+        print(f"[{i}/{len(todo)}] {name}")
+        deb = archive.download(fields, debs)
+        npk = convert_deb(deb, npks, layout=args.layout)
+        try:
+            tx.install_files([npk])
+        except NpkgError as exc:
+            print(f"  skipped: {exc}")
+    print("done")
+
+
 def cmd_convert(args, db, repos):
     from npkg_convert import convert             # noqa: PLC0415
     for path in args.packages:
@@ -920,6 +980,17 @@ def main(argv=None):
     p = sub.add_parser("index", help="generate index.json for a package directory")
     p.add_argument("directory")
     p.set_defaults(func=cmd_index)
+
+    p = sub.add_parser("fetch",
+                       help="install packages straight from Debian's archive")
+    p.add_argument("names", nargs="+")
+    p.add_argument("--suite", default="bookworm")
+    p.add_argument("--mirror", default="http://deb.debian.org/debian")
+    p.add_argument("--arch", default="", help="Debian arch (default: this machine)")
+    p.add_argument("--layout", choices=("native", "arch"), default="arch")
+    p.add_argument("--recommends", action="store_true")
+    p.add_argument("-y", "--yes", action="store_true")
+    p.set_defaults(func=cmd_fetch)
 
     p = sub.add_parser("convert",
                        help="convert Arch (.pkg.tar.*) or Debian (.deb) packages")
