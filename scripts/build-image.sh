@@ -240,6 +240,17 @@ if command -v glib-compile-schemas >/dev/null && \
     fi
 fi
 
+# ca-certificates ships the CAs as individual files and builds the trust store
+# in its postinst. Without that step /etc/ssl/certs is unpopulated and every
+# TLS client reports "System trust contains zero trusted certificates" -- so
+# npkg fetch over https, and the news and stock widgets, all fail.
+if command -v update-ca-certificates >/dev/null; then
+    update-ca-certificates --fresh >/dev/null 2>&1 || true
+    certs=$(ls /etc/ssl/certs/*.pem 2>/dev/null | wc -l)
+    echo "ca-certificates: $certs trusted"
+    [ "$certs" -eq 0 ] && echo "WARNING: no CA certificates; https will fail"
+fi
+
 # File capabilities do not survive the .deb -> .npk conversion, and ping is the
 # one that shows: without cap_net_raw it cannot open a raw socket and reports
 # "Operation not permitted". Debian's dpkg applies these from package metadata;

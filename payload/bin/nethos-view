@@ -184,7 +184,18 @@ class Surface:
         if spec.get("transparent", "1") not in ("0", "false", "no"):
             # Transparent so CSS glass composites against the desktop rather
             # than an opaque white page.
-            self.view.set_background_color(Gdk.RGBA(red=0, green=0, blue=0, alpha=0))
+            #
+            # Gdk.RGBA(red=0, green=0, blue=0, alpha=0) does NOT work: GdkRGBA
+            # is a boxed type, and PyGObject ignores constructor keywords for
+            # boxed types -- it says so in a DeprecationWarning and carries on.
+            # The struct arrives uninitialised, alpha is not 0, WebKit paints
+            # every surface opaque, and the desktop is a full-screen white
+            # sheet with the shell rendering invisibly underneath it. Assign
+            # the fields after construction, which is the supported route.
+            transparent = Gdk.RGBA()
+            transparent.red = transparent.green = transparent.blue = 0.0
+            transparent.alpha = 0.0
+            self.view.set_background_color(transparent)
 
         self._install_bridge()
 

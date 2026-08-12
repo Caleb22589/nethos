@@ -1057,6 +1057,26 @@ DEB_ARCH = {"aarch64": "arm64", "arm64": "arm64",
             "armv7l": "armhf", "riscv64": "riscv64"}
 
 
+def default_suite() -> str:
+    """The Debian suite this system was actually built from.
+
+    Recorded at bootstrap in /etc/npkg/suite. The default here used to be
+    "bookworm" while the image was built from trixie, so `npkg fetch` pulled
+    packages from a different release than the one on disk -- installing
+    bookworm's libglib2.0-bin alongside trixie's glib, which is exactly the
+    cross-release mixing the conflict checks exist to prevent, arriving through
+    the front door.
+    """
+    try:
+        with open("/etc/npkg/suite") as fh:
+            suite = fh.read().strip()
+            if suite:
+                return suite
+    except OSError:
+        pass
+    return "trixie"
+
+
 def cmd_fetch(args, db, repos):
     """Install straight from Debian's archive: resolve, convert, install.
 
@@ -1238,7 +1258,7 @@ def main(argv=None):
     p = sub.add_parser("fetch",
                        help="install packages straight from Debian's archive")
     p.add_argument("names", nargs="+")
-    p.add_argument("--suite", default="bookworm")
+    p.add_argument("--suite", default=default_suite())
     p.add_argument("--mirror", default="http://deb.debian.org/debian")
     p.add_argument("--arch", default="", help="Debian arch (default: this machine)")
     p.add_argument("--layout", choices=("native", "arch"), default="arch")

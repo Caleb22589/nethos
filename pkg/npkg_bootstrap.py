@@ -836,6 +836,12 @@ def bootstrap(root: str, sets: list[str], arch: str, username: str,
             say(f"  {os.path.basename(path)}: {exc}")
     say(f"  installed {installed} packages")
 
+    # Tell the installed npkg which release this system came from, so `npkg
+    # fetch` pulls from the same one rather than from a hardcoded default.
+    os.makedirs(os.path.join(root, "etc/npkg"), exist_ok=True)
+    with open(os.path.join(root, "etc/npkg/suite"), "w") as fh:
+        fh.write(suite + "\n")
+
     say("\n== users, sudo, /etc ==")
     setup_etc(root, hostname)
     setup_users(root, username, password, root_password)
