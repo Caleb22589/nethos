@@ -59,8 +59,34 @@ fi
 die() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 
-DISPLAY_ARGS=(-display cocoa,show-cursor=on)
-[ "$CONSOLE" -eq 1 ] && DISPLAY_ARGS=(-display none)
+# Pick a display backend this QEMU actually has, rather than assuming the Mac's.
+# Arch splits QEMU up: qemu-base is headless and offers only "none", so hard-
+# coding cocoa fails with "Parameter 'type' does not accept value 'cocoa'" and
+# hard-coding gtk would fail the same way.
+QEMU_BIN="qemu-system-${ARCH}"
+AVAIL=$("$QEMU_BIN" -display help 2>/dev/null | tr -d ' ')
+pick_display() {
+    for d in "$@"; do
+        printf '%s\n' "$AVAIL" | grep -qx "$d" && { echo "$d"; return; }
+    done
+}
+case "$(uname -s)" in
+    Darwin) DISP=$(pick_display cocoa sdl gtk) ;;
+    *)      DISP=$(pick_display gtk sdl) ;;
+esac
+
+if [ "$CONSOLE" -eq 1 ]; then
+    DISPLAY_ARGS=(-display none)
+elif [ -z "$DISP" ]; then
+    die "This QEMU has no graphical display backend (only: $(printf '%s' "$AVAIL" | tr '\n' ' ')).
+  Arch/CachyOS:   sudo pacman -S qemu-desktop     (qemu-base is headless)
+  Debian/Ubuntu:  sudo apt install qemu-system-gui
+  Or run headless on the serial console:  $0 --console"
+elif [ "$DISP" = "cocoa" ]; then
+    DISPLAY_ARGS=(-display cocoa,show-cursor=on)
+else
+    DISPLAY_ARGS=(-display "$DISP")
+fi
 
 NET=(-device virtio-net-pci,netdev=net0
      -netdev user,id=net0,hostfwd=tcp::2222-:22)
