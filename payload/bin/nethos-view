@@ -251,6 +251,24 @@ class Surface:
             self.window.set_visible(False)
         elif kind == "show":
             self.window.set_visible(True)
+            # set_visible(True) alone is not enough. Hiding the window stops
+            # GTK's frame clock, and on a layer surface it does not restart on
+            # its own: the launcher came back up with document.visibilityState
+            # "visible" and received *zero* requestAnimationFrame callbacks,
+            # while every other surface ran at 59fps.
+            #
+            # WebKit drives input dispatch off its rendering pipeline, so a
+            # page that never gets a frame also never processes its click
+            # queue. The launcher looked frozen -- ten clicks on an app did
+            # nothing, then thirty seconds later twenty copies of it opened at
+            # once, when the queue finally drained. Timers still ran, which is
+            # why the surface looked alive while behaving like it was dead.
+            self.window.queue_draw()
+            self.view.queue_draw()
+            try:
+                self.window.present()
+            except Exception:                 # noqa: BLE001
+                pass
 
     def _set_input_rect(self, msg):
         """Limit clicks to part of the surface.
