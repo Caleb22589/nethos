@@ -215,8 +215,10 @@ if [ ! -e /usr/bin/init ] && [ -e /usr/lib/systemd/systemd ]; then
     ln -sf /usr/lib/systemd/systemd /usr/bin/init
 fi
 
-# Users that systemd's own units expect to exist.
-for u in systemd-network:998 systemd-resolve:997 systemd-timesync:996; do
+# Users that systemd's own units expect to exist. sshd is here for the same
+# reason as the rest: its privilege-separation account is created by openssh-
+# server's postinst, and without it sshd refuses to start at all.
+for u in systemd-network:998 systemd-resolve:997 systemd-timesync:996 sshd:74; do
     name=${u%:*}; id=${u#*:}
     grep -q "^$name:" /etc/passwd || \
         echo "$name:x:$id:$id:$name:/:/usr/bin/nologin" >> /etc/passwd
