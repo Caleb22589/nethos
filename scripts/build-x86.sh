@@ -72,10 +72,29 @@ for c in /opt/homebrew/share/qemu/edk2-x86_64-code.fd \
          /usr/local/share/qemu/edk2-x86_64-code.fd \
          /usr/share/qemu/edk2-x86_64-code.fd \
          /usr/share/OVMF/OVMF_CODE.fd \
-         /usr/share/edk2-ovmf/x64/OVMF_CODE.fd; do
+         /usr/share/edk2-ovmf/x64/OVMF_CODE.fd \
+         /usr/share/edk2/x64/OVMF_CODE.4m.fd \
+         /usr/share/edk2/x64/OVMF_CODE.fd \
+         /usr/share/edk2/OVMF_CODE_4M.fd \
+         /usr/share/edk2/ovmf/OVMF_CODE.fd; do
     [ -f "$c" ] && FW_CODE="$c" && break
 done
-[ -n "$FW_CODE" ] || die "edk2-x86_64-code.fd (or OVMF_CODE.fd) not found"
+if [ -z "$FW_CODE" ]; then
+    # Say what is actually missing. Every distribution puts this somewhere
+    # different -- Arch moved it to /usr/share/edk2/x64/OVMF_CODE.4m.fd -- so
+    # "not found" on its own sends people hunting for a package they already
+    # have installed.
+    found=$(find /usr/share -maxdepth 4 -iname 'OVMF_CODE*.fd' 2>/dev/null | head -5)
+    if [ -n "$found" ]; then
+        die "UEFI firmware found but at an unexpected path:
+$found
+Add it to the search list in $0, or symlink it to /usr/share/edk2/x64/OVMF_CODE.4m.fd"
+    fi
+    die "No UEFI firmware (OVMF_CODE.fd) on this machine.
+  Arch/CachyOS:   sudo pacman -S edk2-ovmf
+  Debian/Ubuntu:  sudo apt install ovmf
+  macOS:          brew install qemu"
+fi
 
 # Acceleration: KVM on Linux x86, HVF on macOS x86, TCG everywhere else.
 ACCEL=tcg; CPU=Nehalem
@@ -153,13 +172,32 @@ rm -f "$FW_VARS"
 # 64 MB zeroed file the way the ARM build does. Copy the shipped template, which
 # is already the right size (~540 KB).
 FW_VARS_TEMPLATE=""
+# The variables template must be the one that matches the code file. Arch's
+# OVMF_CODE.4m.fd is 4MB and pairs with OVMF_VARS.4m.fd; pairing it with a 2MB
+# VARS gives a machine that reaches the UEFI shell and never boots, which is a
+# long way to travel for a mismatched file size. Look beside the code file
+# first, then fall back to the general list.
+FW_VARS_TEMPLATE=""
+case "$FW_CODE" in
+    *OVMF_CODE.4m.fd)  cand="${FW_CODE%OVMF_CODE.4m.fd}OVMF_VARS.4m.fd" ;;
+    *OVMF_CODE_4M.fd)  cand="${FW_CODE%OVMF_CODE_4M.fd}OVMF_VARS_4M.fd" ;;
+    *OVMF_CODE.fd)     cand="${FW_CODE%OVMF_CODE.fd}OVMF_VARS.fd" ;;
+    *edk2-x86_64-code.fd) cand="${FW_CODE%edk2-x86_64-code.fd}edk2-i386-vars.fd" ;;
+    *) cand="" ;;
+esac
+[ -n "$cand" ] && [ -f "$cand" ] && FW_VARS_TEMPLATE="$cand"
+
 for t in /opt/homebrew/share/qemu/edk2-i386-vars.fd \
          /usr/local/share/qemu/edk2-i386-vars.fd \
          /usr/share/qemu/edk2-i386-vars.fd \
          /usr/share/OVMF/OVMF_VARS.fd \
-         /usr/share/edk2-ovmf/x64/OVMF_VARS.fd; do
+         /usr/share/edk2-ovmf/x64/OVMF_VARS.fd \
+         /usr/share/edk2/x64/OVMF_VARS.4m.fd \
+         /usr/share/edk2/OVMF_VARS_4M.fd; do
+    [ -n "$FW_VARS_TEMPLATE" ] && break
     [ -f "$t" ] && FW_VARS_TEMPLATE="$t" && break
 done
+say "Firmware: $(basename "$FW_CODE") + $(basename "${FW_VARS_TEMPLATE:-none}")"
 if [ -n "$FW_VARS_TEMPLATE" ]; then
     cp "$FW_VARS_TEMPLATE" "$FW_VARS"
 else
