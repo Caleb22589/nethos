@@ -86,6 +86,14 @@ SETS = {
         # unreachable without an initramfs to load them first.
         "initramfs-tools", "busybox", "zstd",
         "grub-efi-{arch}-bin", "grub-common", "grub2-common", "efibootmgr",
+        # A VM needs none of this; real hardware does not boot usefully without
+        # it. Modesetting on AMD and Intel graphics, and most wifi, load
+        # firmware blobs at probe time -- missing them gives a black screen or
+        # no network on a machine that works fine under QEMU. These live in
+        # Debian's non-free-firmware component, which is why the archive reader
+        # now reads it as well as main.
+        "firmware-linux-free", "firmware-misc-nonfree",
+        "firmware-amd-graphics", "firmware-realtek", "firmware-iwlwifi",
     ],
     "net": ["network-manager", "wpasupplicant", "iw", "wireless-regdb"],
 
@@ -161,7 +169,7 @@ class DebianArchive:
     """Just enough of a Debian mirror to resolve and fetch a package set."""
 
     def __init__(self, mirror=MIRROR, suite=SUITE, arch="arm64",
-                 components=("main",), cache="."):
+                 components=("main", "non-free-firmware"), cache="."):
         self.mirror = mirror.rstrip("/")
         self.suite = suite
         self.arch = arch
