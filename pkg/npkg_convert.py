@@ -406,6 +406,27 @@ def arch_path(path: str) -> str:
     return path
 
 
+# A symlink target that still names a multiarch directory, e.g.
+# "aarch64-linux-gnu/ld-linux-aarch64.so.1" -- relative or absolute.
+TRIPLET_IN_TARGET = re.compile(
+    r"(^|/)(?:aarch64|arm|x86_64|i386|riscv64|powerpc64le|s390x)"
+    r"-[a-z0-9]+-[a-z]+[a-z0-9]*/")
+
+
+def arch_link_target(target: str) -> str:
+    """Rewrite a symlink's target for the flattened layout.
+
+    Not doing this is how the dynamic loader ended up pointing at itself:
+    libc6 ships the real loader in the multiarch directory and a symlink to it
+    from /lib. Flatten the paths but leave the target alone and the link
+    resolves back to where it already is -- ELOOP, and nothing on the system
+    can execute, including the shell that would tell you why.
+    """
+    if target.startswith("/"):
+        return "/" + arch_path(target)
+    return TRIPLET_IN_TARGET.sub(r"\1", target)
+
+
 def relayout(staging: str) -> int:
     """Move a staged package tree into the Arch layout in place."""
     moved = 0
@@ -413,18 +434,48 @@ def relayout(staging: str) -> int:
         for name in names:
             src = os.path.join(base, name)
             rel = os.path.relpath(src, staging)
+
+            # Rewrite the target first, whether or not the link itself moves.
+            if os.path.islink(src):
+                old = os.readlink(src)
+                new_target = arch_link_target(old)
+                if new_target != old:
+                    os.remove(src)
+                    os.symlink(new_target, src)
+
             new = arch_path(rel)
             if new == rel:
                 continue
             dst = os.path.join(staging, new)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
-            if os.path.exists(dst) or os.path.islink(dst):
-                # Same file arriving by two routes (a package shipping both
-                # lib/foo and usr/lib/foo). Keep the first; they are identical.
-                os.remove(src)
+
+            if os.path.lexists(dst):
+                # The same thing arriving by two routes: a package shipping
+                # both the real file in the multiarch directory and a symlink
+                # to it from /lib. A real file must win, or the survivor is a
+                # link with nothing behind it.
+                if os.path.islink(dst) and not os.path.islink(src):
+                    os.remove(dst)
+                    os.replace(src, dst)
+                    moved += 1
+                else:
+                    os.remove(src)
                 continue
+
             os.replace(src, dst)
             moved += 1
+
+    # A link that now points at itself is worse than no link at all.
+    for base, _dirs, names in os.walk(staging):
+        for name in names:
+            path = os.path.join(base, name)
+            if os.path.islink(path):
+                target = os.readlink(path)
+                resolved = os.path.normpath(
+                    target if target.startswith("/")
+                    else os.path.join(os.path.dirname(path), target))
+                if resolved.rstrip("/") == path.rstrip("/"):
+                    os.remove(path)
 
     # Prune the directories the move emptied.
     for base, dirs, _names in os.walk(staging, topdown=False):
