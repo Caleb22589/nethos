@@ -306,6 +306,20 @@ GRUB_CMDLINE_LINUX=""
 GRUB_TERMINAL="console serial"
 GRUB
 grub-mkconfig -o /boot/grub/grub.cfg
+
+# Whatever grub-probe decided, the UUID we formatted the disk with is the
+# truth. Correct it and then verify, rather than hoping.
+if [ -n "${ROOT_UUID:-}" ]; then
+    sed -i "s|root=UUID=[0-9a-fA-F-]*|root=UUID=$ROOT_UUID|g" /boot/grub/grub.cfg
+    wrong=$(grep -o "root=UUID=[0-9a-fA-F-]*" /boot/grub/grub.cfg \
+            | grep -cv "root=UUID=$ROOT_UUID" || true)
+    right=$(grep -c "root=UUID=$ROOT_UUID" /boot/grub/grub.cfg || true)
+    echo "grub root=UUID: $right correct, ${wrong:-0} wrong (target $ROOT_UUID)"
+    if [ "${right:-0}" -lt 1 ]; then
+        echo "FATAL: grub.cfg has no boot entry pointing at the root filesystem"
+        exit 1
+    fi
+fi
 grep -c "^menuentry" /boot/grub/grub.cfg | xargs echo "grub menu entries:"
 
 date -u +'%Y-%m-%dT%H:%M:%SZ' > /etc/nethos-release
@@ -313,7 +327,7 @@ echo "--- done inside ---"
 INSIDE
 
 chmod +x "$R/root/inside.sh"
-chroot "$R" /root/inside.sh
+chroot "$R" env ROOT_UUID="$ROOT_UUID" ESP_UUID="$ESP_UUID" /root/inside.sh
 rm -f "$R/root/inside.sh"
 
 echo "--- sanity ---"
