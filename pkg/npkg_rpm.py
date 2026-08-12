@@ -18,10 +18,12 @@ capabilities rather than package names:
     Requires: /usr/bin/sh
 
 Those are satisfied by *files and sonames*, not by a package called libc6 or
-glibc. A converted RPM therefore asks for things no Debian package declares,
-even though the underlying library is sitting right there. Requirements that
-look like capabilities are dropped rather than translated into fiction, and
-the manifest records what was dropped.
+glibc. npkg keeps them, because the capability index resolves exactly that:
+the soname of every installed library and the owner of every installed file.
+Decorations are stripped -- libc.so.6(GLIBC_2.34)(64bit) becomes libc.so.6 --
+because we index sonames but not symbol versions, and asserting a version we
+cannot check would be worse than not asserting it. Only rpmlib() and config()
+requirements are dropped: they describe the packaging system, not the machine.
 """
 
 from __future__ import annotations
@@ -182,22 +184,49 @@ def extract_cpio(blob: bytes, dest: str) -> int:
     return count
 
 
-# A capability rather than a package name: sonames, file paths, rpmlib
-# features. These cannot be satisfied by a package name in our world.
-CAPABILITY = re.compile(r"^(/|rpmlib\(|config\(|.*\.so[.0-9]*(\(|$))")
+# Requirements about the packaging system itself, not about the machine.
+# Nothing on a NETHOS system can or should satisfy these.
+INTERNAL = re.compile(r"^(rpmlib\(|config\(|rtld\(|/bin/sh$|/usr/bin/sh$)")
+
+# libc.so.6(GLIBC_2.34)(64bit) -> libc.so.6
+SONAME_DECORATION = re.compile(r"\((?:GLIBC|GCC|CXXABI|GLIBCXX|OPENSSL)[^)]*\)"
+                               r"|\(64bit\)|\(32bit\)")
+
+
+def normalise_capability(item: str) -> str:
+    """Strip RPM's decorations so a requirement matches a real soname.
+
+    Fedora writes libc.so.6(GLIBC_2.34)(64bit); the file on disk calls itself
+    libc.so.6. The symbol version and the word size are real information, but
+    we have no index of symbol versions, and asserting them without checking
+    would be worse than dropping them.
+    """
+    out = SONAME_DECORATION.sub("", item)
+    # Fedora writes libc.so.6()(64bit): stripping the decorations leaves an
+    # empty group behind, and "libc.so.6()" matches no soname on earth.
+    out = re.sub(r"\(\s*\)$", "", out.strip())
+    return out.strip()
 
 
 def rpm_requirements(values) -> tuple[list[str], list[str]]:
-    """Split Requires into things we can use and capabilities we cannot."""
+    """Split Requires into what we can check and what we cannot.
+
+    Since the capability index landed, sonames and file paths *are* checkable:
+    npkg records the soname of every library it installs and owns every file it
+    wrote. So these are kept as real requirements rather than discarded, and
+    only the packaging system's own vocabulary is dropped.
+    """
     usable, dropped = [], []
     for raw in values or []:
         item = raw.strip()
         if not item:
             continue
-        if CAPABILITY.match(item):
+        if INTERNAL.match(item):
             dropped.append(item)
-        else:
-            usable.append(item.split()[0])
+            continue
+        head = normalise_capability(item.split()[0])
+        if head and head not in usable:
+            usable.append(head)
     return usable, dropped
 
 
@@ -222,11 +251,10 @@ def convert_rpm(path: str, outdir: str, layout: str = "native") -> str:
         obsoletes, _ = rpm_requirements(tags.get("obsoletes"))
 
         release = str(tags.get("release", "1"))
-        note = (f"\n\nConverted from rpm by npkg."
-                f"\n{len(dropped)} capability requirements were dropped "
-                f"(sonames and file paths RPM resolves by content, which have "
-                f"no package-name equivalent here)." if dropped else
-                "\n\nConverted from rpm by npkg.")
+        note = "\n\nConverted from rpm by npkg."
+        if dropped:
+            note += (f"\n{len(dropped)} rpmlib/config requirements were dropped: "
+                     f"they describe the packaging system, not the machine.")
 
         manifest = Manifest(
             name=tags.get("name", "unknown"),

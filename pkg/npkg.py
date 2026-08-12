@@ -337,6 +337,66 @@ class Database:
     def forget(self, name: str) -> None:
         shutil.rmtree(self._pkg_dir(name), ignore_errors=True)
 
+    # -- capabilities ----------------------------------------------------
+    # Package names differ between distributions; sonames and file paths do
+    # not. The index maps a capability -> the package supplying it, so a
+    # requirement can be satisfied by what is actually installed rather than
+    # by what somebody called it.
+
+    def _cap_path(self) -> str:
+        return os.path.join(self.dir, "capabilities.json")
+
+    def capabilities(self) -> dict[str, str]:
+        try:
+            with open(self._cap_path()) as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return {}
+
+    def record_capabilities(self, name: str, caps) -> None:
+        index = self.capabilities()
+        for cap in caps:
+            index[cap] = name
+        tmp = self._cap_path() + ".tmp"
+        try:
+            with open(tmp, "w") as fh:
+                json.dump(index, fh, indent=0, sort_keys=True)
+            os.replace(tmp, self._cap_path())
+        except OSError:
+            pass
+
+    def forget_capabilities(self, name: str) -> None:
+        index = self.capabilities()
+        remaining = {k: v for k, v in index.items() if v != name}
+        if len(remaining) == len(index):
+            return
+        try:
+            with open(self._cap_path(), "w") as fh:
+                json.dump(remaining, fh, indent=0, sort_keys=True)
+        except OSError:
+            pass
+
+    def is_satisfied(self, requirement: str) -> bool:
+        """Can this requirement be met by what is installed?
+
+        Four ways, in order of confidence: an installed package of that name at
+        an acceptable version, a virtual name something declares it provides, a
+        soname carried by an installed library, or a file that exists and is
+        owned by a package. The last two are what make a Fedora package's
+        `libc.so.6` and `/usr/bin/sh` resolvable on a Debian-built system.
+        """
+        name, op, version = parse_requirement(requirement)
+        installed = self.installed()
+        if name in installed and satisfies(installed[name].version, op, version):
+            return True
+        if name in self.provides_map():
+            return True
+        if name in self.capabilities():
+            return True
+        if name.startswith("/"):
+            return os.path.lexists(os.path.join(self.root, name.lstrip("/")))
+        return False
+
     def provides_map(self) -> dict[str, str]:
         """Virtual names to the package supplying them."""
         out = {}
@@ -499,6 +559,11 @@ class Solver:
                 current = self.db.get(installed[name])
                 if current and satisfies(current.version, op, version):
                     return
+            # Not a package we know by name -- but a soname or a file path may
+            # already satisfy it, which is how converted RPM requirements get
+            # resolved against a Debian-built system.
+            if requirement not in names and self.db.is_satisfied(requirement):
+                return
             visiting.add(name)
             try:
                 repo, entry = self.find(name, op, version)
@@ -665,6 +730,7 @@ class Transaction:
                 os.remove(target)
 
         self.db.record(manifest, files)
+        self._index_capabilities(manifest, files)
         if self._owners is not None:
             for rel in old_files - set(files):
                 self._owners.pop(rel, None)
@@ -679,6 +745,18 @@ class Transaction:
         if manifest.post_install:
             self._run_script(manifest.post_install, manifest.name, "post-install")
         return manifest.name
+
+    def _index_capabilities(self, manifest: Manifest, files: list[str]) -> None:
+        """Record what this package provides beyond its own name."""
+        caps = set(manifest.provides)
+        try:
+            from npkg_elf import scan             # noqa: PLC0415
+            provides, _requires = scan(self.db.root, files)
+            caps.update(provides)
+        except ImportError:
+            pass
+        if caps:
+            self.db.record_capabilities(manifest.name, caps)
 
     def _apply_alternatives(self, manifest: Manifest) -> None:
         """Create the symlinks update-alternatives would have made.
@@ -768,6 +846,7 @@ class Transaction:
                 except OSError:
                     pass
             self.db.forget(name)
+            self.db.forget_capabilities(name)
             if self._owners is not None:
                 for rel in files:
                     self._owners.pop(rel, None)
@@ -1022,6 +1101,68 @@ def cmd_fetch(args, db, repos):
     print("done")
 
 
+def cmd_provides(args, db, repos):
+    """Who supplies a capability -- a soname, a virtual name, or a file."""
+    what = args.capability
+    caps = db.capabilities()
+    if what in caps:
+        print(f"{what} is provided by {caps[what]}")
+        return
+    virtual = db.provides_map()
+    if what in virtual:
+        print(f"{what} is provided by {virtual[what]} (declared)")
+        return
+    if what.startswith("/"):
+        owner = db.owner(what)
+        if owner:
+            print(f"{what} is provided by {owner} (file)")
+            return
+    print(f"nothing provides {what}")
+    raise SystemExit(1)
+
+
+def cmd_check(args, db, repos):
+    """Verify every installed binary can find the libraries it asks for.
+
+    This is the capability index earning its keep: it walks the DT_NEEDED of
+    every ELF on the system and checks each soname against what is actually
+    installed. A package converted from another distribution whose real
+    dependencies are missing shows up here rather than at runtime.
+    """
+    from npkg_elf import needed                   # noqa: PLC0415
+
+    caps = db.capabilities()
+    installed = db.installed()
+    missing: dict[str, set] = {}
+    checked = 0
+
+    for name in sorted(installed):
+        for rel in db.files(name):
+            full = os.path.join(db.root, rel)
+            if not os.path.isfile(full) or os.path.islink(full):
+                continue
+            wants = needed(full)
+            if not wants:
+                continue
+            checked += 1
+            for soname in wants:
+                if soname in caps:
+                    continue
+                # The dynamic loader itself is not shipped under its soname.
+                if soname.startswith("ld-") or soname.startswith("ld64"):
+                    continue
+                missing.setdefault(name, set()).add(soname)
+
+    print(f"checked {checked} binaries in {len(installed)} packages")
+    if not missing:
+        print("every library dependency is satisfied")
+        return
+    print(f"\n{len(missing)} packages have unsatisfied libraries:")
+    for name, sonames in sorted(missing.items()):
+        print(f"  {name}: {', '.join(sorted(sonames))}")
+    raise SystemExit(1)
+
+
 def cmd_service(args, db, repos):
     from npkg_service import main as service_main    # noqa: PLC0415
     service_main(args, db)
@@ -1093,6 +1234,14 @@ def main(argv=None):
     p.add_argument("--recommends", action="store_true")
     p.add_argument("-y", "--yes", action="store_true")
     p.set_defaults(func=cmd_fetch)
+
+    p = sub.add_parser("provides", help="what supplies a soname, name or file")
+    p.add_argument("capability")
+    p.set_defaults(func=cmd_provides)
+
+    p = sub.add_parser("check",
+                       help="verify every binary can find its libraries")
+    p.set_defaults(func=cmd_check)
 
     p = sub.add_parser("service", help="enable/disable systemd units")
     p.add_argument("action", choices=("list", "enable", "disable"))

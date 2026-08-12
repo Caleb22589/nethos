@@ -85,18 +85,55 @@ second libc under a different name, both will claim `/usr/lib/libc.so.6`, and
 npkg will stop you at the conflict — which is the tool working correctly, not a
 bug to route around with `--force`.
 
-## If you want this to actually work across distributions
+## The capability index
 
-The fix is a capability index rather than name matching: record what every
-installed file *provides* — sonames, binary paths — and resolve requirements
-against that instead of package names. It is how RPM already thinks, and it
-would make Fedora's metadata an asset rather than something to discard.
+Names differ between distributions; **sonames do not**. Debian's `libssl3`,
+Arch's `openssl` and Fedora's `openssl-libs` all install a file that calls
+itself `libssl.so.3`, and every binary linked against it asks for that exact
+string. So npkg resolves requirements against what is installed, not against
+what somebody called it.
 
-That is a real piece of work, not a flag. It would need:
+At install time npkg reads the ELF `DT_SONAME` of every library it lays down
+and records it in `/var/lib/npkg/capabilities.json`. A requirement is satisfied
+by any of, in order:
 
-- a soname index built from ELF `DT_SONAME` at install time
-- `Provides:` synthesised from installed file paths
-- requirement matching that tries name, then capability, then file
+1. an installed package of that name at an acceptable version
+2. a virtual name something declares in `Provides`
+3. a **soname** carried by an installed library
+4. a **file path** owned by an installed package
 
-Worth doing if cross-distribution installs matter to you. Say so and it is a
-day's work rather than a guess.
+Three and four are what make a Fedora package work on a Debian-built system.
+
+```bash
+npkg provides libc.so.6        # libc.so.6 is provided by libc6
+npkg provides /usr/bin/tree    # provided by tree (file)
+npkg check                     # every binary can find its libraries
+```
+
+`npkg check` walks the `DT_NEEDED` of every installed ELF and verifies each
+soname resolves. A converted package whose real dependencies are missing shows
+up there instead of at runtime.
+
+### What this changed for RPM
+
+Fedora's requirements are no longer discarded. `libc.so.6(GLIBC_2.34)(64bit)`
+is normalised to `libc.so.6` and kept as a real requirement, because it can now
+be checked. Only `rpmlib()` and `config()` are dropped — those describe the
+packaging system rather than the machine.
+
+The decorations are stripped rather than honoured: we index sonames, not symbol
+versions, and asserting a symbol version we cannot verify would be worse than
+not asserting it. A binary needing a genuinely newer glibc will install and
+then fail at runtime — the same failure you would get from a manual copy, and
+one `npkg check` cannot catch.
+
+### Verified
+
+A `tree` package from **Rocky Linux** — converted from `.rpm`, requiring
+`libc.so.6` and `ld-linux-aarch64.so.1` — installed onto a root built entirely
+from **Debian** packages. Its requirements resolved against Debian's `libc6`,
+and `npkg check` confirmed all 282 binaries across the 9 packages could find
+every library they ask for.
+
+That is a genuine cross-distribution install, resolved by content rather than
+by name.
