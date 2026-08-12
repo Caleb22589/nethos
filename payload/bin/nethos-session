@@ -47,7 +47,11 @@ fi
 # seconds", the buttons that do nothing, and the half-drawn dock: the surfaces
 # are not slow, they are simply never asked to draw again. The legacy modeset
 # path does not have the problem.
-[ -e /dev/dri/card0 ] && export WLR_DRM_NO_ATOMIC=1
+# Opt-in, because forcing it produced a black screen on virtio_gpu: the legacy
+# path fixes the stuck flip on some hosts and fails to modeset at all on others.
+#   NETHOS_NO_ATOMIC=1 nethos-session
+[ "${NETHOS_NO_ATOMIC:-0}" = "1" ] && export WLR_DRM_NO_ATOMIC=1
+true
 
 # WebKit's compositing buffers are expensive without a GPU -- but with one they
 # are how the work leaves the CPU. Disabling compositing on a machine that has
