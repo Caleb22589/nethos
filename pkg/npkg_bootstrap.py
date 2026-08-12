@@ -45,7 +45,7 @@ def say(*args):
 
 
 MIRROR = "http://deb.debian.org/debian"
-SUITE = "bookworm"
+SUITE = "trixie"
 
 # A base that boots to a shell and can administer itself. Debian pulls the rest
 # in through dependencies; these are only the things worth naming.
@@ -78,6 +78,34 @@ SETS = {
         "grub-efi-{arch}-bin", "grub-common", "grub2-common", "efibootmgr",
     ],
     "net": ["network-manager", "wpasupplicant", "iw", "wireless-regdb"],
+
+    # The NETHOS desktop. Debian names, which differ from Arch's throughout.
+    "desktop": [
+        # compositor. Hyprland is not packaged by Debian at all, and of the
+        # ones that are, only sway exposes an IPC socket -- which is what the
+        # panel and dock use to list and control windows. Blur and rounded
+        # window corners are the cost of that choice.
+        "sway", "swaybg", "swayidle", "swaylock", "xwayland",
+        "seatd", "libseat1",
+
+        # the shell: WebKit + GTK4 layer-shell, driven from Python
+        "python3-gi", "python3-dbus", "libgtk-4-1",
+        "gir1.2-gtk4layershell-1.0", "libgtk4-layer-shell0",
+        "gir1.2-webkit-6.0", "libwebkitgtk-6.0-4",
+
+        # a real browser, and the everyday applications
+        "chromium", "foot", "thunar", "mousepad", "imv", "htop",
+        "wl-clipboard", "brightnessctl", "xdg-utils",
+        "xdg-desktop-portal", "xdg-desktop-portal-wlr",
+
+        # fonts and icons the shell asks for by name
+        "fonts-inter", "fonts-dejavu", "fonts-jetbrains-mono",
+        "fonts-noto-color-emoji", "hicolor-icon-theme",
+        "adwaita-icon-theme", "papirus-icon-theme",
+
+        # networking, so the desktop can get online on real hardware
+        "network-manager", "wpasupplicant",
+    ],
 }
 
 SKEL_PROFILE = """\
@@ -398,6 +426,100 @@ def install_npkg(root: str) -> None:
             fh.write('{\n  "repos": []\n}\n')
 
 
+def install_desktop(root: str, payload: str, username: str) -> None:
+    """Install the NETHOS shell onto the built root.
+
+    The shell itself is distribution-agnostic -- HTML, CSS, a Python daemon and
+    a WebKit host -- so porting it is a file copy plus the session wiring that
+    install-nethos.sh used to do with pacman. Only the package names differed,
+    and those live in the desktop set.
+    """
+    prefix = os.path.join(root, "usr/share/nethos")
+    for part in ("shell", "lib", "apps"):
+        src = os.path.join(payload, part)
+        if not os.path.isdir(src):
+            continue
+        dst = os.path.join(prefix, part)
+        shutil.rmtree(dst, ignore_errors=True)
+        shutil.copytree(src, dst)
+
+    bindir = os.path.join(root, "usr/bin")
+    os.makedirs(bindir, exist_ok=True)
+    daemon = os.path.join(payload, "nethosd", "nethosd.py")
+    if os.path.isfile(daemon):
+        shutil.copy2(daemon, os.path.join(bindir, "nethosd"))
+        os.chmod(os.path.join(bindir, "nethosd"), 0o755)
+    for name in sorted(os.listdir(os.path.join(payload, "bin"))):
+        src = os.path.join(payload, "bin", name)
+        if os.path.isfile(src):
+            shutil.copy2(src, os.path.join(bindir, name))
+            os.chmod(os.path.join(bindir, name), 0o755)
+
+    # compositor config
+    swaydir = os.path.join(root, "etc/sway")
+    os.makedirs(os.path.join(swaydir, "config.d"), exist_ok=True)
+    sway_src = os.path.join(payload, "sway", "config")
+    if os.path.isfile(sway_src):
+        shutil.copy2(sway_src, os.path.join(swaydir, "config"))
+
+    hypr_src = os.path.join(payload, "hypr", "hyprland.conf")
+    if os.path.isfile(hypr_src):
+        os.makedirs(os.path.join(root, "etc/nethos"), exist_ok=True)
+        shutil.copy2(hypr_src, os.path.join(root, "etc/nethos/hyprland.conf"))
+
+    # nethosd as a user service, so restarting it is a second rather than a
+    # logout. Enabled per-user at login by the session script.
+    unit_src = os.path.join(payload, "systemd", "nethosd.service")
+    if os.path.isfile(unit_src):
+        userdir = os.path.join(root, "etc/systemd/user")
+        os.makedirs(userdir, exist_ok=True)
+        shutil.copy2(unit_src, os.path.join(userdir, "nethosd.service"))
+
+    # the user's session
+    home = os.path.join(root, "home", username)
+    cfg = os.path.join(home, ".config", "sway")
+    os.makedirs(cfg, exist_ok=True)
+    link = os.path.join(cfg, "config")
+    if not os.path.islink(link) and not os.path.exists(link):
+        os.symlink("/etc/sway/config", link)
+
+    with open(os.path.join(home, ".bash_profile"), "w") as fh:
+        fh.write(
+            "# ~/.bash_profile\n"
+            "[ -f ~/.bashrc ] && . ~/.bashrc\n\n"
+            "# Start the desktop on the first virtual terminal, nowhere else.\n"
+            'if [ -z "${WAYLAND_DISPLAY:-}" ] && [ "$(tty)" = "/dev/tty1" ]; then\n'
+            "    export XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=sway\n"
+            "    export MOZ_ENABLE_WAYLAND=1 QT_QPA_PLATFORM=wayland\n"
+            "    export GDK_BACKEND=wayland _JAVA_AWT_WM_NONREPARENTING=1\n"
+            "    # No GPU in a VM: wlroots refuses a software renderer unless\n"
+            "    # told, and WebKit's compositing buffers are dear without one.\n"
+            "    export WLR_RENDERER_ALLOW_SOFTWARE=1\n"
+            "    export LIBGL_ALWAYS_SOFTWARE=${LIBGL_ALWAYS_SOFTWARE:-1}\n"
+            "    export WEBKIT_DISABLE_COMPOSITING_MODE=1\n"
+            "    exec sway\n"
+            "fi\n")
+
+    if os.geteuid() == 0:
+        uid = gid = 1000
+        for base, dirs, files in os.walk(home):
+            for name in dirs + files:
+                try:
+                    os.lchown(os.path.join(base, name), uid, gid)
+                except OSError:
+                    pass
+        os.chown(home, uid, gid)
+
+    # autologin on tty1: the desktop should come up without a password prompt
+    # in front of it, the way a laptop does.
+    dropin = os.path.join(root, "etc/systemd/system/getty@tty1.service.d")
+    os.makedirs(dropin, exist_ok=True)
+    with open(os.path.join(dropin, "autologin.conf"), "w") as fh:
+        fh.write("[Service]\nExecStart=\n"
+                 f"ExecStart=-/usr/bin/agetty --autologin {username} "
+                 "--noclear %I $TERM\n")
+
+
 def setup_pam(root: str) -> None:
     """Write the PAM stacks Debian would have generated.
 
@@ -613,6 +735,23 @@ def bootstrap(root: str, sets: list[str], arch: str, username: str,
     setup_sudo(root)
     setup_network(root)
     install_npkg(root)
+
+    if "desktop" in sets:
+        payload = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "payload")
+        if os.path.isdir(payload):
+            say("\n== installing the NETHOS desktop ==")
+            install_desktop(root, payload, username)
+            for unit in ("seatd.service", "NetworkManager.service"):
+                try:
+                    from npkg_service import enable as enable_unit  # noqa: PLC0415
+                    made = enable_unit(root, unit)
+                    if made:
+                        say(f"  enabled {unit}")
+                except Exception:
+                    pass
+        else:
+            say(f"  ! payload not found at {payload}; shell not installed")
 
     if os.geteuid() != 0:
         say("\n  ! not running as root: file ownership and setuid bits were "

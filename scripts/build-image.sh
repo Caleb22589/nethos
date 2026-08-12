@@ -19,7 +19,7 @@
 #   --clean          start from an empty disk
 #   --size 20G       disk size (default 20G)
 #   --user NAME      the account to create (default neth)
-#   --sets "a b"     package sets (default "base system kernel")
+#   --sets "a b"     package sets (default "base system kernel desktop")
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -32,7 +32,7 @@ BUILDER_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-gen
 
 DISK_SIZE="20G"
 USERNAME="neth"
-SETS="base system kernel"
+SETS="base system kernel desktop"
 CLEAN=0
 
 while [ $# -gt 0 ]; do
@@ -92,6 +92,8 @@ trap 'rm -rf "$STAGE"' EXIT
 
 mkdir -p "$STAGE/pkg"
 cp "$ROOT"/pkg/*.py "$STAGE/pkg/"
+# The shell rides along: npkg_bootstrap looks for it beside the pkg directory.
+cp -R "$ROOT/payload" "$STAGE/payload"
 
 cat > "$STAGE/build.sh" <<BOOTSTRAP
 #!/bin/bash
