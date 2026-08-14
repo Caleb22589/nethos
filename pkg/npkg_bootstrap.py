@@ -93,16 +93,26 @@ SETS = {
         # unreachable without an initramfs to load them first.
         "initramfs-tools", "busybox", "zstd",
         "grub-efi-{arch}-bin", "grub-common", "grub2-common", "efibootmgr",
-        # A VM needs none of this; real hardware does not boot usefully without
-        # it. Modesetting on AMD and Intel graphics, and most wifi, load
-        # firmware blobs at probe time -- missing them gives a black screen or
-        # no network on a machine that works fine under QEMU. These live in
-        # Debian's non-free-firmware component, which is why the archive reader
-        # now reads it as well as main.
+        # Firmware is its own set: see "firmware" below. It is several hundred
+        # megabytes and a VM needs none of it.
+    ],
+    "net": ["network-manager", "wpasupplicant", "iw", "wireless-regdb"],
+
+    # Real hardware only, and the single largest optional thing in the system.
+    # Modesetting on AMD and Intel graphics, and most wifi, load firmware blobs
+    # at probe time; without them a machine that works perfectly under QEMU
+    # gives a black screen and no network. Several hundred megabytes, so a VM
+    # image should not carry it: build with --sets "base system kernel desktop"
+    # for a VM and add "firmware" for hardware.
+    "firmware": [
         "firmware-linux-free", "firmware-misc-nonfree",
         "firmware-amd-graphics", "firmware-realtek", "firmware-iwlwifi",
     ],
-    "net": ["network-manager", "wpasupplicant", "iw", "wireless-regdb"],
+
+    # A full browser. ~400MB, and separate because the shell does not need it:
+    # WebKit draws everything NETHOS itself shows. Add it when you want one,
+    # or `npkg fetch chromium` on a running system.
+    "browser": ["chromium"],
 
     # The NETHOS desktop. Debian names, which differ from Arch's throughout.
     "desktop": [
@@ -136,15 +146,19 @@ SETS = {
         # having set it up at all.
         "libgl1-mesa-dri", "libegl-mesa0", "libglx-mesa0", "mesa-utils",
 
-        # a real browser, and the everyday applications
-        "chromium", "foot", "thunar", "mousepad", "imv", "htop",
+        # The everyday applications. Chromium is NOT here: it is ~400MB, which
+        # is most of the difference between a lean image and a fat one, and the
+        # shell already has WebKit for anything NETHOS draws itself. It lives
+        # in the "browser" set, or one command away:  npkg fetch chromium
+        "foot", "thunar", "mousepad", "imv", "htop",
         "wl-clipboard", "brightnessctl", "xdg-utils",
         "xdg-desktop-portal", "xdg-desktop-portal-wlr",
 
         # fonts and icons the shell asks for by name
         "fonts-inter", "fonts-dejavu", "fonts-jetbrains-mono",
-        "fonts-noto-color-emoji", "hicolor-icon-theme",
-        "adwaita-icon-theme", "papirus-icon-theme",
+        # adwaita only: GTK needs it. Papirus is another ~80MB, and the shell
+        # falls back to initials for anything it cannot find.
+        "fonts-noto-color-emoji", "hicolor-icon-theme", "adwaita-icon-theme",
 
         # networking, so the desktop can get online on real hardware
         "network-manager", "wpasupplicant",

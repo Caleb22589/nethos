@@ -23,7 +23,11 @@
 #   --clean          start from an empty disk
 #   --size 12G       disk size (default 6G; ~2.5G is used)
 #   --user NAME      the account to create (default neth)
-#   --sets "a b"     package sets (default "base system kernel desktop")
+#   --sets "a b"     package sets. Default is everything for real hardware:
+#                    "base system kernel desktop firmware browser".
+#                    Leaner options:
+#                      drop "browser"   ~400MB, no Chromium (the shell is WebKit)
+#                      drop "firmware"  ~300MB, fine in a VM, not on hardware
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -42,7 +46,7 @@ BUILDER_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-gen
 
 DISK_SIZE="6G"
 USERNAME="neth"
-SETS="base system kernel desktop"
+SETS="base system kernel desktop firmware browser"
 CLEAN=0
 
 while [ $# -gt 0 ]; do
@@ -430,6 +434,43 @@ cat > /etc/chromium.d/nethos <<'CHROMEFLAGS'
 export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-gpu --disable-gpu-compositing"
 CHROMEFLAGS
 
+# Strip what a running system never reads.
+#
+# Debian packages ship documentation, man pages and translations for eighty-odd
+# languages, and on a 2.5G system that is several hundred megabytes nobody will
+# open. Removed here rather than never installed, because npkg installs whole
+# packages -- and doing it as a step makes it visible and reversible instead of
+# a silent policy buried in the converter.
+#
+# Kept: /usr/share/doc/*/copyright, because the licence is the one file in
+# there that has to stay.
+echo "--- trimming ---"
+before=$(du -sm /usr/share 2>/dev/null | cut -f1)
+
+find /usr/share/doc -mindepth 1 -maxdepth 1 -type d 2>/dev/null | while read -r d; do
+    find "$d" -type f ! -name copyright -delete 2>/dev/null || true
+done
+rm -rf /usr/share/man /usr/share/info /usr/share/groff /usr/share/lintian \
+       /usr/share/linda /usr/share/bug 2>/dev/null || true
+
+# Locales: keep C and English, drop the rest.
+if [ -d /usr/share/locale ]; then
+    find /usr/share/locale -mindepth 1 -maxdepth 1 -type d \
+        ! -name 'en*' ! -name 'C*' -exec rm -rf {} + 2>/dev/null || true
+fi
+
+# Icon themes ship every size from 8px to 512px in several formats. The shell
+# uses 32 and 48 and falls back to initials, so the rest is weight.
+for theme in /usr/share/icons/*/; do
+    [ -d "$theme" ] || continue
+    find "$theme" -maxdepth 1 -type d \
+        \( -name '8x8' -o -name '12x12' -o -name '96x96' -o -name '128x128' \
+           -o -name '256x256' -o -name '512x512' \) -exec rm -rf {} + 2>/dev/null || true
+done
+
+after=$(du -sm /usr/share 2>/dev/null | cut -f1)
+echo "trimmed /usr/share: ${before:-?}MB -> ${after:-?}MB"
+
 # File capabilities do not survive the .deb -> .npk conversion, and ping is the
 # one that shows: without cap_net_raw it cannot open a raw socket and reports
 # "Operation not permitted". Debian's dpkg applies these from package metadata;
@@ -543,6 +584,11 @@ INSIDE
 chmod +x "$R/root/inside.sh"
 chroot "$R" env ROOT_UUID="$ROOT_UUID" ESP_UUID="$ESP_UUID" /root/inside.sh
 rm -f "$R/root/inside.sh"
+
+echo "--- size ---"
+du -sh "$R" 2>/dev/null | awk '{print "  total: " $1}'
+du -sm "$R"/usr/* "$R"/var/* 2>/dev/null | sort -rn | head -8 \
+    | awk '{printf "  %6dMB  %s\n", $1, $2}'
 
 echo "--- sanity ---"
 ls -l "$R/usr/bin/sudo" "$R/usr/bin/su"
