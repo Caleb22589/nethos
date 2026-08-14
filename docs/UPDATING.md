@@ -99,3 +99,57 @@ script is the thing that defines your OS, so anyone who can push to the branch
 you track can run code as root on every machine tracking it. Treat push access
 to this repo as root access to your machines — protect the branch, and be
 deliberate about what you pull with `--ref`.
+
+## Do not rebuild for a change of CSS
+
+A full image build is about three minutes. Almost nothing needs one.
+
+| Changed | How to apply | Time |
+| --- | --- | --- |
+| shell HTML/CSS/JS | `nethos-update` | seconds |
+| `nethosd`, `nethos-view`, anything in `bin/` | `nethos-update` | seconds |
+| sway config — keybindings, window rules | `nethos-update` | seconds |
+| apps and widgets | `nethos-update` | seconds |
+| a new package | `npkg fetch <name>` | seconds |
+| package **set** in `npkg_bootstrap.py` | rebuild | ~3 min |
+| kernel, initramfs, GRUB, `/etc` written by the build | rebuild | ~3 min |
+
+The first four are the ones that change daily, and they are all just files.
+
+```bash
+nethos-update              # pull main and apply
+nethos-update --ref topic  # a branch, tag or commit
+nethos-update --status     # what is installed against what is available
+```
+
+It reinstalls the payload, restarts `nethosd`, reloads every surface and
+rereads the compositor config — so a keybinding edited on another machine is
+live here a few seconds after it is pushed, without logging out.
+
+### Iterating without pushing anything
+
+Editing straight on the machine is faster still, and `nethos-reload` costs
+nothing:
+
+```bash
+sudo nano /usr/share/nethos/shell/style.css
+nethos-reload
+```
+
+The change is on screen immediately. When it is right, copy it back into the
+repository and commit.
+
+To apply a working copy from another machine without going through GitHub:
+
+```bash
+nethos-update --local /path/to/checkout
+```
+
+### When a rebuild really is needed
+
+Package sets, the kernel, the initramfs, the bootloader, and anything the build
+script writes into `/etc` — the Chromium flags file, the CA trust store, the
+quiet-boot settings. Those run once, at build time, inside the builder VM.
+
+Rebuilds are also much cheaper than they look: the package cache disk survives
+between them, so a build with no version changes downloads nothing at all.

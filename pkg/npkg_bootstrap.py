@@ -71,6 +71,9 @@ SETS = {
         # npkg is Python, so the system needs one to manage itself. curl and
         # ca-certificates are what it fetches packages with.
         "python3", "python3-minimal", "curl", "wget", "ca-certificates",
+        # git: nethos-update pulls the repository in place. Without it the
+        # only way to change a line of CSS is a full image rebuild.
+        "git",
         # update-ca-certificates is a shell script that shells out to openssl.
         # Without the binary it exits non-zero and writes no bundle, so
         # /etc/ssl/certs stays empty and every TLS client reports zero trusted
@@ -917,6 +920,17 @@ def bootstrap(root: str, sets: list[str], arch: str, username: str,
         except NpkgError as exc:
             say(f"  {os.path.basename(path)}: {exc}")
     say(f"  installed {installed} packages")
+
+    # Configure the updater, so `nethos-update` works on a fresh install
+    # without being told where the system came from. Nearly every change --
+    # the shell, nethosd, nethos-view, the sway config, everything in bin --
+    # is files, and files can be replaced on a running machine in seconds. A
+    # rebuild is only needed for the kernel, the package set, or the boot path.
+    os.makedirs(os.path.join(root, "etc/nethos"), exist_ok=True)
+    with open(os.path.join(root, "etc/nethos/update.conf"), "w") as fh:
+        fh.write("# Where nethos-update pulls from.\n"
+                 'REPO_URL="https://github.com/Caleb22589/nethos.git"\n'
+                 'BRANCH="main"\n')
 
     # Tell the installed npkg which release this system came from, so `npkg
     # fetch` pulls from the same one rather than from a hardcoded default.

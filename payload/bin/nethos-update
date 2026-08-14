@@ -104,6 +104,12 @@ sudo "$SRC/payload/install-nethos.sh" "${INSTALL_ARGS[@]}"
 if systemctl --user is-active --quiet nethosd 2>/dev/null; then
     say "Restarting nethosd and reloading every open window"
     nethos-reload --daemon
+    # The sway config is part of the payload, so a pulled change to keybindings
+    # or window rules is on disk but not in effect until the compositor rereads
+    # it. Without this an update looks like it did nothing.
+    if command -v swaymsg >/dev/null 2>&1 && swaymsg -t get_version >/dev/null 2>&1; then
+        swaymsg reload >/dev/null 2>&1 && say "compositor config reloaded" || true
+    fi
 else
     warn "nethosd is not running under this user session"
     warn "log in at the desktop, or run: systemctl --user start nethosd"
