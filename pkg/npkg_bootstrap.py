@@ -767,7 +767,11 @@ def setup_etc(root: str, hostname: str) -> None:
         # Debian's base-files ships /etc/issue, so without this the login
         # banner cheerfully announces Debian on a system that has no dpkg,
         # no apt and a filesystem laid out nothing like Debian's.
-        "issue": "\n\\e[36mNETHOS\\e[0m \\s \\r \\m\n\n",
+        # Deliberately blank. A system that announces itself is configured at
+        # the user; one that stays quiet is used by them. The identity is meant
+        # to be legible from the shape of the interface, not from a banner.
+        # See docs/DESIGN.md, rule 8.
+        "issue": "\n",
         "issue.net": "NETHOS %h\n",
         "motd": "",
         "login.defs": ("UID_MIN 1000\nUID_MAX 60000\nGID_MIN 1000\nGID_MAX 60000\n"

@@ -511,9 +511,11 @@ grub-install --target=x86_64-efi --efi-directory=/boot \
              --bootloader-id=NETHOS --removable --no-nvram
 cat > /etc/default/grub <<GRUB
 GRUB_DEFAULT=0
-GRUB_TIMEOUT=1
+GRUB_TIMEOUT=0
+GRUB_TIMEOUT_STYLE=hidden
+GRUB_RECORDFAIL_TIMEOUT=0
 GRUB_DISTRIBUTOR="NETHOS"
-GRUB_CMDLINE_LINUX_DEFAULT="console=tty0 console=ttyS0,115200"
+GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3 systemd.show_status=false vt.global_cursor_default=0 console=tty0 console=ttyS0,115200"
 GRUB_CMDLINE_LINUX=""
 GRUB_TERMINAL="console serial"
 GRUB
