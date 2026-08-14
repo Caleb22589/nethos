@@ -76,6 +76,10 @@ bindsym $mod+Return exec $term
 bindsym $mod+d exec nethos-menu-toggle
 bindsym $mod+space exec nethos-menu-toggle
 bindsym $mod+q kill
+# Also mod+w, because that is the muscle memory. Deliberately NOT Ctrl+W:
+# inside a browser Ctrl+W closes a tab, and a window manager that steals it
+# closes the whole window when you meant to close one tab.
+bindsym $mod+w kill
 
 # Development: reload the shell, or the shell and the daemon together.
 bindsym $mod+Shift+r exec nethos-reload
@@ -85,10 +89,37 @@ bindsym $mod+Shift+e exec swaynag -t warning -m 'Log out of NETHOS?' \
 
 floating_modifier $mod normal
 
-bindsym $mod+Left focus left
-bindsym $mod+Right focus right
-bindsym $mod+Up focus up
-bindsym $mod+Down focus down
+# Windows float, and snap where you put them.
+#
+# sway tiles by default, which is right for a tiling window manager and wrong
+# for this. A desktop that rearranges everything the moment a window opens is
+# deciding the layout for you; snapping proposes one and lets you refuse. Every
+# window opens floating, and the mod+arrow keys snap rather than change focus.
+for_window [app_id=".*"] floating enable
+for_window [class=".*"] floating enable
+for_window [app_id="^chrome-.*(panel|dock|menu|desktop)\.html.*$"] floating enable
+
+# Snap: half screen by edge, quarter by corner, maximise up, restore down.
+# Matches what Windows does with the same keys, because that is what hands
+# already know.
+set $snap_l resize set 50ppt 100ppt, move position 0 0
+set $snap_r resize set 50ppt 100ppt, move position 50ppt 0
+set $snap_u fullscreen disable, resize set 100ppt 100ppt, move position 0 0
+set $snap_d resize set 60ppt 60ppt, move position center
+
+bindsym $mod+Left  floating enable, $snap_l
+bindsym $mod+Right floating enable, $snap_r
+bindsym $mod+Up    floating enable, $snap_u
+bindsym $mod+Down  floating enable, $snap_d
+
+bindsym $mod+Ctrl+Left  floating enable, resize set 50ppt 50ppt, move position 0 0
+bindsym $mod+Ctrl+Right floating enable, resize set 50ppt 50ppt, move position 50ppt 0
+bindsym $mod+Shift+Ctrl+Left  floating enable, resize set 50ppt 50ppt, move position 0 50ppt
+bindsym $mod+Shift+Ctrl+Right floating enable, resize set 50ppt 50ppt, move position 50ppt 50ppt
+
+# Focus moves with the alt-style keys, since the arrows now snap.
+bindsym $mod+Tab focus next
+bindsym $mod+Shift+Tab focus prev
 
 bindsym $mod+Shift+Left move left
 bindsym $mod+Shift+Right move right

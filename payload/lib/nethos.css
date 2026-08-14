@@ -81,7 +81,9 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  /* :not(.neth-light) so that choosing light pins it. Following the host's
+     preference is a default, not an override. */
+  :root:not(.neth-light) {
     --glass:        rgba(28, 32, 40, 0.62);
     --glass-strong: rgba(28, 32, 40, 0.80);
     --glass-dim:    rgba(28, 32, 40, 0.40);
@@ -326,4 +328,56 @@ pre code { background: none; padding: 0; }
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* ---------------------------------------------------------------- dark --
+ * A separate set of values, not an inversion. Shadows do not invert -- dark
+ * needs *more* shadow, not less -- and the rim that catches light on a pale
+ * surface becomes a darker line on a deep one. Inverting produces the flat,
+ * slightly wrong dark mode that most desktops ship. See docs/DESIGN.md, 10.
+ *
+ * Applied by class rather than by prefers-color-scheme alone, so the setting
+ * is the system's to own and does not change under the user unannounced.
+ */
+:root.neth-dark {
+  --glass:        rgba(28, 32, 40, 0.62);
+  --glass-strong: rgba(24, 28, 36, 0.80);
+  --glass-dim:    rgba(38, 43, 53, 0.42);
+  --glass-sunk:   rgba(0, 0, 0, 0.22);
+
+  /* The rim is a highlight on light surfaces and a *thinner, dimmer* one here:
+     deep glass catches less light, and a bright rim on dark reads as plastic. */
+  --rim:      rgba(255, 255, 255, 0.16);
+  --rim-soft: rgba(255, 255, 255, 0.07);
+  --edge:     rgba(0, 0, 0, 0.45);
+  --sheen: linear-gradient(180deg,
+              rgba(255, 255, 255, 0.10) 0%,
+              rgba(255, 255, 255, 0.03) 42%,
+              rgba(255, 255, 255, 0.00) 60%);
+
+  /* Not #fff. Pure white on dark glares and smears at small sizes, the same
+     mistake as pure black on light. */
+  --ink:       #e8ecf2;
+  --ink-soft:  #a2acbb;
+  --ink-faint: #6d7889;
+
+  /* Lifted, because a mid-blue that reads as confident on white disappears
+     against a dark surface. */
+  --accent:   #5c9bff;
+  --accent-2: #9182ff;
+  --good:     #3ec489;
+  --warn:     #f0a057;
+  --danger:   #ff6b63;
+
+  /* Deeper and wider: separation on dark comes from shadow, since there is
+     less contrast between a surface and what is behind it. */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.36), 0 2px 8px rgba(0, 0, 0, 0.30);
+  --shadow:    0 2px 6px rgba(0, 0, 0, 0.42), 0 12px 32px rgba(0, 0, 0, 0.46);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.50), 0 32px 64px rgba(0, 0, 0, 0.58);
+}
+
+/* Follow the desktop only until the user states a preference; .neth-light
+   pins it. */
+@media (prefers-color-scheme: dark) {
+  :root:not(.neth-light):not(.neth-dark) { color-scheme: dark; }
 }

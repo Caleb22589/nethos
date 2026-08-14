@@ -301,17 +301,41 @@ def backend():
 
 def spawn(argv):
     """Start a detached process. nethosd runs inside the session, so the child
-    inherits WAYLAND_DISPLAY and friends."""
+    inherits WAYLAND_DISPLAY and friends.
+
+    Popen succeeding only means the binary existed. A program that starts and
+    dies a tenth of a second later looked exactly like one that launched, which
+    is how "apps do not open" stayed a mystery: the launcher reported success
+    every time. Output goes to the log now, and a child that exits straight
+    away is reported as the failure it is.
+    """
+    log = os.path.expanduser("~/.cache/nethos/launch.log")
     try:
-        subprocess.Popen(
-            argv, start_new_session=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return True
+        os.makedirs(os.path.dirname(log), exist_ok=True)
+        out = open(log, "a")
+        out.write("\n--- %s  %s\n" % (time.strftime("%H:%M:%S"), " ".join(argv)))
+        out.flush()
     except OSError:
+        out = subprocess.DEVNULL
+    try:
+        proc = subprocess.Popen(
+            argv, start_new_session=True,
+            stdin=subprocess.DEVNULL, stdout=out, stderr=out,
+        )
+    except OSError as exc:
+        diag("launch", "%s: %s" % (argv[0], exc))
         return False
+
+    def watch():
+        time.sleep(1.5)
+        code = proc.poll()
+        if code is not None and code != 0:
+            diag("launch", "%s exited %s straight away -- see %s"
+                 % (argv[0], code, log))
+
+    threading.Thread(target=watch, daemon=True).start()
+    diag("launch", " ".join(argv))
+    return True
 
 
 # --------------------------------------------------------------------------
@@ -761,7 +785,27 @@ def load_web_apps():
 
 
 def launch_web_app(app):
+    """Run a NETHOS app in nethos-view, the same host the shell uses.
+
+    These used to start a second Chromium in --app mode: a whole browser, its
+    own profile directory and several hundred megabytes, to show a page the
+    shell's own engine could already draw. It also meant NETHOS apps failed in
+    ways real applications did not, because they depended on Chromium starting
+    correctly -- and on hardware where its GPU path is broken it draws nothing
+    at all.
+
+    nethos-view is already installed, already hosts WebKit, and gives the app a
+    normal window that the compositor and the taskbar treat like any other.
+    """
     url = "http://%s:%d/apps/%s/%s" % (HOST, PORT, app["id"], app["entry"])
+    spec = "url=%s,role=window,name=%s,title=%s,width=%d,height=%d,transparent=0" % (
+        url, app["id"], app.get("name", app["id"]),
+        app.get("width", 900), app.get("height", 650))
+    if spawn(["nethos-view", spec]):
+        return True
+    # Chromium remains the fallback: an app that opens in the wrong engine
+    # beats an app that does not open.
+    diag("launch", "nethos-view failed for %s; falling back to chromium" % app["id"])
     return spawn(CHROME_BASE + [
         "--app=" + url,
         "--window-size=%d,%d" % (app["width"], app["height"]),

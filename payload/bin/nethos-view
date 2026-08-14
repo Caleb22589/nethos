@@ -123,6 +123,22 @@ ROLE_DEFAULTS = {
 }
 
 
+def _theme():
+    """light, dark, or "" for follow-the-system.
+
+    A file rather than a setting inside the shell: the value is needed before
+    any page has loaded, and a theme that arrives after first paint shows as a
+    flash of the wrong one.
+    """
+    path = os.path.expanduser("~/.config/nethos/theme")
+    try:
+        with open(path) as fh:
+            value = fh.read().strip().lower()
+        return value if value in ("light", "dark") else ""
+    except OSError:
+        return ""
+
+
 def parse_spec(text):
     spec = {}
     for part in text.split(","):
@@ -247,8 +263,13 @@ class Surface:
         // sets NETHOS_GPU after checking the actual GL renderer -- a render
         // node existing is not the same as it being hardware.
         if (%s) { document.documentElement.classList.add("neth-gpu"); }
+        // Light or dark, decided once by the system rather than negotiated by
+        // each page. "auto" adds no class and lets prefers-color-scheme win.
+        var _t = %s;
+        if (_t) { document.documentElement.classList.add("neth-" + _t); }
         """ % (json.dumps(self.name),
-               "true" if os.environ.get("NETHOS_GPU") else "false")
+               "true" if os.environ.get("NETHOS_GPU") else "false",
+               json.dumps(_theme()))
         manager.add_script(WebKit.UserScript.new(
             shim,
             WebKit.UserContentInjectedFrames.TOP_FRAME,

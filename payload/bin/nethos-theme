@@ -1,0 +1,44 @@
+#!/bin/sh
+# Light or dark.
+#
+#   nethos-theme            what is set now
+#   nethos-theme dark
+#   nethos-theme light
+#   nethos-theme auto       follow the system preference
+#
+# Dark is a separate set of values, not an inversion: shadows deepen rather
+# than lighten, and the rim that catches light on a pale surface becomes a
+# darker line on a deep one. See docs/DESIGN.md, rule 10.
+set -eu
+CONF="$HOME/.config/nethos"
+
+case "${1:-}" in
+    "")
+        current=$(cat "$CONF/theme" 2>/dev/null || true)
+        printf '%s\n' "${current:-auto}"
+        exit 0
+        ;;
+    light|dark)
+        mkdir -p "$CONF"
+        printf '%s\n' "$1" > "$CONF/theme"
+        ;;
+    auto)
+        mkdir -p "$CONF"
+        : > "$CONF/theme"
+        ;;
+    -h|--help)
+        sed -n '2,12p' "$0" | sed 's/^# \?//'
+        exit 0
+        ;;
+    *)
+        echo "usage: nethos-theme [light|dark|auto]" >&2
+        exit 2
+        ;;
+esac
+
+# The class is injected when a surface loads, so the shell has to come back up
+# for the change to land. nethos-reload does that without ending the session.
+if command -v nethos-reload >/dev/null 2>&1; then
+    nethos-reload >/dev/null 2>&1 || true
+fi
+printf 'theme: %s\n' "$1"
