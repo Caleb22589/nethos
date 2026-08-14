@@ -1,0 +1,81 @@
+#!/bin/sh
+# Grow the root filesystem to fill the disk it was written to.
+#
+# The image is deliberately small so that writing it is quick -- about 6G, of
+# which ~2.5G is the system. Written to a 256G SSD that would otherwise leave
+# 250G unreachable behind the end of a partition, and "now go and resize it
+# yourself" is not an install experience.
+#
+# So on first boot the root partition is extended to the end of the device and
+# the filesystem grown into it. ext4 grows online, while mounted and in use, so
+# this costs a second and needs no reboot.
+#
+# Runs once. Delete /var/lib/nethos/grown to make it run again -- useful after
+# moving the disk to a larger one.
+set -eu
+
+STAMP=/var/lib/nethos/grown
+[ -e "$STAMP" ] && exit 0
+
+say() { printf 'nethos-growroot: %s\n' "$*"; }
+
+# What is root, and which partition of which disk is it?
+src=$(findmnt -no SOURCE / 2>/dev/null || true)
+case "$src" in
+    /dev/*) ;;
+    *) say "root is not a plain block device ($src); nothing to grow"; exit 0 ;;
+esac
+
+# /dev/sda2 -> /dev/sda + 2, /dev/nvme0n1p2 -> /dev/nvme0n1 + 2. The p is only
+# present on devices whose name ends in a digit, which is why this is not a
+# single sed expression.
+part=$(lsblk -no PARTN "$src" 2>/dev/null || true)
+disk=$(lsblk -no PKNAME "$src" 2>/dev/null || true)
+if [ -z "$part" ] || [ -z "$disk" ]; then
+    say "cannot work out the disk and partition for $src; leaving it alone"
+    exit 0
+fi
+disk="/dev/$disk"
+
+# Is there anything worth claiming? Compare the end of the partition with the
+# end of the disk, and do not bother for less than 64MB.
+disk_sectors=$(blockdev --getsz "$disk" 2>/dev/null || echo 0)
+part_start=$(cat "/sys/class/block/$(basename "$src")/start" 2>/dev/null || echo 0)
+part_sectors=$(blockdev --getsz "$src" 2>/dev/null || echo 0)
+free=$(( disk_sectors - part_start - part_sectors ))
+if [ "$free" -lt 131072 ]; then
+    say "already fills the disk"
+    mkdir -p "$(dirname "$STAMP")" && : > "$STAMP"
+    exit 0
+fi
+
+say "growing $src to fill $disk ($(( free / 2048 ))MB free)"
+
+# growpart understands GPT, including moving the backup header to the new end
+# of the disk. sfdisk can do it too, but only by rewriting the table, which is
+# a worse thing to get wrong on somebody's only copy of the system.
+if command -v growpart >/dev/null 2>&1; then
+    growpart "$disk" "$part" || {
+        say "growpart declined; leaving the partition alone"
+        exit 0
+    }
+else
+    say "growpart not installed; cannot resize the partition safely"
+    exit 0
+fi
+
+# Tell the kernel the partition changed. Growing the last partition does not
+# need the device to be idle, so this works on a mounted root.
+partx -u "$disk" 2>/dev/null || true
+
+# ext4 grows online. This is the part that would need a reboot on most other
+# filesystems, and does not here.
+if resize2fs "$src"; then
+    say "root filesystem now $(df -h / | awk 'NR==2 {print $2}')"
+else
+    say "resize2fs failed; the partition is bigger but the filesystem is not"
+    exit 0
+fi
+
+mkdir -p "$(dirname "$STAMP")"
+date -u +'%Y-%m-%dT%H:%M:%SZ' > "$STAMP"

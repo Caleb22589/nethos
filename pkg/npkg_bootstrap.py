@@ -74,6 +74,10 @@ SETS = {
         # git: nethos-update pulls the repository in place. Without it the
         # only way to change a line of CSS is a full image rebuild.
         "git",
+        # growpart, for filling the disk the image was written to. The image is
+        # small so that flashing is quick; without this a 6G image on a 256G
+        # SSD leaves 250G unreachable and tells the user to resize it by hand.
+        "cloud-guest-utils",
         # update-ca-certificates is a shell script that shells out to openssl.
         # Without the binary it exits non-zero and writes no bundle, so
         # /etc/ssl/certs stays empty and every TLS client reports zero trusted
@@ -540,6 +544,16 @@ def install_desktop(root: str, payload: str, username: str) -> None:
         os.makedirs(userdir, exist_ok=True)
         shutil.copy2(unit_src, os.path.join(userdir, "nethosd.service"))
 
+    # System units from the payload. nethosd is per-user; growing the root
+    # filesystem is emphatically not -- it has to happen once, early, before
+    # anyone logs in.
+    sysdir = os.path.join(root, "etc/systemd/system")
+    os.makedirs(sysdir, exist_ok=True)
+    for unit in ("nethos-growroot.service",):
+        src = os.path.join(payload, "systemd", unit)
+        if os.path.isfile(src):
+            shutil.copy2(src, os.path.join(sysdir, unit))
+
     # the user's session
     home = os.path.join(root, "home", username)
     cfg = os.path.join(home, ".config", "sway")
@@ -952,7 +966,8 @@ def bootstrap(root: str, sets: list[str], arch: str, username: str,
         if os.path.isdir(payload):
             say("\n== installing the NETHOS desktop ==")
             install_desktop(root, payload, username)
-            for unit in ("seatd.service", "NetworkManager.service"):
+            for unit in ("seatd.service", "NetworkManager.service",
+                         "nethos-growroot.service"):
                 try:
                     from npkg_service import enable as enable_unit  # noqa: PLC0415
                     made = enable_unit(root, unit)

@@ -110,6 +110,10 @@ Flash it to a USB stick (the stick is completely overwritten):
   Or use Balena Etcher, which accepts a .img and is harder to point at the
   wrong disk.
 
+The image is small on purpose so that writing it is quick. On first boot the
+root filesystem grows to fill whatever it was written to, so a 6G image on a
+256G SSD gives you the whole 256G -- no resizing by hand.
+
 Then boot the PC from it with UEFI. Disable Secure Boot: this GRUB is not
 signed, so a machine with Secure Boot on will refuse it without explanation.
 

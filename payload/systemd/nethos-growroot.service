@@ -1,0 +1,18 @@
+[Unit]
+Description=Grow the root filesystem to fill its disk
+DefaultDependencies=no
+After=local-fs.target
+Before=sysinit.target
+ConditionPathExists=!/var/lib/nethos/grown
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/nethos-growroot
+# Never hold up the boot over this. A machine that boots with a small root is
+# usable; a machine that will not boot because a resize failed is not.
+TimeoutStartSec=60
+StandardOutput=journal
+
+[Install]
+WantedBy=sysinit.target
