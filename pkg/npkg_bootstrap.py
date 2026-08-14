@@ -109,6 +109,19 @@ SETS = {
         "firmware-amd-graphics", "firmware-realtek", "firmware-iwlwifi",
     ],
 
+    # The floor for an installer: enough to partition a disk, make filesystems,
+    # reach the network, and run npkg. No systemd, no init system at all -- the
+    # installer is meant to run from an initramfs as PID 1 and then reboot.
+    #
+    # python3-minimal rather than python3: npkg needs the standard library and
+    # nothing else, and the difference is about 30MB. See docs/INSTALLER.md.
+    "installer": [
+        "busybox", "python3-minimal", "libpython3-stdlib",
+        "parted", "e2fsprogs", "dosfstools", "util-linux",
+        "curl", "ca-certificates", "openssl",
+        "kmod", "pciutils",
+    ],
+
     # A full browser. ~400MB, and separate because the shell does not need it:
     # WebKit draws everything NETHOS itself shows. Add it when you want one,
     # or `npkg fetch chromium` on a running system.
