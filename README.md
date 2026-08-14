@@ -149,6 +149,7 @@ flattened away, `sbin` merged into `bin`, `wheel` for administrators.
 | `docs/APPS.md` | writing apps for the shell |
 | `docs/SYSTEM.md` | the system layout |
 | `docs/UPDATING.md` | updating from the repository |
+| `docs/ABUPDATE.md` | A/B slot updates: the design, and why it is not built yet |
 | `docs/HANDOFF.md` | current state and open problems |
 
 ## Status
