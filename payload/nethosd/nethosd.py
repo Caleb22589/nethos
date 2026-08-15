@@ -2135,6 +2135,23 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"settings": read_settings(),
                                    "schema": SETTINGS_SCHEMA})
 
+        if route == "/api/snapshots":
+            out = []
+            store = "/var/lib/nethos/snapshots"
+            try:
+                for name in sorted(os.listdir(store), reverse=True):
+                    if not name.endswith(".meta"):
+                        continue
+                    meta = {}
+                    with open(os.path.join(store, name)) as fh:
+                        for line in fh:
+                            k, _, v = line.strip().partition("=")
+                            meta[k] = v
+                    out.append(meta)
+            except OSError:
+                pass
+            return self.send_json({"snapshots": out})
+
         if route == "/api/control":
             return self.send_json({
                 "battery": battery(),
@@ -2281,6 +2298,26 @@ class Handler(BaseHTTPRequestHandler):
         # invisible from the desktop and diagnosable only over SSH. These are
         # the three things that actually fixed them, in the order of how much
         # they disturb.
+        if route == "/api/snapshots/create":
+            spawn(["sudo", "-n", "nethos-snapshot", "create",
+                   str(data.get("label", "manual"))[:40]])
+            return self.send_json({"ok": True})
+
+        if route == "/api/snapshots/restore":
+            snap = str(data.get("id", ""))
+            if not re.match(r"^\d{8}-\d{6}$", snap):
+                return self.send_json({"error": "bad snapshot id"}, 400)
+            spawn(["sudo", "-n", "nethos-snapshot", "restore", snap])
+            return self.send_json({"ok": True})
+
+        if route == "/api/update":
+            # Detached: the updater restarts the very daemon serving this
+            # request, so anything waiting on the response would be waiting
+            # for a process that is about to be replaced.
+            spawn(["sh", "-c", "nethos-update >/tmp/nethos-update.log 2>&1"])
+            return self.send_json({"ok": True,
+                                   "log": "/tmp/nethos-update.log"})
+
         if route == "/api/control/brightness":
             return self.send_json({"ok": True,
                                    "brightness": brightness_set(data.get("value", 60))})

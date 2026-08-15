@@ -95,8 +95,29 @@ say "Applying        : $AVAILABLE"
 INSTALL_ARGS=(--files-only)
 [ "$PACKAGES" -eq 1 ] && INSTALL_ARGS=()
 
+# A snapshot before every update, so a bad one is a command away from undone
+# rather than a rebuild away. This is the whole reason the snapshot tool
+# exists: an update that leaves the desktop broken is the failure that
+# actually happens, and it happens while the system underneath is fine.
+if command -v nethos-snapshot >/dev/null 2>&1; then
+    say "Snapshotting the current install first"
+    SNAP_ID="$(sudo nethos-snapshot create "pre-update" | tail -1 || true)"
+    [ -n "${SNAP_ID:-}" ] && say "  roll back with: sudo nethos-snapshot restore $SNAP_ID"
+fi
+
 say "Installing system files (sudo)"
-sudo "$SRC/payload/install-nethos.sh" "${INSTALL_ARGS[@]}"
+if ! sudo "$SRC/payload/install-nethos.sh" "${INSTALL_ARGS[@]}"; then
+    warn "the update failed part way through"
+    if [ -n "${SNAP_ID:-}" ]; then
+        # Half an update is worse than none: some files new, some old, and no
+        # way to tell which. Put it back rather than leaving that behind.
+        warn "restoring $SNAP_ID"
+        sudo nethos-snapshot restore "$SNAP_ID" || \
+            die "restore failed too -- snapshots are in /var/lib/nethos/snapshots"
+        die "update rolled back; nothing changed"
+    fi
+    die "update failed and there was no snapshot to roll back to"
+fi
 
 # --------------------------------------------------------------------------
 # apply live

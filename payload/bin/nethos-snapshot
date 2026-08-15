@@ -1,0 +1,180 @@
+#!/bin/bash
+# Snapshot and restore the parts of NETHOS that updates change.
+#
+#   nethos-snapshot create [label]   take one
+#   nethos-snapshot list             show them, newest first
+#   nethos-snapshot restore ID       put one back
+#   nethos-snapshot remove ID
+#   nethos-snapshot prune [keep]     keep the newest N (default 5)
+#
+# Not a filesystem snapshot, and deliberately not.
+#
+# A/B partitions or btrfs subvolumes roll back the whole machine, which is the
+# right tool for a kernel or a libc that will not boot. It is the wrong tool
+# for what actually goes wrong here: an update that changes a stylesheet, a
+# daemon and a compositor config, and leaves the desktop broken while the
+# system underneath is perfectly fine. That is the failure this recovers from,
+# it takes about a second, it needs no particular filesystem, and it can be
+# done from the running desktop rather than from a boot menu.
+#
+# What it covers is everything NETHOS itself owns and an update writes:
+# the shell and its apps, the daemon, the scripts, the compositor config and
+# the per-user configuration. Not /home, not installed packages -- npkg has
+# its own record of those and copying a home directory into a tarball on every
+# update is how a recovery tool becomes the reason the disk filled up.
+set -euo pipefail
+
+STORE="${NETHOS_SNAPSHOT_DIR:-/var/lib/nethos/snapshots}"
+KEEP_DEFAULT=5
+
+# The set of paths an update can touch. A missing one is skipped rather than
+# fatal: a machine built with fewer sets legitimately has no wayfire.ini.
+PATHS=(
+    /usr/share/nethos
+    /usr/bin/nethosd
+    /usr/bin/nethos-view
+    /usr/bin/nethos-session
+    /usr/bin/nethos-update
+    /usr/bin/nethos-snapshot
+    /usr/bin/nethos-doctor
+    /usr/bin/nethos-reload
+    /usr/bin/nethos-menu-toggle
+    /usr/bin/nethos-theme
+    /usr/bin/nethos-app
+    /etc/nethos
+)
+
+say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
+die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+need_root() {
+    [ "$(id -u)" -eq 0 ] || die "this needs root: sudo nethos-snapshot $*"
+}
+
+# The user's own config lives in their home, and root does not own it, so it
+# is collected separately and restored with the original ownership.
+user_home() {
+    if [ -n "${SUDO_USER:-}" ]; then
+        getent passwd "$SUDO_USER" | cut -d: -f6
+    else
+        echo "$HOME"
+    fi
+}
+
+cmd_create() {
+    need_root create
+    local label="${1:-update}"
+    local id
+    id="$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$STORE"
+    local out="$STORE/$id.tar.zst"
+    local home; home="$(user_home)"
+
+    local -a present=()
+    for p in "${PATHS[@]}"; do
+        [ -e "$p" ] && present+=("$p")
+    done
+    for rel in .config/wayfire.ini .config/foot/foot.ini .config/nethos; do
+        [ -e "$home/$rel" ] && present+=("$home/$rel")
+    done
+    [ "${#present[@]}" -gt 0 ] || die "nothing to snapshot"
+
+    # zstd if it is here, gzip otherwise. The payload is a few megabytes of
+    # text either way; this is about speed, not ratio.
+    if command -v zstd >/dev/null 2>&1; then
+        tar -I 'zstd -3 -T0' -cf "$out" --absolute-names "${present[@]}" 2>/dev/null
+    else
+        out="$STORE/$id.tar.gz"
+        tar -czf "$out" --absolute-names "${present[@]}" 2>/dev/null
+    fi
+
+    # A sidecar rather than a name: labels have spaces in them and filenames
+    # should not carry meaning that has to be parsed back out.
+    {
+        echo "id=$id"
+        echo "label=$label"
+        echo "date=$(date -Iseconds)"
+        echo "commit=$(git -C "$home/.local/share/nethos/repo" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+        echo "size=$(stat -c%s "$out" 2>/dev/null || echo 0)"
+    } > "$STORE/$id.meta"
+
+    say "snapshot $id  ($label, $(numfmt --to=iec "$(stat -c%s "$out")" 2>/dev/null || echo "?"))"
+    cmd_prune "$KEEP_DEFAULT" >/dev/null 2>&1 || true
+    echo "$id"
+}
+
+cmd_list() {
+    [ -d "$STORE" ] || { echo "no snapshots"; return 0; }
+    local found=0
+    for meta in $(ls -1 "$STORE"/*.meta 2>/dev/null | sort -r); do
+        found=1
+        # shellcheck disable=SC1090
+        ( . "$meta"; printf "  %-17s %-22s %s\n" "$id" "$label" "$date" )
+    done
+    [ "$found" -eq 1 ] || echo "no snapshots"
+}
+
+cmd_restore() {
+    need_root restore
+    local id="${1:?which snapshot? run: nethos-snapshot list}"
+    local archive=""
+    for ext in tar.zst tar.gz; do
+        [ -f "$STORE/$id.$ext" ] && archive="$STORE/$id.$ext"
+    done
+    [ -n "$archive" ] || die "no snapshot $id"
+
+    # Snapshot the current state first, always. Restoring is itself a change,
+    # and someone who restores the wrong one should not be stuck with it.
+    say "snapshotting the current state before restoring"
+    cmd_create "before-restore-$id" >/dev/null
+
+    say "restoring $id"
+    if [ "${archive##*.}" = "zst" ]; then
+        tar -I zstd -xf "$archive" --absolute-names -C /
+    else
+        tar -xzf "$archive" --absolute-names -C /
+    fi
+
+    # The home files came out of the tar owned by root; give them back.
+    local home; home="$(user_home)"
+    local owner; owner="${SUDO_USER:-$(stat -c%U "$home" 2>/dev/null || echo root)}"
+    for rel in .config/wayfire.ini .config/foot .config/nethos; do
+        [ -e "$home/$rel" ] && chown -R "$owner" "$home/$rel" 2>/dev/null || true
+    done
+
+    say "restored. Reload the interface, or restart the shell:"
+    echo "    nethos-reload"
+    echo "    systemctl --user restart nethosd"
+}
+
+cmd_remove() {
+    need_root remove
+    local id="${1:?which snapshot?}"
+    rm -f "$STORE/$id.tar.zst" "$STORE/$id.tar.gz" "$STORE/$id.meta"
+    say "removed $id"
+}
+
+cmd_prune() {
+    need_root prune
+    local keep="${1:-$KEEP_DEFAULT}"
+    local -a metas
+    mapfile -t metas < <(ls -1 "$STORE"/*.meta 2>/dev/null | sort -r || true)
+    local i=0
+    for meta in "${metas[@]}"; do
+        i=$((i + 1))
+        [ "$i" -le "$keep" ] && continue
+        local id; id="$(basename "$meta" .meta)"
+        rm -f "$STORE/$id.tar.zst" "$STORE/$id.tar.gz" "$meta"
+        say "pruned $id"
+    done
+}
+
+case "${1:-list}" in
+    create)  shift; cmd_create "$@" ;;
+    list)    shift || true; cmd_list ;;
+    restore) shift; cmd_restore "$@" ;;
+    remove)  shift; cmd_remove "$@" ;;
+    prune)   shift; cmd_prune "$@" ;;
+    -h|--help) sed -n '2,9p' "$0" | sed 's/^# \?//' ;;
+    *) die "unknown command: $1 (try: create, list, restore, remove, prune)" ;;
+esac

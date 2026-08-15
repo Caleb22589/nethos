@@ -53,11 +53,19 @@ so an item could never activate even where clicks do land.
 
 ## 1. Foundations
 
-- [ ] **Snapshots and rollback.** Wanted in its own right and required by the
-      updater below: an interrupted or bad update has to be revertible. The
-      A/B partition scheme in `docs/ABUPDATE.md` is the existing sketch.
-- [ ] **Updater** pulling builds from GitHub Releases, tied to snapshots so a
-      failed update rolls back rather than leaving an unbootable machine.
+- [x] **Snapshots and rollback**, as `nethos-snapshot`. Deliberately not A/B
+      partitions or btrfs: those roll back the whole machine, which is right
+      for a kernel that will not boot and wrong for what actually goes wrong
+      here -- an update that changes a stylesheet and a daemon and leaves the
+      desktop broken while the system underneath is fine. A snapshot is ~100KB
+      and takes about a second. Measured: a corrupted nethos.css went 28881
+      bytes -> 32 -> 28881.
+- [x] **Updater** tied to it. `nethos-update` snapshots before applying and
+      restores automatically if the install fails part way -- half an update
+      is worse than none, because some files are new and some are old and
+      nothing says which. Both are in Settings.
+- [ ] Still worth having for the kernel case: A/B partitions per
+      `docs/ABUPDATE.md`, for updates that can leave a machine unbootable.
 - [ ] **npkg triggers.** The largest correctness gap. npkg unpacks packages
       but runs no maintainer scripts, so anything a `postinst` would create is
       absent. Four separate bugs came from this in one evening: the `netdev`
@@ -68,12 +76,16 @@ so an item could never activate even where clicks do land.
 
 ## 2. Interface
 
-- [ ] Desktop icons.
-- [ ] Working wallpapers. The setting is stored and offered in Settings; the
-      desktop surface does not read it yet.
-- [ ] Loading screen instead of the black gap before the shell appears.
-- [ ] Control centre: wifi, brightness, volume, battery.
-- [ ] Battery indicator and animations.
+- [x] Desktop icons, from ~/Desktop, through the same /api/files the Files app
+      uses.
+- [x] Wallpapers -- four, drawn rather than shipped, each with a dark form.
+- [x] Loading screen: a compositor background colour so the first frame is not
+      black, plus a splash surface that waits for the panel and gives up after
+      ten seconds rather than hiding a failure.
+- [x] Control centre: battery with time remaining, brightness, Wi-Fi.
+- [ ] Volume. No audio tools are installed (no PipeWire), and a slider that
+      silently does nothing is worse than no slider. Needs pipewire +
+      wireplumber in the desktop set first.
 - [ ] More customisation, and more settings behind the Settings app now that
       the schema-driven form makes adding one cheap.
 - [ ] Onboarding on first boot.

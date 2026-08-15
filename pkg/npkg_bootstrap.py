@@ -965,7 +965,11 @@ def setup_sudo(root: str) -> None:
             "# The App Store, via nethosd. See docs/ROADMAP.md.\n"
             "Cmnd_Alias NETHOS_PKG = /usr/bin/npkg fetch *, "
             "/usr/bin/npkg install *, /usr/bin/npkg remove *\n"
-            "%wheel ALL=(root) NOPASSWD: NETHOS_PKG\n")
+            "# Snapshots, so rolling a bad update back is one click rather\n"
+            "# than a terminal and a password.\n"
+            "Cmnd_Alias NETHOS_SNAP = /usr/bin/nethos-snapshot create *, "
+            "/usr/bin/nethos-snapshot restore *, /usr/bin/nethos-snapshot prune *\n"
+            "%wheel ALL=(root) NOPASSWD: NETHOS_PKG, NETHOS_SNAP\n")
     os.chmod(os.path.join(etc, "sudoers.d", "10-nethos-npkg"), 0o440)
 
     # These are the two binaries that must be setuid-root, and the two people

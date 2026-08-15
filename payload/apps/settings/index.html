@@ -84,6 +84,28 @@
 
   <div id="form"><p class="neth-sub">Loading…</p></div>
 
+  <section class="group" id="updates">
+    <h3>Updates &amp; snapshots</h3>
+    <div class="neth-card" style="padding:0">
+      <div class="row">
+        <div class="label">
+          <strong class="name">Update NETHOS</strong>
+          <span class="help">Pulls the latest build from GitHub. A snapshot is taken first,
+            and a failed update is rolled back automatically.</span>
+        </div>
+        <div class="control"><button class="neth-btn" id="do-update">Update</button></div>
+      </div>
+      <div class="row">
+        <div class="label">
+          <strong class="name">Take a snapshot</strong>
+          <span class="help">The shell, the daemon and the configuration — not your files.</span>
+        </div>
+        <div class="control"><button class="neth-btn" id="do-snap">Snapshot</button></div>
+      </div>
+    </div>
+    <div id="snaps"></div>
+  </section>
+
   <section class="group" id="trouble">
     <h3>Troubleshoot</h3>
     <div class="neth-card" style="padding:0">
@@ -288,6 +310,67 @@
     render();
     flashSaved();
   };
+
+  // --------------------------------------------------------- updates
+  const snaps = document.getElementById("snaps");
+  async function loadSnaps() {
+    const r = await fetch("/api/snapshots").then((x) => x.json()).catch(() => null);
+    snaps.textContent = "";
+    if (!r || !r.snapshots.length) return;
+    const card = document.createElement("div");
+    card.className = "neth-card";
+    card.style.cssText = "padding:0;margin-top:10px";
+    for (const s of r.snapshots) {
+      const row = document.createElement("div");
+      row.className = "row";
+      const lab = document.createElement("div");
+      lab.className = "label";
+      const n = document.createElement("strong");
+      n.className = "name";
+      n.textContent = s.label || s.id;
+      const h = document.createElement("span");
+      h.className = "help";
+      h.textContent = (s.date || s.id) + (s.commit && s.commit !== "unknown" ? " · " + s.commit : "");
+      lab.append(n, h);
+      const ctl = document.createElement("div");
+      ctl.className = "control";
+      const b = document.createElement("button");
+      b.className = "neth-btn";
+      b.textContent = "Restore";
+      b.addEventListener("click", async () => {
+        b.disabled = true; b.textContent = "Restoring…";
+        await fetch("/api/snapshots/restore", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: s.id }),
+        }).catch(() => {});
+        setTimeout(() => { b.textContent = "Restored"; loadSnaps(); }, 2500);
+      });
+      ctl.append(b);
+      row.append(lab, ctl);
+      card.append(row);
+    }
+    snaps.append(card);
+  }
+
+  document.getElementById("do-update").addEventListener("click", async (e) => {
+    const b = e.target;
+    b.disabled = true; b.textContent = "Updating…";
+    await fetch("/api/update", { method: "POST" }).catch(() => {});
+    setTimeout(() => {
+      b.textContent = "Started — see /tmp/nethos-update.log";
+      setTimeout(() => { b.disabled = false; b.textContent = "Update"; loadSnaps(); }, 6000);
+    }, 1200);
+  });
+  document.getElementById("do-snap").addEventListener("click", async (e) => {
+    const b = e.target;
+    b.disabled = true; b.textContent = "Working…";
+    await fetch("/api/snapshots/create", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label: "manual" }),
+    }).catch(() => {});
+    setTimeout(() => { b.disabled = false; b.textContent = "Snapshot"; loadSnaps(); }, 2600);
+  });
+  loadSnaps();
 
   // ------------------------------------------------------------ troubleshoot
   const diag = document.getElementById("diag");
