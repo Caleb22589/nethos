@@ -154,6 +154,87 @@ def parse_spec(text):
     return spec
 
 
+
+NETHOS_GTK_CSS = b"""
+/* The window itself is transparent so the frame's rounded corners show the
+   desktop through them; without this GTK paints the theme background square
+   behind everything and the radius is invisible. */
+window, window.background, .background {
+  background-color: transparent;
+  background-image: none;
+}
+
+/* docs/DESIGN.md 31: larger than feels right. A 6px radius reads as a
+   rendering artefact; 14 reads as a decision. */
+.nethos-frame {
+  background-color: #f4f6fa;
+  border-radius: 14px;
+  box-shadow: 0 12px 40px rgba(16, 22, 32, 0.28);
+}
+
+.nethos-titlebar {
+  min-height: 38px;
+  padding: 0 14px;
+  border-radius: 14px 14px 0 0;
+  /* A hairline, not a border. The bar and the content are one surface. */
+  box-shadow: inset 0 -1px 0 0 rgba(120, 130, 150, 0.16);
+}
+
+.nethos-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: #5a6470;
+}
+
+/* Traffic lights.
+   Colour carries the meaning and the glyph confirms it, which is why the
+   glyph is hidden until the group is hovered: three quiet dots at rest, three
+   labelled controls the moment a hand goes near them. */
+.nethos-lights { padding: 0; }
+
+.nethos-light {
+  min-width: 13px;
+  min-height: 13px;
+  padding: 0;
+  border-radius: 999px;
+  border: none;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.10);
+  background-image: none;
+}
+.nethos-light label {
+  font-size: 10px;
+  font-weight: 700;
+  color: rgba(0, 0, 0, 0.55);
+  opacity: 0;
+}
+.nethos-lights:hover .nethos-light label { opacity: 1; }
+
+.nethos-close    { background-color: #ec6a5e; }
+.nethos-minimize { background-color: #f4bf4f; }
+.nethos-maximize { background-color: #61c554; }
+
+/* Unfocused windows go grey, the way they do on a Mac: the colour is a cue
+   about which window is listening, not decoration. */
+window:backdrop .nethos-close,
+window:backdrop .nethos-minimize,
+window:backdrop .nethos-maximize {
+  background-color: rgba(120, 130, 150, 0.35);
+}
+window:backdrop .nethos-title { color: #8b94a0; }
+"""
+
+
+NETHOS_GTK_CSS_DARK = b"""
+.nethos-frame {
+  background-color: #171b22;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+.nethos-titlebar { box-shadow: inset 0 -1px 0 0 rgba(255, 255, 255, 0.08); }
+.nethos-title { color: #a8b2c0; }
+.nethos-light { box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35); }
+.nethos-light label { color: rgba(0, 0, 0, 0.65); }
+"""
+
 class Surface:
     # WebKit gives each WebView its own web process by default. For a browser
     # that is right; for a shell it means paying a whole process for every
@@ -175,8 +256,20 @@ class Surface:
         # surfaces use the namespace set below instead.
         self.window.set_default_size(int(spec.get("width", 800)),
                                      int(spec.get("height", 600)))
-        if self.role != "window":
-            self.window.set_decorated(False)
+        # Undecorated everywhere, windows included.
+        #
+        # Wayfire's decorator cannot round a corner -- its entire option set is
+        # font, title_height, border_size, button_order, active_color,
+        # inactive_color and ignore_views, and there is no rounded-corner
+        # plugin packaged for it. Its bar is also square, full width, and puts
+        # its buttons on the right. So NETHOS draws its own: see _titlebar().
+        #
+        # Built in GTK rather than in the page because dragging and resizing
+        # have to be real. A title bar drawn in HTML can only ask the
+        # compositor to move a window by recomputing its geometry on every
+        # pointer event, which lags behind the cursor; GtkWindowHandle hands
+        # the drag to the compositor and it tracks perfectly.
+        self.window.set_decorated(False)
 
         # Make the window itself transparent.
         #
@@ -188,14 +281,17 @@ class Surface:
         #
         # There is no property for this in GTK4; the supported route is a CSS
         # provider on the display.
-        if self.role != "window" and not Surface._transparent_css:
+        if not Surface._transparent_css:
             Surface._transparent_css = True
             provider = Gtk.CssProvider()
-            provider.load_from_data(
-                b"window, window.background, .background {"
-                b"  background-color: transparent;"
-                b"  background-image: none;"
-                b"}")
+            # GTK CSS has no prefers-color-scheme, so the dark frame is
+            # appended rather than queried. _theme() reads the same file the
+            # shell writes, before any page has painted, so a window never
+            # flashes the wrong one.
+            css = NETHOS_GTK_CSS
+            if _theme() == "dark":
+                css = css + NETHOS_GTK_CSS_DARK
+            provider.load_from_data(css)
             Gtk.StyleContext.add_provider_for_display(
                 Gdk.Display.get_default(), provider,
                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
@@ -282,7 +378,15 @@ class Surface:
 
         self._install_bridge()
 
-        self.window.set_child(self.view)
+        if self.role == "window":
+            frame = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            frame.add_css_class("nethos-frame")
+            frame.append(self._titlebar(spec.get("title", self.name)))
+            self.view.set_vexpand(True)
+            frame.append(self.view)
+            self.window.set_child(frame)
+        else:
+            self.window.set_child(self.view)
         if HAVE_LAYER_SHELL and self.role != "window":
             self._init_layer_shell()
 
@@ -325,6 +429,17 @@ class Surface:
         if (%s) {
           document.documentElement.classList.add("neth-compositor-blur");
         }
+        // The frame's bottom corners are rounded by GTK, but the WebView is a
+        // child widget and paints over them, so a window with a rounded top
+        // and square bottom looks like a mistake rather than a style. The page
+        // clips itself to match.
+        if (%s) {
+          var _r = document.createElement("style");
+          _r.textContent =
+            "html{border-radius:0 0 14px 14px;overflow:hidden;}" +
+            "body{border-radius:0 0 14px 14px;}";
+          document.documentElement.appendChild(_r);
+        }
         """ % (json.dumps(self.name),
                "true" if os.environ.get("NETHOS_GPU") else "false",
                json.dumps(_theme()),
@@ -339,7 +454,9 @@ class Surface:
                           or os.environ.get("WAYFIRE_SOCKET")
                           or os.environ.get("WAYFIRE_CONFIG_FILE")
                           or "wayfire" in os.environ.get(
-                              "XDG_CURRENT_DESKTOP", "").lower()) else "false")
+                              "XDG_CURRENT_DESKTOP", "").lower()) else "false",
+               # 5th: only plain windows clip themselves to the frame.
+               "true" if self.role == "window" else "false")
         manager.add_script(WebKit.UserScript.new(
             shim,
             WebKit.UserContentInjectedFrames.TOP_FRAME,
@@ -382,6 +499,62 @@ class Surface:
                 self.window.present()
             except Exception:                 # noqa: BLE001
                 pass
+
+    # The three buttons, in the order a hand expects them: close outermost.
+    # Symbols are drawn as labels and hidden until the group is hovered, which
+    # is the whole trick -- at rest they are three quiet dots, and the meaning
+    # appears the moment you go for one. A tooltip as well, because a symbol
+    # is a reminder and not an explanation.
+    _LIGHTS = (
+        ("close",    "nethos-close",    "×", "Close"),
+        ("minimize", "nethos-minimize", "−", "Minimise"),
+        ("maximize", "nethos-maximize", "+", "Maximise"),
+    )
+
+    def _titlebar(self, title):
+        lights = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        lights.add_css_class("nethos-lights")
+        lights.set_valign(Gtk.Align.CENTER)
+        for action, css, glyph, tip in self._LIGHTS:
+            b = Gtk.Button()
+            b.add_css_class("nethos-light")
+            b.add_css_class(css)
+            b.set_tooltip_text(tip)
+            b.set_child(Gtk.Label(label=glyph))
+            b.connect("clicked", self._on_light, action)
+            lights.append(b)
+
+        label = Gtk.Label(label=title)
+        label.add_css_class("nethos-title")
+        label.set_ellipsize(3)                      # Pango.EllipsizeMode.END
+
+        bar = Gtk.CenterBox()
+        bar.add_css_class("nethos-titlebar")
+        bar.set_start_widget(lights)
+        bar.set_center_widget(label)
+        # Same width as the lights so the title stays optically centred rather
+        # than being pushed right by them.
+        spacer = Gtk.Box()
+        spacer.set_size_request(78, -1)
+        bar.set_end_widget(spacer)
+
+        # GtkWindowHandle is what makes the bar draggable, and gives the
+        # double-click-to-maximise everyone expects, without us tracking a
+        # single pointer event.
+        handle = Gtk.WindowHandle()
+        handle.set_child(bar)
+        return handle
+
+    def _on_light(self, _button, action):
+        if action == "close":
+            self.window.close()
+        elif action == "minimize":
+            self.window.minimize()
+        elif action == "maximize":
+            if self.window.is_maximized():
+                self.window.unmaximize()
+            else:
+                self.window.maximize()
 
     def _set_input_rect(self, msg):
         """Limit clicks to part of the surface.
