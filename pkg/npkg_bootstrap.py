@@ -146,7 +146,10 @@ SETS = {
         # maximise, edge snapping on drag, and blur done in the compositor --
         # which is what makes the glass real instead of a per-frame CSS cost.
         # sway can do none of those four.
-        "wayfire", "wayfire-plugins-extra", "wf-shell",
+        # NOT wf-shell: it ships wf-panel and wf-background, and NETHOS has
+        # its own panel, dock and wallpaper. Installing it puts a second bar
+        # across the top of the screen and a second thing drawing the desktop.
+        "wayfire", "wayfire-plugins-extra",
         # sway stays as the fallback so a machine where Wayfire will not start
         # still reaches a desktop.
         "sway", "swaybg", "swayidle", "swaylock", "xwayland",
