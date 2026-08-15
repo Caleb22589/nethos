@@ -354,3 +354,26 @@ html:not(.neth-compositor-blur) #dock {
   -webkit-backdrop-filter: blur(16px) saturate(170%);
   backdrop-filter: blur(16px) saturate(170%);
 }
+
+
+/* ---------------------------------------------------------- widgets --
+ * docs/DESIGN.md, 32. macOS puts widgets on the desktop too -- the difference
+ * is that they recede. Monochrome, low contrast, and only fully present when
+ * looked at. Ours had coloured headings and live figures pulling the eye all
+ * day, which is the difference between a thing you glance at and decoration.
+ */
+body[data-view="desktop"] .widget {
+  opacity: 0.82;
+  transition: opacity var(--fast);
+}
+body[data-view="desktop"] .widget:hover { opacity: 1; }
+
+/* The heading is a label, not a highlight: no accent, low contrast, and the
+   same treatment on every widget. */
+body[data-view="desktop"] .widget .neth-card-title,
+body[data-view="desktop"] .widget .card-title,
+body[data-view="desktop"] .widget h3 { color: var(--ink-faint); }
+
+/* Figures stay legible -- rule 30: soften the surface, never the text. */
+body[data-view="desktop"] .widget .stat,
+body[data-view="desktop"] .widget .num { color: var(--ink); }

@@ -347,3 +347,68 @@ If a design has only been tested on an empty desktop, it has not been tested.
 
 Not a canvas, not a display. The default state is a surface with nothing on it,
 because everything on it is something the user did not put there.
+
+---
+
+# What macOS is actually doing
+
+Reading a Tahoe screenshot closely, because the lesson is not the blur.
+
+## 29. The interface has no colour; the content does
+
+Every colour in that screenshot comes from the photograph and the app icons.
+The glass is neutral — white and grey translucency, nothing else. The system
+never tints itself.
+
+This is the whole trick, and it is the opposite of ricing. A coloured interface
+must be matched to a wallpaper and breaks when the wallpaper changes; a
+colourless one takes its character from whatever is behind it and is correct on
+every background. It is also why Apple can ship one look to two hundred million
+machines with different wallpapers.
+
+Our accent is for controls only (rule 1). Surfaces stay neutral. A tinted panel
+is a mistake even when the tint is subtle.
+
+## 30. Contrast is high where it carries meaning
+
+The glass is soft; the text on it is not. Near-black on light glass, full
+weight, no compromise. Softness is a property of *surfaces*, never of the words
+on them.
+
+The commonest failure in glass interfaces is letting the translucency argue
+with legibility and settling on grey text at 60% — which is unreadable at a
+glance and looks unfinished. If text is hard to read, fix the surface behind
+it, never the text.
+
+## 31. Corners are continuous, not circular
+
+Apple's rounding is a superellipse — curvature that eases into the straight
+edge — where CSS `border-radius` is a circular arc that meets the edge at a
+tangent discontinuity. The eye reads the arc version as slightly cheap without
+being able to say why, and it is one of the largest differences between a
+copy and the real thing.
+
+`corner-shape: squircle` is arriving in CSS; until WebKit has it, the practical
+approximation is a *larger* radius than feels right (Apple's are bigger than
+people expect) and never mixing radii on one surface.
+
+## 32. Widgets are allowed; competing is not
+
+Correcting rule 25: macOS does put widgets on the desktop, so the tell was
+never their existence. It is their treatment.
+
+Apple's are monochrome, low contrast, edge-aligned, and recede completely until
+looked at. Ours have coloured headings and live figures that pull the eye
+constantly. A widget should be *legible when sought and invisible when not*.
+
+Desaturate them, reduce contrast, align them to one edge, and they stop being
+decoration and become what they are on macOS: something you glance at.
+
+## 33. The dock is icons, and nothing else
+
+No labels, no text, no running indicators shouting. Consistent optical size,
+one mask shape, one visual weight. Every icon is the same size *optically*,
+which is not the same as the same size mathematically.
+
+Text in a dock is the tell that the icons are not recognisable enough — and
+the cure is better icons, not labels.
