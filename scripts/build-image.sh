@@ -502,14 +502,26 @@ chmod +x "$R/root/inside.sh"
 chroot "$R" env ROOT_UUID="$ROOT_UUID" ESP_UUID="$ESP_UUID" /root/inside.sh
 rm -f "$R/root/inside.sh"
 
-echo "--- size ---"
-du -sh "$R" 2>/dev/null | awk '{print "  total: " $1}'
-# `| head -8` under pipefail is a trap: head exits after eight lines, sort gets
-# SIGPIPE, the pipeline reports failure and set -e kills the build -- at the
-# very end, after everything worked. Same shape as the grep -c bug in
-# docs/INTERNALS.md, made twice now. Collect first, slice after.
-sizes=$(du -sm "$R"/usr/* "$R"/var/* 2>/dev/null | sort -rn || true)
-printf '%s\n' "$sizes" | head -8 | awk '{printf "  %6dMB  %s\n", $1, $2}' || true
+# Size, reported inside a guard that cannot fail.
+#
+# This block has now broken the build twice, in two different ways, both of
+# them pipefail: `du | awk` reports failure because du exits non-zero the
+# moment it meets one unreadable path -- 2>/dev/null hides the message, not
+# the status -- and `sort | head` reports failure because head closes the pipe
+# and sort dies of SIGPIPE. Both printed their output first and then killed a
+# build in which every actual step had succeeded.
+#
+# A diagnostic must never be able to fail the thing it is measuring, so the
+# whole block is wrapped rather than each line being argued with individually.
+{
+    echo "--- size ---"
+    total=$(du -sh "$R" 2>/dev/null | cut -f1) || total="?"
+    echo "  total: ${total:-?}"
+    sizes=$(du -sm "$R"/usr/* "$R"/var/* 2>/dev/null | sort -rn) || sizes=""
+    if [ -n "$sizes" ]; then
+        printf '%s\n' "$sizes" | awk 'NR<=8 {printf "  %6dMB  %s\n", $1, $2}'
+    fi
+} || true
 
 echo "--- sanity ---"
 ls -l "$R/usr/bin/sudo" "$R/usr/bin/su"
