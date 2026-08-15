@@ -1,0 +1,12 @@
+{
+  "id": "settings",
+  "name": "Settings",
+  "description": "Appearance, dock, panel and motion — everything the desktop reads at startup",
+  "icon": "ST",
+  "version": "1.0.0",
+  "categories": ["NETHOS", "System"],
+  "entry": "index.html",
+  "permissions": ["system", "settings"],
+  "mode": "window",
+  "window": { "width": 760, "height": 620 }
+}

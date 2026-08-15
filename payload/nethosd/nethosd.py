@@ -82,6 +82,89 @@ BUILTINS = {
 }
 
 
+SETTINGS_PATH = os.path.expanduser("~/.config/nethos/settings.json")
+
+# Every setting the desktop has, its default, and what it accepts. Kept in one
+# table so the Settings app can render itself from the schema rather than
+# hardcoding a form that drifts from what the daemon actually stores.
+SETTINGS_SCHEMA = [
+    {"key": "theme", "label": "Theme", "group": "Appearance",
+     "type": "choice", "options": ["auto", "light", "dark"], "default": "auto",
+     "help": "Auto follows the time of day."},
+    {"key": "accent", "label": "Accent", "group": "Appearance",
+     "type": "colour", "default": "#3b6ea5",
+     "help": "Used for focus rings and the active item."},
+    {"key": "wallpaper", "label": "Wallpaper", "group": "Appearance",
+     "type": "choice",
+     "options": ["dawn", "slate", "meadow", "dusk"], "default": "dawn"},
+    {"key": "font_scale", "label": "Text size", "group": "Appearance",
+     "type": "range", "min": 85, "max": 130, "step": 5, "default": 100,
+     "unit": "%"},
+    {"key": "dock_autohide", "label": "Hide the dock", "group": "Dock",
+     "type": "bool", "default": True,
+     "help": "Slides out of the way until you reach for it."},
+    {"key": "dock_size", "label": "Icon size", "group": "Dock",
+     "type": "range", "min": 36, "max": 72, "step": 4, "default": 48,
+     "unit": "px"},
+    {"key": "panel_clock_seconds", "label": "Show seconds",
+     "group": "Panel", "type": "bool", "default": False},
+    {"key": "animations", "label": "Animations", "group": "Motion",
+     "type": "bool", "default": True,
+     "help": "Turn off on a machine without a GPU."},
+]
+SETTINGS_DEFAULTS = {s["key"]: s["default"] for s in SETTINGS_SCHEMA}
+
+
+def read_settings():
+    """Stored settings over defaults. A corrupt file is not fatal: a desktop
+    that will not start because a JSON file lost a brace is a worse failure
+    than one that comes up with the defaults and says so."""
+    out = dict(SETTINGS_DEFAULTS)
+    try:
+        with open(SETTINGS_PATH) as fh:
+            stored = json.load(fh)
+        if isinstance(stored, dict):
+            out.update({k: v for k, v in stored.items() if k in out})
+    except FileNotFoundError:
+        pass
+    except (ValueError, OSError) as exc:
+        diag("settings", "unreadable, using defaults: %s" % exc)
+    return out
+
+
+def write_settings(changes):
+    """Merge and persist. Returns the full settings after the change.
+
+    Written to a temporary file and renamed, so an interrupted write cannot
+    leave a half-written file that the next boot refuses to parse."""
+    current = read_settings()
+    valid = {s["key"]: s for s in SETTINGS_SCHEMA}
+    for key, value in (changes or {}).items():
+        spec = valid.get(key)
+        if not spec:
+            continue
+        if spec["type"] == "bool":
+            current[key] = bool(value)
+        elif spec["type"] == "choice":
+            if value in spec["options"]:
+                current[key] = value
+        elif spec["type"] == "range":
+            try:
+                n = int(value)
+            except (TypeError, ValueError):
+                continue
+            current[key] = max(spec["min"], min(spec["max"], n))
+        else:
+            current[key] = str(value)[:64]
+    os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
+    tmp = SETTINGS_PATH + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(current, fh, indent=2, sort_keys=True)
+    os.replace(tmp, SETTINGS_PATH)
+    EVENTS.publish("settings", current)
+    return current
+
+
 def session_command(builtin):
     """Ending or locking a session, in the running compositor's dialect.
 
@@ -1592,6 +1675,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"windows": list_windows()})
         if route == "/api/status":
             return self.send_json(status())
+        if route == "/api/settings":
+            # Schema travels with the values so the Settings app renders from
+            # what the daemon actually accepts, and cannot drift from it.
+            return self.send_json({"settings": read_settings(),
+                                   "schema": SETTINGS_SCHEMA})
         if route == "/api/menu":
             return self.send_json({"open": MENU_STATE["open"]})
         if route == "/api/version":
@@ -1648,6 +1736,13 @@ class Handler(BaseHTTPRequestHandler):
                 del CLIENT_ERRORS[:-100]
                 diag(kind, "%s: %s" % (surface, data.get("message", "")))
             return self.send_json({"ok": True})
+
+        if route == "/api/settings":
+            if data.get("reset"):
+                changed = write_settings(dict(SETTINGS_DEFAULTS))
+            else:
+                changed = write_settings(data.get("settings") or data)
+            return self.send_json({"ok": True, "settings": changed})
 
         if route == "/api/launch":
             builtin = data.get("builtin", "")

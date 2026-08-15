@@ -228,7 +228,16 @@ SETS = {
         # in the "browser" set, or one command away:  npkg fetch chromium
         "foot", "thunar", "mousepad", "imv", "htop",
         "wl-clipboard", "brightnessctl", "xdg-utils",
+        # xdg-desktop-portal-gtk is not optional, despite NETHOS drawing none
+        # of its own UI with GTK dialogs. The wlr backend implements only
+        # Screenshot and ScreenCast; with nothing providing the rest,
+        # xdg-desktop-portal.service sat at 25.2s in systemd-analyze blame on
+        # every boot -- the single largest item, larger than the whole of
+        # userspace. Installing it costs 1MB and removed the entry entirely.
+        # It also supplies FileChooser, so applications get a working file
+        # dialog rather than none.
         "xdg-desktop-portal", "xdg-desktop-portal-wlr",
+        "xdg-desktop-portal-gtk",
 
         # fonts and icons the shell asks for by name
         "fonts-inter", "fonts-dejavu", "fonts-jetbrains-mono",
@@ -562,9 +571,33 @@ def setup_network(root: str) -> None:
         if not os.path.islink(link) and not os.path.exists(link):
             os.symlink("/usr/lib/systemd/system/" + unit, link)
 
-    enable("systemd-networkd.service", "multi-user.target")
-    enable("systemd-networkd.socket", "sockets.target")
-    enable("systemd-resolved.service", "multi-user.target")
+    # Only when NetworkManager is not installed. Enabling both leaves two
+    # daemons managing the same interfaces with two DHCP clients -- measured
+    # on real hardware, where both were active at once. NetworkManager comes
+    # with the desktop set because the shell drives it over D-Bus to list and
+    # join wifi; systemd-networkd is what a headless build gets instead.
+    if not os.path.exists(os.path.join(root, "usr/sbin/NetworkManager")):
+        enable("systemd-networkd.service", "multi-user.target")
+        enable("systemd-networkd.socket", "sockets.target")
+        enable("systemd-resolved.service", "multi-user.target")
+    else:
+        # NetworkManager-wait-online holds up multi-user.target until a link
+        # is configured, for as long as 30s on a machine with no cable in it.
+        # Nothing in NETHOS needs the network before the desktop is drawn.
+        wants = os.path.join(root, "etc/systemd/system",
+                             "network-online.target.wants")
+        os.makedirs(wants, exist_ok=True)
+        for unit in ("NetworkManager-wait-online.service",
+                     "systemd-networkd-wait-online.service"):
+            link = os.path.join(wants, unit)
+            if os.path.islink(link) or os.path.exists(link):
+                os.remove(link)
+        # A masking symlink to /dev/null survives the package being installed
+        # later, which a missing .wants entry does not.
+        mask = os.path.join(root, "etc/systemd/system",
+                            "NetworkManager-wait-online.service")
+        if not os.path.islink(mask) and not os.path.exists(mask):
+            os.symlink("/dev/null", mask)
     # Deliberately *not* enabling wpa_supplicant.service. NetworkManager
     # activates wpa_supplicant over D-Bus itself, and that instance owns
     # fi.w1.wpa_supplicant1; a second copy started by the unit finds the name

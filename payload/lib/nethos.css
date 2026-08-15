@@ -108,10 +108,41 @@
   --neth-sans: var(--sans);
 }
 
+/* The dark palette is declared twice, deliberately.
+ *
+ * The media query is the default: follow the host unless told otherwise. The
+ * attribute rule is the Settings app's answer, written by the shell when the
+ * theme is set to "dark" explicitly. Plain CSS has no way to share one
+ * declaration block between a media query and a selector, and the alternative
+ * -- having JavaScript write every token -- puts the palette in two languages
+ * instead of two places. Change both, and keep them identical. */
+:root[data-theme="dark"] {
+  --glass:        rgba(28, 32, 40, 0.62);
+  --glass-strong: rgba(28, 32, 40, 0.80);
+  --glass-dim:    rgba(28, 32, 40, 0.40);
+  --glass-sunk:   rgba(255, 255, 255, 0.06);
+  --rim:      rgba(255, 255, 255, 0.22);
+  --rim-soft: rgba(255, 255, 255, 0.10);
+  --edge:     rgba(0, 0, 0, 0.40);
+  --sheen: linear-gradient(180deg,
+              rgba(255, 255, 255, 0.16) 0%,
+              rgba(255, 255, 255, 0.04) 42%,
+              rgba(255, 255, 255, 0.00) 60%);
+  --ink:       #eef1f5;
+  --ink-soft:  #a8b2c0;
+  --ink-faint: #6f7885;
+  --accent:    #6f93bd;
+  --frost-opacity: 0.045;
+  --menu-fill: rgba(24, 28, 36, 0.82);
+  --refract:
+    inset  1px  1px 0 0 rgba(255, 255, 255, 0.13),
+    inset -1px -1px 0 0 rgba(0, 0, 0, 0.32);
+}
+
 @media (prefers-color-scheme: dark) {
   /* :not(.neth-light) so that choosing light pins it. Following the host's
      preference is a default, not an override. */
-  :root:not(.neth-light) {
+  :root:not(.neth-light):not([data-theme="light"]) {
     --glass:        rgba(28, 32, 40, 0.62);
     --glass-strong: rgba(28, 32, 40, 0.80);
     --glass-dim:    rgba(28, 32, 40, 0.40);
@@ -209,6 +240,69 @@ html.neth-gpu:not(.neth-compositor-blur) .glass-blur {
 }
 .glass-strong { background: var(--glass-strong); }
 .glass-dim    { background: var(--glass-dim); }
+
+/* ------------------------------------------------------- liquid glass --
+ *
+ * Blur alone is a frosted window, not glass. Three things separate them, and
+ * all three are cheap once the compositor is doing the blur:
+ *
+ *   frost      a fine grain, so the surface has a material rather than being
+ *              a clean gaussian. Without it large panels look like a
+ *              screenshot someone smudged.
+ *   refraction light bending at the edge -- bright where it enters along the
+ *              top-left, dark where it leaves at the bottom-right. This is
+ *              what makes a panel read as having thickness.
+ *   sheen      a specular gradient down the top third, already in --sheen.
+ *
+ * The grain is an inline SVG turbulence rather than an image file: no extra
+ * request, no file to ship, and it scales to any surface.
+ */
+:root {
+  --frost: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='140' height='140'><filter id='f'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/></filter><rect width='140' height='140' filter='url(%23f)'/></svg>");
+  --frost-opacity: 0.030;
+  /* The launcher is read rather than looked through, so it is denser than
+     --glass-strong. Below about 0.72 the app names start competing with
+     whatever wallpaper happens to be behind them. */
+  --menu-fill: rgba(255, 255, 255, 0.78);
+  /* Light enters top-left, leaves bottom-right. */
+  --refract:
+    inset  1px  1px 0 0 rgba(255, 255, 255, 0.55),
+    inset -1px -1px 0 0 rgba(90, 105, 130, 0.16);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --frost-opacity: 0.045;
+    --menu-fill: rgba(24, 28, 36, 0.82);
+    --refract:
+      inset  1px  1px 0 0 rgba(255, 255, 255, 0.13),
+      inset -1px -1px 0 0 rgba(0, 0, 0, 0.32);
+  }
+}
+
+/* The grain sits above the backdrop and below the content. z-index -1 keeps
+   it behind text; isolation on .glass stops it escaping the card. */
+.glass::after, .neth-card::after, .card::after, .frost::after {
+  content: "";
+  position: absolute; inset: 0;
+  border-radius: inherit;
+  background-image: var(--frost);
+  opacity: var(--frost-opacity);
+  pointer-events: none;
+  mix-blend-mode: overlay;
+  z-index: -1;
+}
+.glass, .neth-card, .card, .frost { position: relative; isolation: isolate; }
+
+/* Refraction is additive to whatever box-shadow the element already has, so
+   it is applied as its own rule rather than folded into .glass. */
+.glass, .neth-card, .card, .frost {
+  box-shadow:
+    var(--refract),
+    inset 0 1px 0 0 var(--rim),
+    inset 0 0 0 1px var(--rim-soft),
+    inset 0 -1px 0 0 var(--edge),
+    var(--shadow-sm);
+}
 
 /* ------------------------------------------------------------ typography */
 

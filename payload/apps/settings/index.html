@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Settings — NETHOS</title>
+  <link rel="stylesheet" href="/lib/nethos.css">
+  <script src="/lib/nethos.js"></script>
+  <style>
+    /* The form renders from the daemon's schema, so the styling here is by
+       control type rather than by setting: adding a setting to nethosd needs
+       no change in this file. */
+    .group { margin-bottom: 26px; }
+    .group h3 {
+      font-family: var(--display);
+      letter-spacing: 0.08em; text-transform: uppercase;
+      font-size: 12px; color: var(--ink-faint);
+      margin: 0 0 10px 2px;
+    }
+    .row {
+      display: flex; align-items: center; gap: 16px;
+      padding: 13px 16px;
+      border-bottom: 1px solid var(--rim-soft);
+    }
+    .row:last-child { border-bottom: 0; }
+    .row .label { flex: 1; min-width: 0; }
+    .row .name { display: block; }
+    .row .help {
+      display: block; font-size: 12px; color: var(--ink-faint);
+      margin-top: 2px;
+    }
+    .row .control { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; }
+
+    /* A switch, because a checkbox on a glass surface is a grey box. */
+    .sw {
+      width: 46px; height: 27px; border-radius: 14px;
+      background: var(--glass-sunk); position: relative;
+      cursor: pointer; transition: background var(--fast);
+      box-shadow: inset 0 0 0 1px var(--rim-soft);
+    }
+    .sw[data-on="1"] { background: var(--accent); }
+    .sw i {
+      position: absolute; top: 3px; left: 3px;
+      width: 21px; height: 21px; border-radius: 50%;
+      background: #fff; box-shadow: 0 1px 3px rgba(20,26,36,0.3);
+      transition: transform 180ms var(--ease);
+    }
+    .sw[data-on="1"] i { transform: translateX(19px); }
+
+    select, input[type="range"] { accent-color: var(--accent); }
+    select {
+      font: inherit; font-size: 14px;
+      padding: 7px 12px; border-radius: var(--r-sm, 10px);
+      background: var(--glass-sunk); color: var(--ink);
+      border: 0; box-shadow: inset 0 0 0 1px var(--rim-soft);
+    }
+    input[type="range"] { width: 170px; }
+    .val {
+      font-variant-numeric: tabular-nums;
+      font-size: 13px; color: var(--ink-soft);
+      min-width: 46px; text-align: right;
+    }
+    .swatches { display: flex; gap: 8px; }
+    .swatch {
+      width: 24px; height: 24px; border-radius: 50%;
+      cursor: pointer; border: 0;
+      box-shadow: inset 0 0 0 1px rgba(0,0,0,0.15);
+    }
+    .swatch[data-sel="1"] { box-shadow: 0 0 0 2px var(--neth-bg, #fff), 0 0 0 4px var(--ink-soft); }
+    .saved {
+      opacity: 0; transition: opacity 200ms var(--ease);
+      font-size: 12px; color: var(--ink-faint);
+    }
+    .saved.on { opacity: 1; }
+  </style>
+</head>
+<body>
+  <div class="neth-app-header">
+    <h1>Settings</h1>
+    <span class="neth-sub" id="where"></span>
+    <span class="neth-spacer"></span>
+    <span class="saved" id="saved">Saved</span>
+    <button class="neth-btn" id="reset">Reset to defaults</button>
+  </div>
+
+  <div id="form"><p class="neth-sub">Loading…</p></div>
+
+<script>
+(async () => {
+  const api = await nethos.ready();
+  const form = document.getElementById("form");
+  const savedTag = document.getElementById("saved");
+
+  const ACCENTS = ["#3b6ea5", "#4a7c59", "#8a6d3b", "#7a4a6d", "#455a64", "#a0522d"];
+  let schema = [], values = {};
+
+  async function load() {
+    const r = await fetch("/api/settings").then((x) => x.json());
+    schema = r.schema; values = r.settings;
+    document.getElementById("where").textContent = "~/.config/nethos/settings.json";
+    render();
+  }
+
+  let flashTimer = null;
+  function flashSaved() {
+    savedTag.classList.add("on");
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => savedTag.classList.remove("on"), 1200);
+  }
+
+  // Every control writes through immediately. There is no Apply button:
+  // a settings screen that needs one is a settings screen you can leave in a
+  // state you did not intend.
+  async function save(key, value) {
+    values[key] = value;
+    const r = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ settings: { [key]: value } }),
+    }).then((x) => x.json());
+    values = r.settings;
+    flashSaved();
+    apply(values);
+  }
+
+  // Applied locally too, so the effect is visible in this window at once
+  // rather than only wherever the shell happens to repaint.
+  function apply(v) {
+    const root = document.documentElement;
+    root.style.setProperty("--accent", v.accent);
+    root.style.fontSize = (v.font_scale || 100) + "%";
+    if (v.theme === "auto") root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", v.theme);
+  }
+
+  function control(spec) {
+    const wrap = document.createElement("div");
+    wrap.className = "control";
+    const v = values[spec.key];
+
+    if (spec.type === "bool") {
+      const sw = document.createElement("div");
+      sw.className = "sw";
+      sw.dataset.on = v ? "1" : "0";
+      sw.innerHTML = "<i></i>";
+      sw.onclick = () => {
+        const next = sw.dataset.on !== "1";
+        sw.dataset.on = next ? "1" : "0";
+        save(spec.key, next);
+      };
+      wrap.append(sw);
+
+    } else if (spec.type === "choice") {
+      const sel = document.createElement("select");
+      for (const opt of spec.options) {
+        const o = document.createElement("option");
+        o.value = opt;
+        o.textContent = opt[0].toUpperCase() + opt.slice(1);
+        if (opt === v) o.selected = true;
+        sel.append(o);
+      }
+      sel.onchange = () => save(spec.key, sel.value);
+      wrap.append(sel);
+
+    } else if (spec.type === "range") {
+      const out = document.createElement("span");
+      out.className = "val";
+      out.textContent = v + (spec.unit || "");
+      const r = document.createElement("input");
+      r.type = "range";
+      r.min = spec.min; r.max = spec.max; r.step = spec.step; r.value = v;
+      // input updates the label continuously; change writes once, so dragging
+      // a slider is not one POST per pixel.
+      r.oninput = () => { out.textContent = r.value + (spec.unit || ""); };
+      r.onchange = () => save(spec.key, Number(r.value));
+      wrap.append(r, out);
+
+    } else if (spec.type === "colour") {
+      const box = document.createElement("div");
+      box.className = "swatches";
+      for (const c of ACCENTS) {
+        const b = document.createElement("button");
+        b.className = "swatch";
+        b.style.background = c;
+        b.dataset.sel = c === v ? "1" : "0";
+        b.title = c;
+        b.onclick = () => {
+          for (const s of box.children) s.dataset.sel = "0";
+          b.dataset.sel = "1";
+          save(spec.key, c);
+        };
+        box.append(b);
+      }
+      wrap.append(box);
+    }
+    return wrap;
+  }
+
+  function render() {
+    form.textContent = "";
+    const groups = [];
+    for (const spec of schema) {
+      let g = groups.find((x) => x.name === spec.group);
+      if (!g) { g = { name: spec.group, items: [] }; groups.push(g); }
+      g.items.push(spec);
+    }
+    for (const g of groups) {
+      const sec = document.createElement("section");
+      sec.className = "group";
+      const h = document.createElement("h3");
+      h.textContent = g.name;
+      const card = document.createElement("div");
+      card.className = "neth-card";
+      card.style.padding = "0";
+      for (const spec of g.items) {
+        const row = document.createElement("div");
+        row.className = "row";
+        const label = document.createElement("div");
+        label.className = "label";
+        const name = document.createElement("strong");
+        name.className = "name";
+        name.textContent = spec.label;
+        label.append(name);
+        if (spec.help) {
+          const help = document.createElement("span");
+          help.className = "help";
+          help.textContent = spec.help;
+          label.append(help);
+        }
+        row.append(label, control(spec));
+        card.append(row);
+      }
+      sec.append(h, card);
+      form.append(sec);
+    }
+    apply(values);
+  }
+
+  document.getElementById("reset").onclick = async () => {
+    const r = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reset: true }),
+    }).then((x) => x.json());
+    values = r.settings;
+    render();
+    flashSaved();
+  };
+
+  // Another surface may change a setting; reflect it rather than going stale.
+  api.on("settings", (v) => { if (v) { values = v; render(); } });
+
+  await load();
+})();
+</script>
+</body>
+</html>

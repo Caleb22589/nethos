@@ -482,8 +482,43 @@ function toast(text, level) {
   setTimeout(() => node.remove(), 4000);
 }
 
-document.addEventListener("DOMContentLoaded", () => {
+/* ------------------------------------------------------------- settings --
+ * Every surface applies the same stored settings, so the theme, accent and
+ * text size are one answer rather than four. Applied before the view starts
+ * drawing: setting them afterwards means the panel is visibly repainted a
+ * moment after it appears, which reads as a glitch rather than as a theme.
+ */
+function applySettings(s) {
+  if (!s) return;
+  const root = document.documentElement;
+  // "auto" is resolved here rather than left to the stylesheet, because the
+  // stylesheet's media query cannot see a stored preference of "dark" on a
+  // host that reports light.
+  const dark = s.theme === "dark" ||
+    (s.theme === "auto" &&
+     window.matchMedia("(prefers-color-scheme: dark)").matches);
+  root.setAttribute("data-theme", dark ? "dark" : "light");
+  if (s.accent) root.style.setProperty("--accent", s.accent);
+  if (s.font_scale) root.style.fontSize = s.font_scale + "%";
+  root.classList.toggle("no-motion", s.animations === false);
+  if (typeof s.dock_size === "number")
+    root.style.setProperty("--dock-icon", s.dock_size + "px");
+  document.body.dataset.autohide = s.dock_autohide === false ? "0" : "1";
+  document.body.dataset.seconds = s.panel_clock_seconds ? "1" : "0";
+}
+
+async function loadSettings() {
+  try {
+    const r = await get("/api/settings");
+    applySettings(r.settings);
+    return r.settings;
+  } catch (e) { return null; }
+}
+
+document.addEventListener("DOMContentLoaded", async () => {
   const view = document.body.dataset.view;
+  await loadSettings();
+  onEvent((msg) => { if (msg.type === "settings") applySettings(msg.data); });
   if (view === "panel") initPanel();
   else if (view === "dock") initDock();
   else if (view === "menu") initMenu();

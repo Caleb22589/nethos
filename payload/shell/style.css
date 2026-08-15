@@ -148,10 +148,26 @@ body[data-view="dock"].hidden #dock {
   pointer-events: none;
   opacity: 0;
 }
+/* Settings: "Hide the dock" off. The hover strip still exists on the host
+   side; this is only about whether the dock retreats from it. */
+body[data-view="dock"][data-autohide="0"].hidden #dock {
+  transform: none;
+  pointer-events: auto;
+  opacity: 1;
+}
+
+/* Settings: motion off. A machine without a GPU spends real time on these,
+   and someone who turns them off wants them gone, not merely shortened. */
+html.no-motion *,
+html.no-motion *::before,
+html.no-motion *::after {
+  transition: none !important;
+  animation: none !important;
+}
 
 .dock-item {
   position: relative;
-  width: 48px; height: 48px;
+  width: var(--dock-icon, 48px); height: var(--dock-icon, 48px);
   border-radius: var(--r);
   display: grid; place-items: center;
   transition: transform var(--fast), background var(--fast);
@@ -202,9 +218,20 @@ body[data-view="menu"].shown { opacity: 1; }
   max-height: min(620px, 86vh);
   display: flex; flex-direction: column;
   padding: 14px;
-  background: var(--glass-strong);
+  /* Was --glass-strong with no blur at all: the launcher was the one surface
+     that deliberately skipped it, because blurring a full-screen surface on
+     llvmpipe is what made the shell unusable. That is no longer the trade --
+     the compositor blurs layer surfaces on the GPU, and the panel here is
+     760px wide rather than the whole screen. Unblurred it was translucent
+     over an arbitrary desktop, which is why the text could not be read.
+     --menu-fill is denser than --glass-strong for the same reason: a
+     launcher is read, not looked through. */
+  background: var(--menu-fill, rgba(255, 255, 255, 0.78));
+  -webkit-backdrop-filter: blur(30px) saturate(180%) brightness(1.06);
+  backdrop-filter: blur(30px) saturate(180%) brightness(1.06);
   border-radius: var(--r-xl);
-  box-shadow: inset 0 1px 0 0 var(--rim), inset 0 0 0 1px var(--rim-soft),
+  box-shadow: var(--refract),
+              inset 0 1px 0 0 var(--rim), inset 0 0 0 1px var(--rim-soft),
               var(--shadow-lg);
   position: relative; isolation: isolate;
   transform: scale(0.97) translateY(6px);
@@ -214,6 +241,12 @@ body[data-view="menu"].shown #menu { transform: none; }
 #menu::before {
   content: ""; position: absolute; inset: 0; border-radius: inherit;
   background: var(--sheen); pointer-events: none; z-index: -1;
+}
+/* Frost grain, same as .glass elsewhere. */
+#menu::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  background-image: var(--frost); opacity: var(--frost-opacity);
+  mix-blend-mode: overlay; pointer-events: none; z-index: -1;
 }
 
 #search {
