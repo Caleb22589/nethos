@@ -164,7 +164,14 @@ body { padding: 22px 24px; }
  * hardware behind the compositor. Everything else keeps the translucent
  * background, which gives most of the look for none of the cost.
  */
-html.neth-gpu .glass-blur {
+/* Under Hyprland the compositor blurs what is behind a transparent surface,
+   which is real glass rather than an imitation of it, and costs WebKit nothing.
+   The CSS blur below is only for compositors that cannot -- and even then only
+   with hardware behind it. Never both: doubling the blur is the per-frame CPU
+   cost we removed, paid twice for a worse result. */
+html.neth-compositor-blur .glass-blur { -webkit-backdrop-filter: none;
+                                        backdrop-filter: none; }
+html.neth-gpu:not(.neth-compositor-blur) .glass-blur {
   -webkit-backdrop-filter: blur(24px) saturate(180%);
   backdrop-filter: blur(24px) saturate(180%);
 }

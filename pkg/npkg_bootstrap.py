@@ -133,6 +133,16 @@ SETS = {
         # ones that are, only sway exposes an IPC socket -- which is what the
         # panel and dock use to list and control windows. Blur and rounded
         # window corners are the cost of that choice.
+        # Hyprland first: it is the only packaged compositor that rounds a
+        # corner and blurs behind a surface, and the blur matters for more than
+        # looks. Done in the compositor it is nearly free; done in CSS with
+        # backdrop-filter it is per-frame CPU work across the whole surface,
+        # which is what made the shell unusable on software rendering. Real
+        # glass, and cheaper than the imitation.
+        #
+        # sway stays installed as the fallback -- the session picks whichever is
+        # present, and nethosd already speaks both IPCs.
+        "hyprland", "xdg-desktop-portal-hyprland",
         "sway", "swaybg", "swayidle", "swaylock", "xwayland",
         "seatd", "libseat1",
 
@@ -563,6 +573,14 @@ def install_desktop(root: str, payload: str, username: str) -> None:
     if os.path.isfile(sway_src):
         shutil.copy2(sway_src, os.path.join(swaydir, "config"))
 
+    # Into the user's config as well as /etc: Hyprland reads
+    # ~/.config/hypr/hyprland.conf and nothing copies it there at first login.
+    hypr_user = os.path.join(home, ".config", "hypr")
+    os.makedirs(hypr_user, exist_ok=True)
+    _hs = os.path.join(payload, "hypr", "hyprland.conf")
+    if os.path.isfile(_hs):
+        shutil.copy2(_hs, os.path.join(hypr_user, "hyprland.conf"))
+
     hypr_src = os.path.join(payload, "hypr", "hyprland.conf")
     if os.path.isfile(hypr_src):
         os.makedirs(os.path.join(root, "etc/nethos"), exist_ok=True)
@@ -644,6 +662,15 @@ def install_desktop(root: str, payload: str, username: str) -> None:
             "    mkdir -p ~/.cache\n"
             "    # Logged, because a compositor that dies on tty1 writes its\n"
             "    # reason to a screen that is cleared before anyone reads it.\n"
+            "    # Hyprland when it is installed, sway when it is not. Both\n"
+            "    # give layer-shell surfaces and nethosd speaks both IPCs, so\n"
+            "    # the shell is identical either way -- Hyprland just blurs\n"
+            "    # behind it and rounds the corners.\n"
+            "    if command -v Hyprland >/dev/null 2>&1; then\n"
+            "        Hyprland >~/.cache/hyprland.log 2>&1 && exit\n"
+            "        echo '--- Hyprland failed; falling back to sway ---' "
+            ">>~/.cache/hyprland.log\n"
+            "    fi\n"
             "    sway >~/.cache/sway.log 2>&1 && exit\n"
             "    # Second chance on the pixman renderer, which is CPU-only and\n"
             "    # touches no EGL at all. Slower, but a desktop.\n"
