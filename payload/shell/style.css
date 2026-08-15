@@ -128,10 +128,15 @@ body[data-view="dock"] {
   box-shadow: inset 0 1px 0 0 var(--rim), inset 0 0 0 1px var(--rim-soft),
               inset 0 -1px 0 0 var(--edge), var(--shadow-sm);
   position: relative; isolation: isolate;
-  /* Opacity only. Animating transform moves the painted area around the
-     surface; fading it in place does not, so nothing is left behind. */
-  transition: opacity var(--fast);
-  will-change: opacity;
+  /* Moved, not faded, and not animated.
+     Fading in place was worse: the compositor repaints the region a surface
+     moves out of, but nothing damages the region of a surface that merely
+     became transparent, so the last painted frame stayed on screen and the
+     dock appeared never to hide at all.
+     No transition either -- an animated shadow across a transparent full-width
+     surface is what smeared in the first place, and rule 35 says the desktop
+     holds still. */
+  transition: none;
 }
 #dock::before {
   content: ""; position: absolute; inset: 0; border-radius: inherit;
@@ -139,7 +144,7 @@ body[data-view="dock"] {
 }
 /* Auto-hide: slide out of sight, leaving a hover strip the host keeps clickable. */
 body[data-view="dock"].hidden #dock {
-  opacity: 0;
+  transform: translateY(calc(100% + 24px));
   pointer-events: none;
   opacity: 0;
 }
@@ -392,3 +397,9 @@ body[data-view="desktop"] .widget .num { color: var(--ink); }
    blur to do, and the screenshot looks like a white bar. */
 #panel { background: var(--glass); }
 #dock  { background: var(--glass); }
+
+
+/* The tooltip depends on hovering rather than on :hover alone, because :hover
+   sticks when the surface stops receiving pointer events (see shell.js). */
+body[data-view="dock"]:not(.hovering) .dock-label,
+body[data-view="dock"]:not(.hovering) [data-label]::after { opacity: 0 !important; }

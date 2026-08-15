@@ -201,6 +201,23 @@ function initDock() {
     if (autohide) { body.classList.add("hidden"); applyHostGeometry(); }
   }, 700);
 
+  /* Hover cannot end on its own here.
+     inputRect limits this surface to the dock pill, so the moment the pointer
+     leaves it the surface stops receiving events entirely -- mouseleave never
+     arrives and whatever was hovered stays hovered, with its label on screen
+     for good. So hover is ended by a timer that each pointermove restarts. */
+  let hoverTimer = 0;
+  const clearHover = () => {
+    dock.querySelectorAll(".hover, :hover").forEach((el) =>
+      el.classList.remove("hover"));
+    body.classList.remove("hovering");
+  };
+  document.addEventListener("pointermove", () => {
+    body.classList.add("hovering");
+    clearTimeout(hoverTimer);
+    hoverTimer = setTimeout(clearHover, 500);
+  }, true);
+
   function reveal() {
     body.classList.remove("hidden");
     applyHostGeometry();
