@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>NETHOS</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    /* Deliberately almost nothing.
+       A loading screen exists to say "this is working, wait" and nothing
+       else. A progress bar would be a lie -- we cannot know how long the
+       surfaces will take -- and a logo animation would be the machine
+       showing off before it has done anything. One mark, breathing. */
+    body[data-view="splash"] {
+      padding: 0;
+      display: grid; place-items: center;
+      height: 100%;
+      background: linear-gradient(160deg, #eef2f8 0%, #e6ebf4 55%, #dfe6f0 100%);
+      transition: opacity 260ms var(--ease);
+    }
+    body[data-view="splash"].done { opacity: 0; }
+    .mark-lg {
+      width: 26px; height: 26px; border-radius: 50%;
+      background: linear-gradient(145deg, var(--accent), var(--accent-2));
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.6) inset,
+                  0 4px 18px rgba(59,110,165,0.28);
+      animation: breathe 1900ms var(--ease) infinite;
+    }
+    @keyframes breathe {
+      0%, 100% { transform: scale(1);    opacity: 0.85; }
+      50%      { transform: scale(1.16); opacity: 1; }
+    }
+    @media (prefers-color-scheme: dark) {
+      body[data-view="splash"] {
+        background: linear-gradient(160deg, #0e1218 0%, #121722 55%, #0d1016 100%);
+      }
+    }
+  </style>
+</head>
+<body data-view="splash">
+  <div class="mark-lg"></div>
+<script>
+/* Gone as soon as the panel says it has painted. nethosd reports which
+   surfaces have checked in; the splash waits for the panel specifically,
+   because that is the one whose appearance means the desktop is usable. */
+(async () => {
+  const start = Date.now();
+  async function ready() {
+    try {
+      const h = await fetch("http://127.0.0.1:7777/api/health",
+                            { cache: "no-store" }).then((r) => r.json());
+      return h.surfaces && h.surfaces.panel !== undefined;
+    } catch (e) { return false; }
+  }
+  function finish() {
+    document.body.classList.add("done");
+    // Give the fade time to run before the surface is unmapped, or it
+    // vanishes rather than fades.
+    setTimeout(() => {
+      if (typeof nethosHost !== "undefined") nethosHost.hide();
+    }, 300);
+  }
+  const timer = setInterval(async () => {
+    // A ceiling as well as a condition: if the panel never checks in, a
+    // permanent splash hides whatever went wrong. Ten seconds, then get out
+    // of the way and let the user see the desktop, broken or not.
+    if (await ready() || Date.now() - start > 10000) {
+      clearInterval(timer);
+      finish();
+    }
+  }, 250);
+})();
+</script>
+</body>
+</html>

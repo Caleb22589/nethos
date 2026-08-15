@@ -152,6 +152,7 @@ fi
 # it. Doing exactly that silently reduced the shell to its desktop layer --
 # no panel, no dock, no launcher, and no error anywhere.
 exec nethos-view \
+    "url=$API/splash.html,role=overlay,name=splash,exclusive=0" \
     "url=$API/desktop.html,role=widget,name=desktop,layer=bottom,anchor=top,exclusive=-1" \
     "url=$API/panel.html,role=panel,name=panel,height=360,anchor=top,exclusive=46" \
     "url=$API/dock.html,role=dock,name=dock,height=110,anchor=bottom,exclusive=0" \

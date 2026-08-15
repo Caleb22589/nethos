@@ -707,6 +707,59 @@ function initMenu() {
 function initDesktop() {
   const host = document.getElementById("widgets");
 
+  /* Desktop icons: whatever is in ~/Desktop.
+     Read from the same /api/files the Files app uses, so there is one
+     definition of what a folder contains and one place for it to be wrong. */
+  const icons = document.createElement("div");
+  icons.id = "desk-icons";
+  document.body.append(icons);
+
+  const GLYPH = {
+    folder: "📁", image: "🖼", video: "🎞", audio: "♪", text: "📄",
+    pdf: "📕", archive: "🗜", file: "📄",
+  };
+
+  async function loadIcons() {
+    let r;
+    try { r = await get("/api/files?path=" + encodeURIComponent("~/Desktop")); }
+    catch (e) { return; }
+    if (!r || r.error) return;
+    icons.replaceChildren();
+    for (const entry of r.entries.filter((e) => !e.hidden)) {
+      const b = el("button", "desk-icon");
+      b.append(el("span", "g", GLYPH[entry.kind] || "📄"));
+      b.append(el("span", "n", entry.name));
+      b.title = entry.name;
+      b.addEventListener("dblclick", () => {
+        // A folder opens in Files; anything else opens with its own
+        // application. Double-click, not single: the desktop is a surface
+        // people rest the pointer on.
+        if (entry.dir) post("/api/launch", { id: "files" });
+        else post("/api/files/open", { path: entry.path });
+      });
+      onContext(b, () => [
+        { label: entry.dir ? "Open in Files" : "Open",
+          run: () => (entry.dir ? post("/api/launch", { id: "files" })
+                               : post("/api/files/open", { path: entry.path })) },
+        "-",
+        { label: "Move to Trash", danger: true,
+          run: async () => {
+            await post("/api/files/trash", { path: entry.path });
+            loadIcons();
+          } },
+      ]);
+      icons.append(b);
+    }
+  }
+
+  loadIcons();
+  // Refreshed on a slow timer rather than watched: inotify on the desktop
+  // folder is a watcher, a thread and a wake-up per file change, for a
+  // directory that changes a few times a day.
+  setInterval(loadIcons, 20000);
+  window.addEventListener("nethos-tick", () => {});
+
+
   // The desktop is the surface most likely to be right-clicked by reflex, and
   // the one where a browser menu looked most obviously wrong.
   onContext(document.body, () => [

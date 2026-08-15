@@ -672,3 +672,36 @@ html.no-motion .cc-card { animation: none; }
 /* The panel's status cluster is a control now, so it should say so. */
 #status { border-radius: var(--r-pill); padding: 3px 8px; transition: background var(--fast); }
 #status:hover { background: var(--glass-sunk); }
+
+/* ================================================== desktop icons ======= */
+/* Top-left, in a column, out of the way of the widgets on the right. The
+   desktop surface is behind every window, so these are only reachable when
+   the desktop is visible -- which is the correct behaviour for a desktop
+   icon and the reason they are not on a layer of their own. */
+#desk-icons {
+  position: absolute;
+  top: 62px; left: 16px; bottom: 120px;
+  width: 108px;
+  display: flex; flex-direction: column; flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 4px;
+  pointer-events: auto;
+}
+.desk-icon {
+  all: unset;
+  width: 96px; box-sizing: border-box;
+  padding: 10px 6px 8px;
+  border-radius: var(--r-sm);
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  cursor: default;
+  transition: background var(--fast);
+}
+.desk-icon:hover { background: var(--glass-sunk); }
+.desk-icon .g { font-size: 30px; line-height: 1; }
+.desk-icon .n {
+  font-size: 11.5px; color: var(--ink-soft); text-align: center;
+  /* Two lines, then ellipsis. A desktop full of names wrapping to four lines
+     each is how an icon grid stops being scannable. */
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; word-break: break-word;
+}
