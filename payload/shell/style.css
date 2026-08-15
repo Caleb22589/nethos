@@ -211,6 +211,13 @@ body[data-view="menu"] {
   opacity: 0;
   transition: opacity 180ms var(--ease);
 }
+/* Invisible is not the same as absent.
+   This is a full-screen surface on the overlay layer -- above the panel, the
+   dock and every window. At opacity 0 it is unseen but still hit-testable, so
+   for as long as it is mapped it swallows every pointer event on the screen
+   and nothing underneath responds. That is indistinguishable from a dock that
+   ignores clicks. */
+body[data-view="menu"]:not(.shown):not(.ctx) { pointer-events: none; }
 body[data-view="menu"].shown { opacity: 1; }
 
 #menu {
@@ -493,3 +500,8 @@ html.no-motion .ctxmenu { animation: none; }
   margin: 5px 8px;
   background: var(--rim-soft);
 }
+
+/* The overlay hosting a context menu for another surface: visible and
+   clickable, but the launcher itself stays hidden. */
+body[data-view="menu"].ctx { opacity: 1; pointer-events: auto; }
+body[data-view="menu"].ctx #menu { display: none; }

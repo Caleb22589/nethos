@@ -449,7 +449,21 @@ class Surface:
         else:
             LayerShell.set_exclusive_zone(self.window, int(exclusive))
 
-        if spec.get("keyboard", "") == "on":
+        # ON_DEMAND on every layer surface, not only the ones that want the
+        # keyboard.
+        #
+        # With KeyboardMode.NONE the compositor delivers pointer motion to the
+        # surface -- hover states work, tooltips appear, right-click opens a
+        # menu -- but not button presses, except where an exclusive zone gives
+        # the surface a claim on that part of the screen. The result was that
+        # the panel's launcher button worked (inside its 46px zone), a menu
+        # item below the zone did not, and the dock, which reserves nothing
+        # while auto-hiding, never responded to a click at all. Every one of
+        # those looked like a different bug and none of them logged anything.
+        #
+        # ON_DEMAND takes keyboard focus only when the surface is clicked,
+        # which is what a panel or dock should do anyway.
+        if spec.get("keyboard", "") != "off":
             LayerShell.set_keyboard_mode(
                 self.window, LayerShell.KeyboardMode.ON_DEMAND)
 

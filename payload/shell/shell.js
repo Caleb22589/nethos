@@ -451,6 +451,58 @@ function initMenu() {
     catch { count.textContent = "nethosd unreachable"; }
   }
 
+  /* Hosting context menus for the other surfaces.
+     The overlay is full-screen and takes clicks anywhere, which the panel and
+     dock do not outside their exclusive zones. `ctx` shows the surface without
+     showing the launcher. */
+  let ctxOpen = false;
+  function endCtx(token, index) {
+    if (!ctxOpen) return;
+    ctxOpen = false;
+    closeContextMenu();
+    document.body.classList.remove("ctx");
+    if (typeof nethosHost !== "undefined" && !open) {
+      nethosHost.inputRect(0, 0, 0, 0);
+      setTimeout(() => { if (!ctxOpen && !open) nethosHost.hide(); }, 180);
+    }
+    post("/api/contextmenu/choose", { token, index });
+  }
+
+  onEvent((msg) => {
+    if (msg.type !== "contextmenu") return;
+    const { token, x, y, items } = msg.data;
+    if (!items || !items.length) return;
+    ctxOpen = true;
+    document.body.classList.add("ctx");
+    if (typeof nethosHost !== "undefined") {
+      nethosHost.inputRect(0, 0, window.innerWidth, window.innerHeight);
+      nethosHost.show();
+    }
+    // A frame for the surface to actually map, or getBoundingClientRect
+    // measures a menu in a window that has no size yet and clamps it to 8,8.
+    requestAnimationFrame(() => {
+      renderContextMenu(x, y, items, (i) => endCtx(token, i));
+      // Dismissing without choosing still has to answer, or the asking
+      // surface keeps its pending token forever and the next menu it opens
+      // is ignored.
+      const watch = setInterval(() => {
+        if (ctxEl) return;
+        clearInterval(watch);
+        endCtx(token, -1);
+      }, 120);
+    });
+  });
+
+  /* Start unmapped, and say so to the host explicitly.
+     The surface is created visible, and setOpen() only acts on a change, so
+     nothing ever hid it until the launcher had been opened once. Until then a
+     full-screen overlay sat above everything -- invisible, and eating every
+     click aimed at the dock or a window. */
+  if (typeof nethosHost !== "undefined") {
+    nethosHost.inputRect(0, 0, 0, 0);
+    nethosHost.hide();
+  }
+
   /* The launcher surface exists for the whole session and shows/hides itself,
      which is why opening it is instant: no process start, no compositor call. */
   function setOpen(want) {
@@ -458,7 +510,15 @@ function initMenu() {
     open = want;
     document.body.classList.toggle("shown", open);
     if (typeof nethosHost !== "undefined") {
-      if (open) nethosHost.show(); else setTimeout(() => nethosHost.hide(), 200);
+      if (open) {
+        // Take the whole screen back before mapping; it was released to
+        // nothing so the idle surface could not intercept clicks.
+        nethosHost.inputRect(0, 0, window.innerWidth, window.innerHeight);
+        nethosHost.show();
+      } else {
+        nethosHost.inputRect(0, 0, 0, 0);
+        setTimeout(() => nethosHost.hide(), 200);
+      }
     }
     if (open) {
       search.value = "";
@@ -619,17 +679,19 @@ function closeContextMenu() {
   if (hostBaseRect) setHostRect(hostBaseRect);
 }
 
-function contextMenu(x, y, items) {
+/* Draw a menu into this surface. `choose` is called with the item index.
+   Used by the overlay; every other surface goes through contextMenu(). */
+function renderContextMenu(x, y, items, choose) {
   closeContextMenu();
   const menu = el("div", "ctxmenu glass");
-  for (const item of items) {
-    if (item === "-") { menu.append(el("div", "ctxsep")); continue; }
+  items.forEach((item, i) => {
+    if (item === "-" || item.sep) { menu.append(el("div", "ctxsep")); return; }
     const b = el("button", "ctxitem" + (item.danger ? " danger" : ""));
     b.textContent = item.label;
     if (item.disabled) b.disabled = true;
-    else b.addEventListener("click", () => { closeContextMenu(); item.run(); });
+    else b.addEventListener("click", () => { closeContextMenu(); choose(i); });
     menu.append(b);
-  }
+  });
   document.body.append(menu);
 
   // Placed after insertion so the real size is known: a menu near the right
@@ -663,7 +725,39 @@ function contextMenu(x, y, items) {
     window.addEventListener("pointerdown", ctxDismiss, true);
     window.addEventListener("keydown", ctxDismiss, true);
   }, 0);
+  return menu;
 }
+
+/* Ask for a menu. The overlay draws it; this surface keeps the callbacks and
+   runs the one that comes back. Items are sent as plain data, so anything the
+   menu needs to do has to live in `run` here, not in the overlay. */
+let ctxPending = null;
+
+function contextMenu(x, y, items) {
+  if (document.body.dataset.view === "menu") {
+    // The overlay itself: no round trip, it is already the right surface.
+    renderContextMenu(x, y, items, (i) => items[i] && items[i].run());
+    return;
+  }
+  const token = String(Date.now()) + ":" + Math.random().toString(36).slice(2, 8);
+  ctxPending = { token, items };
+  post("/api/contextmenu", {
+    token, x, y,
+    items: items.map((it) => (it === "-" ? { sep: true } : {
+      label: it.label, danger: !!it.danger, disabled: !!it.disabled,
+    })),
+  });
+}
+
+/* Every surface listens: only the one holding the matching token acts. */
+onEvent((msg) => {
+  if (msg.type !== "contextmenu-choice" || !ctxPending) return;
+  const { token, items } = ctxPending;
+  if (msg.data.token !== token) return;
+  ctxPending = null;
+  const item = items[msg.data.index];
+  if (item && item !== "-" && typeof item.run === "function") item.run();
+});
 
 /* Attach a menu builder to an element. The builder returns the item list, so
    it is evaluated at click time and can reflect current state. */

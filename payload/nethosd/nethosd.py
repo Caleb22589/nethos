@@ -1737,6 +1737,33 @@ class Handler(BaseHTTPRequestHandler):
                 diag(kind, "%s: %s" % (surface, data.get("message", "")))
             return self.send_json({"ok": True})
 
+        # Context menus are drawn by the overlay surface on behalf of whichever
+        # surface was right-clicked.
+        #
+        # The panel and the dock cannot draw their own: left-clicks only reach
+        # a layer surface inside a reserved exclusive zone, so a menu opening
+        # past the end of the panel's 46px zone highlights under the pointer
+        # and cannot be chosen. Widening the input region does not help; the
+        # surface never sees the button. The overlay is full-screen and
+        # already takes clicks -- the launcher works -- so it draws the menu
+        # and reports back which item was picked. The callbacks stay in the
+        # surface that opened it, keyed by token.
+        if route == "/api/contextmenu":
+            EVENTS.publish("contextmenu", {
+                "token": str(data.get("token", "")),
+                "x": int(data.get("x", 0)),
+                "y": int(data.get("y", 0)),
+                "items": data.get("items") or [],
+            })
+            return self.send_json({"ok": True})
+
+        if route == "/api/contextmenu/choose":
+            EVENTS.publish("contextmenu-choice", {
+                "token": str(data.get("token", "")),
+                "index": int(data.get("index", -1)),
+            })
+            return self.send_json({"ok": True})
+
         if route == "/api/settings":
             if data.get("reset"):
                 changed = write_settings(dict(SETTINGS_DEFAULTS))
