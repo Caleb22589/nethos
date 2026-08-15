@@ -293,6 +293,21 @@ HYPR = HyprIPC()
 SWAY = SwayIPC()
 
 
+def _focused_floating(node):
+    """The focused window, if it is floating. Depth-first, focus follows."""
+    if node.get("focused") and node.get("app_id") is not None:
+        if node.get("type") == "floating_con" or node.get("floating") in (
+                "user_on", "auto_on"):
+            return {"id": node.get("id"), "rect": node.get("rect") or {}}
+        return None
+    for key in ("nodes", "floating_nodes"):
+        for child in node.get(key) or []:
+            found = _focused_floating(child)
+            if found:
+                return found
+    return None
+
+
 def backend():
     """Which compositor are we driving? Decided per call so a session that
     restarts under the other one keeps working without restarting nethosd."""
@@ -1475,6 +1490,76 @@ def main():
             EVENTS.publish("tick", {"t": time.time()})
 
     threading.Thread(target=ticker, daemon=True).start()
+
+    # Snap-on-drag.
+    #
+    # sway has no such feature -- mod+arrow snapping is a keybinding, and
+    # dragging a window into a corner does nothing. There is also no event for
+    # "the user finished dragging", so this watches the focused floating
+    # window's geometry and acts when it stops changing near an edge. Polling
+    # is inelegant; it is also the only thing the compositor makes possible.
+    #
+    # Deliberately conservative: it only ever touches a *floating* window that
+    # the user has just moved to an edge themselves. A snap that fires when you
+    # did not ask for it is far more annoying than one that occasionally does
+    # not fire.
+    def snapper():
+        EDGE = 24            # how close to an edge counts as intent
+        last = {}
+        while True:
+            time.sleep(0.2)
+            try:
+                if backend() != "sway":
+                    continue
+                tree = SWAY.request(SWAY.GET_TREE) or {}
+                out = (SWAY.request(SWAY.GET_OUTPUTS) or [{}])[0]
+                ow = out.get("rect", {}).get("width", 0)
+                oh = out.get("rect", {}).get("height", 0)
+                if not ow or not oh:
+                    continue
+                win = _focused_floating(tree)
+                if not win:
+                    last.clear()
+                    continue
+                wid, r = win["id"], win["rect"]
+                key = (r["x"], r["y"], r["width"], r["height"])
+                # Still moving: remember and wait.
+                if last.get(wid) != key:
+                    last[wid] = key
+                    last["settled"] = 0
+                    continue
+                # Unchanged for two ticks -- the drag has ended.
+                last["settled"] = last.get("settled", 0) + 1
+                if last["settled"] != 2:
+                    continue
+
+                left, top = r["x"] <= EDGE, r["y"] <= EDGE
+                right = r["x"] + r["width"] >= ow - EDGE
+                bottom = r["y"] + r["height"] >= oh - EDGE
+                cmd = None
+                if top and not (left or right):
+                    cmd = "resize set 100ppt 100ppt, move position 0 0"
+                elif left and top:
+                    cmd = "resize set 50ppt 50ppt, move position 0 0"
+                elif right and top:
+                    cmd = "resize set 50ppt 50ppt, move position 50ppt 0"
+                elif left and bottom:
+                    cmd = "resize set 50ppt 50ppt, move position 0 50ppt"
+                elif right and bottom:
+                    cmd = "resize set 50ppt 50ppt, move position 50ppt 50ppt"
+                elif left:
+                    cmd = "resize set 50ppt 100ppt, move position 0 0"
+                elif right:
+                    cmd = "resize set 50ppt 100ppt, move position 50ppt 0"
+                if cmd:
+                    SWAY.command("[con_id=%s] %s" % (wid, cmd))
+                    diag("snap", "con_id=%s %s" % (wid, cmd))
+                    last[wid] = None
+            except Exception as exc:             # noqa: BLE001
+                diag("snap", "error: %s" % exc)
+                time.sleep(2)
+
+    threading.Thread(target=snapper, daemon=True).start()
 
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     srv.daemon_threads = True

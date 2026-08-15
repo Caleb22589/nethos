@@ -169,8 +169,22 @@ body { padding: 22px 24px; }
    The CSS blur below is only for compositors that cannot -- and even then only
    with hardware behind it. Never both: doubling the blur is the per-frame CPU
    cost we removed, paid twice for a worse result. */
+/* Under a compositor that blurs (Hyprland), CSS must not blur as well. */
 html.neth-compositor-blur .glass-blur { -webkit-backdrop-filter: none;
                                         backdrop-filter: none; }
+
+/* Under sway, which cannot blur, the stylesheet has to -- and the cost is
+   entirely area. The panel is a 54px strip and the dock is a small pill, so
+   blurring those is cheap even on llvmpipe. The launcher is full screen, and
+   blurring it is what made the shell unusable, so it keeps translucency and
+   the glass edge instead.
+   Radius is smaller than the 24px used before: past about 16px the visual
+   difference is slight and the cost is not. */
+html:not(.neth-compositor-blur) .glass-blur.blur-cheap {
+  -webkit-backdrop-filter: blur(16px) saturate(170%);
+  backdrop-filter: blur(16px) saturate(170%);
+}
+
 html.neth-gpu:not(.neth-compositor-blur) .glass-blur {
   -webkit-backdrop-filter: blur(24px) saturate(180%);
   backdrop-filter: blur(24px) saturate(180%);

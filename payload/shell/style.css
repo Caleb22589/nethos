@@ -338,3 +338,19 @@ body[data-view="desktop"] {
 }
 .toast-good  { color: var(--good); }
 .toast-error { color: var(--danger); }
+
+
+/* ------------------------------------------------------- liquid glass --
+ * sway cannot blur, so the stylesheet has to, and the entire cost is area.
+ * The panel is a 38px strip and the dock is a small pill: blur is affordable
+ * here even under software rendering. The launcher is full screen and is
+ * deliberately left out -- blurring it is what made the shell unusable.
+ *
+ * Skipped under a compositor that blurs for us (Hyprland), because doing both
+ * pays the cost twice for a worse result.
+ */
+html:not(.neth-compositor-blur) #panel,
+html:not(.neth-compositor-blur) #dock {
+  -webkit-backdrop-filter: blur(16px) saturate(170%);
+  backdrop-filter: blur(16px) saturate(170%);
+}

@@ -142,7 +142,6 @@ SETS = {
         #
         # sway stays installed as the fallback -- the session picks whichever is
         # present, and nethosd already speaks both IPCs.
-        "hyprland", "xdg-desktop-portal-hyprland",
         "sway", "swaybg", "swayidle", "swaylock", "xwayland",
         "seatd", "libseat1",
 
@@ -666,7 +665,8 @@ def install_desktop(root: str, payload: str, username: str) -> None:
             "    # give layer-shell surfaces and nethosd speaks both IPCs, so\n"
             "    # the shell is identical either way -- Hyprland just blurs\n"
             "    # behind it and rounds the corners.\n"
-            "    if command -v Hyprland >/dev/null 2>&1; then\n"
+            "    if [ \"${NETHOS_HYPRLAND:-0}\" = 1 ] && "
+            "command -v Hyprland >/dev/null 2>&1; then\n"
             "        Hyprland >~/.cache/hyprland.log 2>&1 && exit\n"
             "        echo '--- Hyprland failed; falling back to sway ---' "
             ">>~/.cache/hyprland.log\n"
