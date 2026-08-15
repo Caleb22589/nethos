@@ -587,8 +587,12 @@ rm -f "$R/root/inside.sh"
 
 echo "--- size ---"
 du -sh "$R" 2>/dev/null | awk '{print "  total: " $1}'
-du -sm "$R"/usr/* "$R"/var/* 2>/dev/null | sort -rn | head -8 \
-    | awk '{printf "  %6dMB  %s\n", $1, $2}'
+# `| head -8` under pipefail is a trap: head exits after eight lines, sort gets
+# SIGPIPE, the pipeline reports failure and set -e kills the build -- at the
+# very end, after everything worked. Same shape as the grep -c bug in
+# docs/INTERNALS.md, made twice now. Collect first, slice after.
+sizes=$(du -sm "$R"/usr/* "$R"/var/* 2>/dev/null | sort -rn || true)
+printf '%s\n' "$sizes" | head -8 | awk '{printf "  %6dMB  %s\n", $1, $2}' || true
 
 echo "--- sanity ---"
 ls -l "$R/usr/bin/sudo" "$R/usr/bin/su"
