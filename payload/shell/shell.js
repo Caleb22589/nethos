@@ -363,7 +363,15 @@ function initMenu() {
     if (typeof nethosHost !== "undefined") {
       if (open) nethosHost.show(); else setTimeout(() => nethosHost.hide(), 200);
     }
-    if (open) { search.value = ""; load().then(() => search.focus()); }
+    if (open) {
+      search.value = "";
+      // Show what is already loaded immediately, and refresh behind it. The
+      // launcher used to await a full /api/apps round trip -- with icons --
+      // before appearing, which put the whole fetch between the keypress and
+      // the window. Opening is now instant and the list updates in place.
+      if (apps.length) { filter(); search.focus(); load(); }
+      else { load().then(() => search.focus()); }
+    }
   }
 
   onEvent((msg) => { if (msg.type === "menu") setOpen(!!msg.data.open); });

@@ -341,7 +341,9 @@ class WayfireIPC:
             with cls._lock:
                 with contextlib.closing(
                         socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)) as sock:
-                    sock.settimeout(3)
+                    # 1s, not 3: this sits between a click and the
+                    # screen, and three seconds of it is a hang.
+                    sock.settimeout(1.0)
                     sock.connect(path)
                     sock.sendall(struct.pack("=I", len(payload)) + payload)
                     head = sock.recv(4)
@@ -358,8 +360,16 @@ class WayfireIPC:
         except (OSError, ValueError, struct.error):
             return None
 
+    _cache = {"at": 0.0, "views": []}
+
     @classmethod
     def views(cls):
+        # The panel asks on every tick and the answer barely changes. Without
+        # this each tick is a fresh connect, and several of those queued behind
+        # each other is what a slow desktop is made of.
+        now = time.time()
+        if now - cls._cache["at"] < 0.8:
+            return cls._cache["views"]
         reply = cls.call("window-rules/list-views") or []
         out = []
         for v in reply if isinstance(reply, list) else []:
@@ -375,6 +385,7 @@ class WayfireIPC:
                 "floating": True,
                 "nethos_app": "",
             })
+        cls._cache = {"at": now, "views": out}
         return out
 
 
@@ -1366,6 +1377,15 @@ def diag(kind, message):
 class Handler(BaseHTTPRequestHandler):
     server_version = "nethosd/3.0"
     protocol_version = "HTTP/1.1"
+
+    def handle_one_request(self):
+        started = time.time()
+        BaseHTTPRequestHandler.handle_one_request(self)
+        took = time.time() - started
+        # 250ms is the threshold at which a person notices. Anything over it
+        # between a click and the screen is worth a line in the log.
+        if took > 0.25:
+            diag("slow", "%.2fs  %s" % (took, getattr(self, "path", "?")))
 
     def log_message(self, fmt, *args):
         # Was `pass`. Silence is why several evenings went into guessing what
