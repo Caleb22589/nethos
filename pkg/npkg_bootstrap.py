@@ -942,6 +942,27 @@ def setup_sudo(root: str) -> None:
     os.makedirs(os.path.join(etc, "sudoers.d"), exist_ok=True)
     os.chmod(os.path.join(etc, "sudoers.d"), 0o750)
 
+    # The App Store installs packages, and installing packages is root's work.
+    #
+    # This is a deliberate and limited widening: wheel may run npkg's
+    # installing subcommands without being asked for a password again. It is
+    # not a security boundary being crossed so much as one being made
+    # explicit -- wheel can already run anything at all via plain sudo, so
+    # nothing here grants power the user did not have. What it buys is a
+    # graphical installer that does not have to prompt for a password on
+    # every action, or worse, hold one.
+    #
+    # Scoped to the three subcommands rather than to npkg as a whole: `npkg
+    # convert` and friends take arbitrary paths and there is no reason for the
+    # store to reach them.
+    with open(os.path.join(etc, "sudoers.d", "10-nethos-npkg"), "w") as fh:
+        fh.write(
+            "# The App Store, via nethosd. See docs/ROADMAP.md.\n"
+            "Cmnd_Alias NETHOS_PKG = /usr/bin/npkg fetch *, "
+            "/usr/bin/npkg install *, /usr/bin/npkg remove *\n"
+            "%wheel ALL=(root) NOPASSWD: NETHOS_PKG\n")
+    os.chmod(os.path.join(etc, "sudoers.d", "10-nethos-npkg"), 0o440)
+
     # These are the two binaries that must be setuid-root, and the two people
     # most often trip over: without this, `sudo` says "must be owned by uid 0"
     # and `su -` says "cannot set user id".

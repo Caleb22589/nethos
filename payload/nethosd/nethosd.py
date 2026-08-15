@@ -82,6 +82,129 @@ BUILTINS = {
 }
 
 
+
+# ---------------------------------------------------------------------------
+# packages -- what the App Store is built on
+# ---------------------------------------------------------------------------
+
+# One install at a time. npkg writes /var/lib/npkg and unpacks into /usr; two
+# of them at once is how a package database gets corrupted, and the store makes
+# it easy to click twice.
+PKG_LOCK = threading.Lock()
+PKG_JOB = {"active": "", "log": [], "ok": None}
+
+
+def npkg_run(args, timeout=600):
+    """Run npkg and return (rc, output). Never raises."""
+    try:
+        p = subprocess.run(["npkg"] + args, capture_output=True, text=True,
+                           timeout=timeout)
+        return p.returncode, (p.stdout or "") + (p.stderr or "")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 1, str(exc)
+
+
+def npkg_installed():
+    """Names of installed packages, as a set."""
+    rc, out = npkg_run(["list"], timeout=60)
+    if rc != 0:
+        return set()
+    names = set()
+    for line in out.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        # "name  version  ..." -- the first field is the name in every format
+        # npkg list has used.
+        names.add(line.split()[0].lstrip("*").strip())
+    return names
+
+
+def npkg_search(query):
+    """Search the repositories. Returns a list of {id, name, version, summary}."""
+    if not query or len(query) < 2:
+        return []
+    rc, out = npkg_run(["search", query], timeout=120)
+    if rc != 0:
+        return []
+    found, seen = [], set()
+    for line in out.splitlines():
+        # npkg marks installed packages with a leading "* " as its own token,
+        # so strip it before splitting -- otherwise every package you already
+        # have is parsed as a package named "*" and dropped, and the store
+        # shows you only the things you have not got.
+        line = re.sub(r"^\s*\*\s+", "  ", line)
+        parts = line.split(None, 2)
+        if len(parts) < 2:
+            continue
+        name = parts[0].lstrip("*").strip()
+        # Skip headers like "Debian trixie/amd64" and "index: N packages",
+        # and the usage hint npkg prints after the results -- "install with:
+        # npkg fetch <name>" parsed as a package called "install" at version
+        # "with:", which then appeared in the store as something installable.
+        if not name or name.endswith(":") or name in seen:
+            continue
+        if not re.match(r"^[a-z0-9][a-z0-9.+-]*$", name):
+            continue
+        # A version has a digit in it. Nothing else in npkg's output does.
+        if not re.search(r"\d", parts[1]) or parts[1].endswith(":"):
+            continue
+        seen.add(name)
+        found.append({
+            "id": name,
+            "name": name,
+            "version": parts[1],
+            "summary": (parts[2].strip() if len(parts) > 2 else ""),
+        })
+        if len(found) >= 60:
+            break
+    return found
+
+
+def pkg_job(action, names):
+    """Install or remove, in the background, reporting as it goes.
+
+    Held behind PKG_LOCK: npkg is not safe to run twice at once, and a store
+    makes double-clicking easy. sudo -n, never a prompt -- there is nowhere
+    for a password prompt to appear from here, so a missing sudoers rule has
+    to fail loudly rather than hang forever waiting on a tty nobody can see.
+    """
+    def worker():
+        with PKG_LOCK:
+            PKG_JOB["active"] = " ".join(names)
+            PKG_JOB["log"] = []
+            PKG_JOB["ok"] = None
+            EVENTS.publish("package", {"state": "working",
+                                       "packages": names, "action": action})
+            # -y because there is no terminal here to answer "continue?" on.
+            # With stdin closed and no --yes, npkg's input() raises EOFError
+            # and the install dies with a traceback rather than a refusal.
+            cmd = ["sudo", "-n", "npkg",
+                   "fetch" if action == "install" else "remove", "-y"] + names
+            try:
+                proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL, text=True)
+                for line in proc.stdout:
+                    line = line.rstrip()
+                    if line:
+                        PKG_JOB["log"].append(line)
+                        del PKG_JOB["log"][:-200]
+                        EVENTS.publish("package", {"state": "log",
+                                                   "line": line})
+                rc = proc.wait(timeout=900)
+            except (OSError, subprocess.SubprocessError) as exc:
+                PKG_JOB["log"].append(str(exc))
+                rc = 1
+            PKG_JOB["ok"] = (rc == 0)
+            PKG_JOB["active"] = ""
+            _app_cache["at"] = 0.0        # a new .desktop may have appeared
+            EVENTS.publish("package", {"state": "done", "ok": rc == 0,
+                                       "packages": names, "action": action})
+            EVENTS.publish("apps", {})
+    threading.Thread(target=worker, daemon=True).start()
+
+
 SETTINGS_PATH = os.path.expanduser("~/.config/nethos/settings.json")
 
 # Every setting the desktop has, its default, and what it accepts. Kept in one
@@ -1681,6 +1804,17 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"settings": read_settings(),
                                    "schema": SETTINGS_SCHEMA})
 
+        if route == "/api/packages":
+            q = urllib.parse.parse_qs(
+                urllib.parse.urlparse(self.path).query).get("q", [""])[0]
+            return self.send_json({
+                "results": npkg_search(q),
+                "installed": sorted(npkg_installed()),
+                "job": {"active": PKG_JOB["active"],
+                        "ok": PKG_JOB["ok"],
+                        "log": PKG_JOB["log"][-40:]},
+            })
+
         if route == "/api/diagnostics":
             # What a person would otherwise have to open a terminal and read
             # four files to learn.
@@ -1791,6 +1925,18 @@ class Handler(BaseHTTPRequestHandler):
         # invisible from the desktop and diagnosable only over SSH. These are
         # the three things that actually fixed them, in the order of how much
         # they disturb.
+        if route == "/api/packages/install" or route == "/api/packages/remove":
+            names = data.get("packages") or ([data["id"]] if data.get("id") else [])
+            names = [n for n in names
+                     if re.match(r"^[a-z0-9][a-z0-9.+-]*$", str(n))]
+            if not names:
+                return self.send_json({"error": "no valid package names"}, 400)
+            if PKG_JOB["active"]:
+                return self.send_json(
+                    {"error": "busy", "active": PKG_JOB["active"]}, 409)
+            pkg_job("install" if route.endswith("install") else "remove", names)
+            return self.send_json({"ok": True, "packages": names})
+
         if route == "/api/troubleshoot":
             action = data.get("action", "")
             if action == "reload":

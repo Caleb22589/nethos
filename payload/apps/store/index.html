@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>App Store — NETHOS</title>
+  <link rel="stylesheet" href="/lib/nethos.css">
+  <script src="/lib/nethos.js"></script>
+  <style>
+    body { padding: 0; }
+    .cats { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
+    .cat {
+      all: unset;
+      padding: 7px 14px; border-radius: var(--r-pill);
+      font-size: 13px; color: var(--ink-soft);
+      background: var(--glass-sunk);
+      box-shadow: inset 0 0 0 1px var(--rim-soft);
+      cursor: default;
+    }
+    .cat:hover { color: var(--ink); }
+    .cat[aria-selected="true"] { background: var(--accent); color: #fff; box-shadow: none; }
+    .sec-title {
+      font-family: var(--display);
+      text-transform: uppercase; letter-spacing: 0.08em;
+      font-size: 12px; color: var(--ink-faint);
+      margin: 4px 2px 10px;
+    }
+    .act { all: unset; cursor: default; }
+    .btn {
+      all: unset;
+      padding: 7px 15px; border-radius: var(--r-pill);
+      font-size: 13px; font-weight: 500;
+      background: var(--accent); color: #fff;
+      cursor: default; white-space: nowrap;
+    }
+    .btn:hover { filter: brightness(1.08); }
+    .btn.ghost {
+      background: var(--glass-sunk); color: var(--ink-soft);
+      box-shadow: inset 0 0 0 1px var(--rim-soft);
+    }
+    .btn[disabled] { opacity: 0.5; }
+    .job {
+      margin: 0 18px 14px;
+      padding: 14px 16px;
+      border-radius: var(--r);
+      background: var(--glass);
+      box-shadow: inset 0 0 0 1px var(--rim-soft);
+    }
+    .job-head { display: flex; align-items: center; gap: 10px; }
+    .job-head strong { flex: 1; font-weight: 500; }
+  </style>
+</head>
+<body>
+<div class="app-shell">
+  <div class="app-toolbar">
+    <h1>App Store</h1>
+    <input class="app-search" id="q" type="search" spellcheck="false"
+           placeholder="Search for software — try “gimp”, “vlc”, “firmware”">
+    <span class="spacer"></span>
+    <span class="chip" id="count"></span>
+  </div>
+
+  <div class="job" id="job" hidden>
+    <div class="job-head">
+      <span class="spin" id="job-spin"></span>
+      <strong id="job-title"></strong>
+      <span class="chip" id="job-state"></span>
+    </div>
+    <div class="stream" id="job-log"></div>
+  </div>
+
+  <div class="app-body">
+    <div class="cats" id="cats"></div>
+    <div id="list"></div>
+  </div>
+</div>
+
+<script>
+(async () => {
+  const api = await nethos.ready();
+  const q = document.getElementById("q");
+  const list = document.getElementById("list");
+  const cats = document.getElementById("cats");
+  const count = document.getElementById("count");
+  const job = document.getElementById("job");
+  const jobTitle = document.getElementById("job-title");
+  const jobState = document.getElementById("job-state");
+  const jobLog = document.getElementById("job-log");
+  const jobSpin = document.getElementById("job-spin");
+
+  // Curated starting points. A search box facing 68,000 Debian packages is a
+  // blank page problem: you cannot search for something you cannot name. These
+  // are the things people actually arrive wanting, including the drivers,
+  // which are just packages and belong here rather than in a separate tool.
+  const CATEGORIES = [
+    { id: "picks", label: "Picks", items: [
+      "chromium", "firefox-esr", "vlc", "gimp", "inkscape", "libreoffice",
+      "thunderbird", "krita", "audacity", "blender",
+    ]},
+    { id: "dev", label: "Development", items: [
+      "git", "build-essential", "python3-pip", "nodejs", "golang", "rustc",
+      "neovim", "code", "meson", "gdb",
+    ]},
+    { id: "media", label: "Media", items: [
+      "mpv", "ffmpeg", "obs-studio", "rhythmbox", "handbrake", "shotcut",
+    ]},
+    { id: "drivers", label: "Drivers & firmware", items: [
+      "firmware-amd-graphics", "firmware-iwlwifi", "firmware-realtek",
+      "firmware-brcm80211", "firmware-atheros", "firmware-mediatek",
+      "firmware-misc-nonfree", "firmware-sof-signed",
+      "intel-media-va-driver", "mesa-vulkan-drivers", "printer-driver-all",
+    ]},
+    { id: "tools", label: "Utilities", items: [
+      "htop", "neofetch", "gparted", "keepassxc", "syncthing", "rsync",
+      "p7zip-full", "unrar-free", "curl", "jq",
+    ]},
+  ];
+
+  let installed = new Set();
+  let active = "picks";
+  let searching = false;
+
+  function tile(pkg) {
+    const row = el("div", "row");
+    const well = el("div", "icon-well");
+    well.textContent = initials(pkg.name);
+    const grow = el("div", "grow");
+    grow.append(elText("span", "title", pkg.name));
+    grow.append(elText("span", "sub", pkg.summary || pkg.version || ""));
+    row.append(well, grow);
+
+    if (installed.has(pkg.id)) {
+      const chip = elText("span", "chip on", "Installed");
+      const rm = elText("button", "btn ghost", "Remove");
+      rm.addEventListener("click", () => run("remove", pkg.id, rm));
+      row.append(chip, rm);
+    } else {
+      const b = elText("button", "btn", "Install");
+      b.addEventListener("click", () => run("install", pkg.id, b));
+      row.append(b);
+    }
+    return row;
+  }
+
+  function el(t, c) { const n = document.createElement(t); if (c) n.className = c; return n; }
+  function elText(t, c, s) { const n = el(t, c); n.textContent = s; return n; }
+  function initials(s) {
+    const w = String(s || "?").split(/[\s\-_.]+/).filter(Boolean);
+    return ((w[0] || "?")[0] + (w.length > 1 ? w[1][0] : "")).toUpperCase();
+  }
+
+  async function run(action, id, button) {
+    button.disabled = true;
+    button.textContent = action === "install" ? "Installing…" : "Removing…";
+    const r = await fetch("/api/packages/" + action, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    }).then((x) => x.json()).catch(() => ({ error: "unreachable" }));
+    if (r.error) {
+      button.textContent = r.error === "busy" ? "Busy" : "Failed";
+      setTimeout(() => {
+        button.disabled = false;
+        button.textContent = action === "install" ? "Install" : "Remove";
+      }, 2000);
+    }
+  }
+
+  function renderCategories() {
+    cats.replaceChildren();
+    for (const c of CATEGORIES) {
+      const b = elText("button", "cat", c.label);
+      b.setAttribute("aria-selected", c.id === active ? "true" : "false");
+      b.addEventListener("click", () => {
+        active = c.id; q.value = ""; searching = false;
+        renderCategories(); renderList();
+      });
+      cats.append(b);
+    }
+  }
+
+  function renderList(results) {
+    list.replaceChildren();
+    const cat = CATEGORIES.find((c) => c.id === active);
+    const items = results
+      ? results
+      : cat.items.map((id) => ({ id, name: id, summary: "" }));
+
+    if (!items.length) {
+      const e = el("div", "empty");
+      e.append(elText("strong", null, "Nothing found"));
+      e.append(document.createTextNode(
+        searching ? "Try a shorter word, or part of the name."
+                  : "This category is empty."));
+      list.append(e);
+      count.textContent = "";
+      return;
+    }
+    const head = elText("div", "sec-title",
+      results ? "Search results" : cat.label);
+    list.append(head);
+    for (const p of items) list.append(tile(p));
+    count.textContent = items.length + (results ? " found" : " listed");
+  }
+
+  async function refresh(query) {
+    const url = "/api/packages" + (query ? "?q=" + encodeURIComponent(query) : "");
+    const r = await fetch(url).then((x) => x.json()).catch(() => null);
+    if (!r) return;
+    installed = new Set(r.installed || []);
+    showJob(r.job);
+    renderList(query ? r.results : null);
+  }
+
+  function showJob(j) {
+    if (!j) return;
+    if (j.active) {
+      job.hidden = false;
+      jobSpin.style.display = "";
+      jobTitle.textContent = j.active;
+      jobState.textContent = "Working";
+      jobState.className = "chip";
+    } else if (j.ok !== null && !job.hidden) {
+      jobSpin.style.display = "none";
+      jobState.textContent = j.ok ? "Done" : "Failed";
+      jobState.className = "chip " + (j.ok ? "on" : "warn");
+    }
+    if (j.log && j.log.length) {
+      jobLog.textContent = j.log.join("\n");
+      jobLog.scrollTop = jobLog.scrollHeight;
+    }
+  }
+
+  // Live progress. npkg can take a minute on a large package and a store that
+  // shows nothing while it works is indistinguishable from one that has hung.
+  api.on("package", (d) => {
+    if (!d) return;
+    if (d.state === "working") {
+      job.hidden = false;
+      jobSpin.style.display = "";
+      jobTitle.textContent =
+        (d.action === "install" ? "Installing " : "Removing ") + (d.packages || []).join(", ");
+      jobState.textContent = "Working";
+      jobState.className = "chip";
+      jobLog.textContent = "";
+    } else if (d.state === "log") {
+      jobLog.textContent += (jobLog.textContent ? "\n" : "") + d.line;
+      jobLog.scrollTop = jobLog.scrollHeight;
+    } else if (d.state === "done") {
+      jobSpin.style.display = "none";
+      jobState.textContent = d.ok ? "Done" : "Failed";
+      jobState.className = "chip " + (d.ok ? "on" : "warn");
+      refresh(searching ? q.value.trim() : "");
+    }
+  });
+
+  let timer = null;
+  q.addEventListener("input", () => {
+    clearTimeout(timer);
+    const text = q.value.trim();
+    searching = text.length >= 2;
+    // Debounced: npkg search walks a 68,000 package index, and firing it on
+    // every keystroke queues searches faster than they complete.
+    timer = setTimeout(() => refresh(searching ? text : ""), 260);
+  });
+
+  renderCategories();
+  renderList();
+  await refresh("");
+})();
+</script>
+</body>
+</html>

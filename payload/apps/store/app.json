@@ -1,0 +1,12 @@
+{
+  "id": "store",
+  "name": "App Store",
+  "description": "Find, install and remove software — and the drivers for your hardware",
+  "icon": "AS",
+  "version": "1.0.0",
+  "categories": ["NETHOS", "System"],
+  "entry": "index.html",
+  "permissions": ["system", "packages"],
+  "mode": "window",
+  "window": { "width": 900, "height": 680 }
+}

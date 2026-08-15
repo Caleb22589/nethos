@@ -605,3 +605,136 @@ h2, .t-lg { letter-spacing: -0.012em; }
   max-height: 320px;
   overflow-y: auto;
 }
+
+/* ==================================================== application chrome ==
+ *
+ * The parts every NETHOS application needs, defined once so that the App
+ * Store, the file explorer and the extractor are recognisably the same
+ * program family rather than three people's idea of a list. Adding a fourth
+ * application should mean writing its logic, not its furniture.
+ *
+ *   .app-shell      the whole window: toolbar, then body
+ *   .app-toolbar    one row, sticky, glass
+ *   .app-search     the search field that belongs in it
+ *   .app-body       scrolls; everything else stays put
+ *   .row            a list item: icon, text block, trailing controls
+ *   .tile           a grid item, for things with pictures
+ *   .empty          what to show instead of nothing
+ *   .chip           small status label
+ *   .spin           work in progress
+ */
+
+.app-shell { display: flex; flex-direction: column; height: 100%; }
+
+.app-toolbar {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 18px;
+  background: var(--glass-strong);
+  box-shadow: inset 0 -1px 0 0 var(--rim-soft);
+}
+.app-toolbar h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+.app-toolbar .spacer { flex: 1; }
+
+.app-search {
+  flex: 1; max-width: 460px;
+  font: inherit; font-size: 14px;
+  padding: 9px 14px;
+  border: 0; border-radius: var(--r-pill);
+  background: var(--glass-sunk);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--rim-soft);
+}
+.app-search:focus { outline: none; box-shadow: inset 0 0 0 1.5px var(--accent); }
+.app-search::placeholder { color: var(--ink-faint); }
+
+.app-body { flex: 1; overflow-y: auto; padding: 16px 18px 28px; }
+
+/* -- rows ---------------------------------------------------------------- */
+
+.row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 12px 14px;
+  border-radius: var(--r);
+  transition: background var(--fast);
+}
+.row + .row { box-shadow: inset 0 1px 0 0 var(--rim-soft); }
+.row:hover { background: var(--glass-sunk); }
+.row .grow { flex: 1; min-width: 0; }
+.row .title {
+  display: block; font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.row .sub {
+  display: block; font-size: 12.5px; color: var(--ink-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* A square, soft-cornered icon well. Initials when there is no icon, which
+   is most of the time for packages -- and initials at a consistent size read
+   better than a grab-bag of mismatched icons. */
+.icon-well {
+  width: 40px; height: 40px; flex: none;
+  border-radius: 11px;
+  display: grid; place-items: center;
+  background: var(--glass-sunk);
+  box-shadow: inset 0 0 0 1px var(--rim-soft);
+  font-family: var(--mono);
+  font-size: 13px; font-weight: 600; color: var(--ink-soft);
+  overflow: hidden;
+}
+.icon-well img { width: 26px; height: 26px; object-fit: contain; }
+
+/* -- tiles --------------------------------------------------------------- */
+
+.tiles {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+}
+.tile {
+  padding: 16px;
+  border-radius: var(--r);
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--rim-soft);
+  transition: transform var(--fast), background var(--fast);
+}
+.tile:hover { background: var(--glass-strong); transform: translateY(-2px); }
+
+/* -- state --------------------------------------------------------------- */
+
+.chip {
+  font-size: 11px; font-weight: 500;
+  padding: 3px 9px; border-radius: var(--r-pill);
+  background: var(--glass-sunk); color: var(--ink-soft);
+  white-space: nowrap;
+}
+.chip.on { background: var(--good); color: #fff; }
+.chip.warn { background: var(--warn); color: #fff; }
+
+.empty {
+  padding: 60px 20px;
+  text-align: center; color: var(--ink-faint);
+}
+.empty strong { display: block; font-size: 15px; color: var(--ink-soft); margin-bottom: 6px; }
+
+.spin {
+  width: 15px; height: 15px; flex: none;
+  border-radius: 50%;
+  border: 2px solid var(--rim-soft);
+  border-top-color: var(--accent);
+  animation: spin 620ms linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+html.no-motion .spin { animation-duration: 2s; }
+
+/* A log that is meant to be watched rather than read afterwards: it pins to
+   the bottom so the newest line is the one in view. */
+.stream {
+  margin-top: 10px; padding: 12px 14px;
+  max-height: 190px; overflow-y: auto;
+  border-radius: var(--r-sm);
+  background: var(--glass-sunk);
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.55;
+  color: var(--ink-soft);
+  white-space: pre-wrap; word-break: break-word;
+}

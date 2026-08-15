@@ -84,14 +84,17 @@ so an item could never activate even where clicks do land.
 other items: driver installation becomes an App Store category rather than a
 separate tool, and npkg already resolves capabilities well enough to back it.
 
-- [ ] App store, including auto-installing drivers.
+- [x] App store, including drivers. Backed by npkg: search, install and
+      remove, with live output while it works. Drivers are a category rather
+      than a separate tool, because they are just packages.
 - [ ] File explorer.
 - [ ] Archive extractor.
 - [ ] Spotify viewer and similar helpers.
 
-All of them want a shared window chrome and a list/grid component first, or
-each will invent its own and the family resemblance will be lost. That shared
-chrome is also the answer to inconsistent window bars below.
+- [x] Shared chrome: `.app-shell`, `.app-toolbar`, `.app-search`, `.row`,
+      `.tile`, `.icon-well`, `.chip`, `.empty`, `.spin`, `.stream` in
+      nethos.css. The App Store is built entirely from them, so the file
+      explorer and extractor should need no new furniture.
 
 ## 3b. Window decoration
 
