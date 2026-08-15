@@ -38,11 +38,24 @@
   --ink-soft:  #5a6470;
   --ink-faint: #8b94a0;
 
-  --accent:   #2f7cf6;
-  --accent-2: #6f5cf0;
-  --good:     #23a06a;
-  --warn:     #e0803a;
-  --danger:   #d9544d;
+  /* Neutral, deliberately.
+     The interface carries no colour; the wallpaper and the app icons do. A
+     tinted surface has to be matched to a background and breaks when the
+     background changes, which is why a coloured desktop only ever looks right
+     in the screenshot it was tuned for. A colourless one is correct on every
+     wallpaper, and that is how one look ships to millions of machines.
+     The accent is nearly grey until you look at it -- desaturated and slightly
+     dark, so it can carry small type at proper contrast and does not vibrate
+     against text across a working day. If a colour is memorable on its own,
+     it is wrong. docs/DESIGN.md 23, 29. */
+  --accent:   #3b6ea5;
+  --accent-2: #3b6ea5;
+
+  /* Status only, and only when something is genuinely good, warning or wrong.
+     Never on a control. Muted for the same reason as the accent. */
+  --good:     #3f7d5e;
+  --warn:     #9a7440;
+  --danger:   #a8544e;
 
   --shadow-sm: 0 1px 2px rgba(20, 26, 36, 0.06), 0 2px 8px rgba(20, 26, 36, 0.06);
   --shadow:    0 2px 6px rgba(20, 26, 36, 0.08), 0 12px 32px rgba(20, 26, 36, 0.12);
@@ -110,7 +123,7 @@
     --ink:       #eef1f5;
     --ink-soft:  #a8b2c0;
     --ink-faint: #6f7885;
-    --accent:    #5c9bff;
+    --accent:    #6f93bd;
   }
 }
 
@@ -212,7 +225,7 @@ h3, .neth-card-title, .card-title {
   letter-spacing: 0.18em;
   font-weight: 600;
 }
-.wordmark { font-size: 13px; color: var(--ink-soft); }
+.wordmark { font-size: 13px; color: var(--ink-faint); }
 .dim, .neth-dim   { color: var(--ink-soft); }
 .faint            { color: var(--ink-faint); }
 .mono, .neth-mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
@@ -408,11 +421,15 @@ pre code { background: none; padding: 0; }
 
   /* Lifted, because a mid-blue that reads as confident on white disappears
      against a dark surface. */
-  --accent:   #5c9bff;
-  --accent-2: #9182ff;
-  --good:     #3ec489;
-  --warn:     #f0a057;
-  --danger:   #ff6b63;
+  /* Lifted just enough to hold against a dark surface, and no more. A blue
+     that reads as confident on white disappears on dark; the fix is lightness,
+     not saturation -- saturating it is how a dark theme turns into a neon one.
+     docs/DESIGN.md 23, 29. */
+  --accent:   #6f93bd;
+  --accent-2: #6f93bd;
+  --good:     #6a9c84;
+  --warn:     #b99a6d;
+  --danger:   #c2807b;
 
   /* Deeper and wider: separation on dark comes from shadow, since there is
      less contrast between a surface and what is behind it. */
