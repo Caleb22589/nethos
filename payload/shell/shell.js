@@ -160,6 +160,16 @@ function initPanel() {
     }));
   }
 
+  // The status cluster is the handle for the control centre, the way the
+  // right-hand side of a menu bar is on macOS. It was previously inert, which
+  // meant the battery and the clock were the only things on screen that
+  // looked like controls and were not.
+  const statusEl = document.getElementById("status");
+  if (statusEl) {
+    statusEl.style.cursor = "default";
+    statusEl.addEventListener("click", () => post("/api/control/toggle", {}));
+  }
+
   const soon = debounce(refreshTasks, 60);
   onEvent((msg) => {
     if (msg.type === "windows") soon();
@@ -470,6 +480,159 @@ function initMenu() {
     }
     post("/api/contextmenu/choose", { token, index });
   }
+
+  /* The control centre lives in this surface for the same reason menus do:
+     it is full-screen and reliably takes clicks, which the panel is not
+     outside its exclusive zone. */
+  let ccOpen = false;
+  const cc = document.createElement("div");
+  cc.id = "cc";
+  cc.hidden = true;
+  document.body.append(cc);
+
+  function ccClose() {
+    if (!ccOpen) return;
+    ccOpen = false;
+    cc.hidden = true;
+    document.body.classList.remove("ctx");
+    post("/api/control/toggle", { open: false });
+    if (typeof nethosHost !== "undefined" && !open) {
+      nethosHost.inputRect(0, 0, 0, 0);
+      setTimeout(() => { if (!ccOpen && !open) nethosHost.hide(); }, 180);
+    }
+  }
+
+  function bar(pct) {
+    const t = el("div", "cc-bar");
+    const f = el("div", "cc-fill");
+    f.style.width = Math.max(0, Math.min(100, pct)) + "%";
+    t.append(f);
+    return t;
+  }
+
+  async function ccRender() {
+    const d = await get("/api/control").catch(() => null);
+    if (!d) return;
+    cc.replaceChildren();
+
+    const card = el("div", "cc-card glass");
+
+    // Battery
+    if (d.battery && d.battery.percent != null) {
+      const b = el("div", "cc-block");
+      const head = el("div", "cc-head");
+      head.append(el("span", "cc-label", "Battery"));
+      head.append(el("span", "cc-value",
+        d.battery.percent + "%" + (d.battery.remaining ? " · " + d.battery.remaining : "")));
+      b.append(head, bar(d.battery.percent));
+      const st = el("div", "cc-sub", d.battery.state);
+      b.append(st);
+      card.append(b);
+    }
+
+    // Brightness
+    if (d.brightness != null) {
+      const b = el("div", "cc-block");
+      const head = el("div", "cc-head");
+      head.append(el("span", "cc-label", "Brightness"));
+      const val = el("span", "cc-value", d.brightness + "%");
+      head.append(val);
+      const range = document.createElement("input");
+      range.type = "range"; range.min = "5"; range.max = "100"; range.step = "5";
+      range.value = d.brightness;
+      range.className = "cc-range";
+      range.addEventListener("input", () => { val.textContent = range.value + "%"; });
+      // change, not input: one request when the drag ends rather than one per
+      // pixel, each of which shells out to brightnessctl.
+      range.addEventListener("change", () =>
+        post("/api/control/brightness", { value: Number(range.value) }));
+      b.append(head, range);
+      card.append(b);
+    }
+
+    // Wi-Fi
+    const w = d.wifi || {};
+    const net = el("div", "cc-block");
+    const head = el("div", "cc-head");
+    head.append(el("span", "cc-label", "Wi‑Fi"));
+    const toggle = el("button", "cc-toggle" + (w.enabled ? " on" : ""));
+    toggle.append(el("i"));
+    toggle.addEventListener("click", async () => {
+      await post("/api/control/wifi", { action: w.enabled ? "off" : "on" });
+      setTimeout(ccRender, 900);
+    });
+    head.append(toggle);
+    net.append(head);
+
+    if (!w.available) {
+      net.append(el("div", "cc-sub", "NetworkManager is not installed"));
+    } else if (!w.enabled) {
+      net.append(el("div", "cc-sub", "Off"));
+    } else if (!w.networks.length) {
+      net.append(el("div", "cc-sub", "Nothing in range yet"));
+    } else {
+      const list = el("div", "cc-nets");
+      for (const n of w.networks) {
+        const row = el("button", "cc-net" + (n.active ? " on" : ""));
+        row.append(el("span", "cc-ssid", n.ssid));
+        row.append(el("span", "cc-sig", (n.secure ? "🔒 " : "") + n.signal + "%"));
+        row.addEventListener("click", () => ccJoin(n));
+        list.append(row);
+      }
+      net.append(list);
+    }
+    const rescan = el("button", "cc-link", "Scan again");
+    rescan.addEventListener("click", async () => {
+      rescan.textContent = "Scanning…";
+      await post("/api/control/wifi", { action: "scan" });
+      setTimeout(ccRender, 2500);
+    });
+    net.append(rescan);
+    card.append(net);
+
+    cc.append(card);
+  }
+
+  async function ccJoin(n) {
+    if (n.active) return;
+    let password = "";
+    if (n.secure) {
+      password = prompt("Password for “" + n.ssid + "”", "");
+      if (password === null) return;
+    }
+    const r = await post("/api/control/wifi",
+                         { action: "connect", ssid: n.ssid, password });
+    post("/api/notify", {
+      text: r.ok ? "Connected to " + n.ssid
+                 : "Could not join " + n.ssid + (r.message ? ": " + r.message : ""),
+      level: r.ok ? "info" : "warn",
+    });
+    ccRender();
+  }
+
+  onEvent((msg) => {
+    if (msg.type !== "control-centre") return;
+    const want = !!(msg.data && msg.data.open);
+    if (want === ccOpen) return;
+    ccOpen = want;
+    if (want) {
+      cc.hidden = false;
+      document.body.classList.add("ctx");
+      if (typeof nethosHost !== "undefined") {
+        nethosHost.inputRect(0, 0, window.innerWidth, window.innerHeight);
+        nethosHost.show();
+      }
+      ccRender();
+      setTimeout(() => window.addEventListener("pointerdown", function once(e) {
+        if (!ccOpen) { window.removeEventListener("pointerdown", once, true); return; }
+        if (cc.firstChild && cc.firstChild.contains(e.target)) return;
+        window.removeEventListener("pointerdown", once, true);
+        ccClose();
+      }, true), 0);
+    } else {
+      ccClose();
+    }
+  });
 
   onEvent((msg) => {
     if (msg.type !== "contextmenu") return;

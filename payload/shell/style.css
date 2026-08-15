@@ -572,3 +572,103 @@ html.no-motion .ctxmenu { animation: none; }
    clickable, but the launcher itself stays hidden. */
 body[data-view="menu"].ctx { opacity: 1; pointer-events: auto; }
 body[data-view="menu"].ctx #menu { display: none; }
+
+/* ================================================== control centre ====== */
+/* Anchored under the right-hand end of the panel, where the status cluster
+   that opens it lives. Drawn in the overlay surface for the same reason menus
+   are: the panel does not reliably take clicks outside its exclusive zone. */
+#cc {
+  position: fixed; inset: 0;
+  display: flex; justify-content: flex-end; align-items: flex-start;
+  padding: 62px 14px 0;
+  pointer-events: none;
+}
+.cc-card {
+  width: 330px;
+  padding: 16px 18px 14px;
+  border-radius: var(--r-xl);
+  /* Denser than the launcher. This opens over the desktop widgets, and at
+     the launcher's opacity the Monitor and News cards read straight through
+     the battery bar -- two interfaces occupying the same pixels. A control
+     you are reading numbers off has to sit on something solid. */
+  background: var(--cc-fill, rgba(252, 253, 255, 0.95));
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  backdrop-filter: blur(30px) saturate(180%);
+  box-shadow: var(--refract), inset 0 1px 0 0 var(--rim),
+              inset 0 0 0 1px var(--rim-soft), var(--shadow-lg);
+  pointer-events: auto;
+  animation: cc-in 160ms var(--ease);
+}
+@keyframes cc-in {
+  from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+  to   { opacity: 1; transform: none; }
+}
+html.no-motion .cc-card { animation: none; }
+
+.cc-block + .cc-block {
+  margin-top: 15px; padding-top: 15px;
+  box-shadow: inset 0 1px 0 0 var(--rim-soft);
+}
+.cc-head { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }
+.cc-label {
+  flex: 1;
+  font-family: var(--display);
+  text-transform: uppercase; letter-spacing: 0.07em;
+  font-size: 11px; color: var(--ink-soft);
+}
+.cc-value { font-size: 12.5px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.cc-sub { font-size: 12px; color: var(--ink-faint); margin-top: 6px; }
+
+/* Battery. A bar rather than a number alone: a proportion is read at a glance
+   and a percentage has to be thought about. */
+.cc-bar {
+  height: 6px; border-radius: 999px;
+  background: var(--glass-sunk);
+  overflow: hidden;
+}
+.cc-fill {
+  height: 100%; border-radius: 999px;
+  background: var(--accent);
+  transition: width 320ms var(--ease);
+}
+
+.cc-range { width: 100%; accent-color: var(--accent); }
+
+.cc-toggle {
+  width: 40px; height: 23px; border-radius: 999px; flex: none;
+  background: var(--glass-sunk); position: relative; cursor: default;
+  box-shadow: inset 0 0 0 1px var(--rim-soft);
+  transition: background var(--fast);
+}
+.cc-toggle.on { background: var(--accent); }
+.cc-toggle i {
+  position: absolute; top: 3px; left: 3px;
+  width: 17px; height: 17px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 3px rgba(20,26,36,0.3);
+  transition: transform 170ms var(--ease);
+}
+.cc-toggle.on i { transform: translateX(17px); }
+
+.cc-nets { display: flex; flex-direction: column; gap: 1px; margin-top: 4px; }
+.cc-net {
+  all: unset; cursor: default;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: var(--r-sm);
+  font-size: 13px; color: var(--ink-soft);
+}
+.cc-net:hover { background: var(--glass-sunk); color: var(--ink); }
+.cc-net.on { color: var(--ink); font-weight: 500; }
+.cc-net.on::after { content: "✓"; color: var(--good); }
+.cc-ssid { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-sig { font-size: 11.5px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+
+.cc-link {
+  all: unset; cursor: default;
+  display: block; margin-top: 8px;
+  font-size: 12px; color: var(--accent);
+}
+.cc-link:hover { text-decoration: underline; }
+
+/* The panel's status cluster is a control now, so it should say so. */
+#status { border-radius: var(--r-pill); padding: 3px 8px; transition: background var(--fast); }
+#status:hover { background: var(--glass-sunk); }

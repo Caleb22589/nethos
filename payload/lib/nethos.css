@@ -134,6 +134,7 @@
   --accent:    #6f93bd;
   --frost-opacity: 0.045;
   --menu-fill: rgba(24, 28, 36, 0.82);
+  --cc-fill: rgba(22, 26, 33, 0.96);
   --refract:
     inset  1px  1px 0 0 rgba(255, 255, 255, 0.13),
     inset -1px -1px 0 0 rgba(0, 0, 0, 0.32);
@@ -264,6 +265,7 @@ html.neth-gpu:not(.neth-compositor-blur) .glass-blur {
      --glass-strong. Below about 0.72 the app names start competing with
      whatever wallpaper happens to be behind them. */
   --menu-fill: rgba(255, 255, 255, 0.78);
+  --cc-fill: rgba(252, 253, 255, 0.95);
   /* Light enters top-left, leaves bottom-right. */
   --refract:
     inset  1px  1px 0 0 rgba(255, 255, 255, 0.55),
@@ -273,6 +275,7 @@ html.neth-gpu:not(.neth-compositor-blur) .glass-blur {
   :root {
     --frost-opacity: 0.045;
     --menu-fill: rgba(24, 28, 36, 0.82);
+    --cc-fill: rgba(22, 26, 33, 0.96);
     --refract:
       inset  1px  1px 0 0 rgba(255, 255, 255, 0.13),
       inset -1px -1px 0 0 rgba(0, 0, 0, 0.32);

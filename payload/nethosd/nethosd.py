@@ -85,6 +85,151 @@ BUILTINS = {
 
 
 # ---------------------------------------------------------------------------
+# control centre -- wifi, brightness, battery
+# ---------------------------------------------------------------------------
+
+def backlight_device():
+    base = "/sys/class/backlight"
+    try:
+        for name in sorted(os.listdir(base)):
+            return os.path.join(base, name)
+    except OSError:
+        pass
+    return None
+
+
+def brightness_get():
+    """0-100, or None where there is no backlight (a desktop machine)."""
+    dev = backlight_device()
+    if not dev:
+        return None
+    try:
+        with open(os.path.join(dev, "max_brightness")) as fh:
+            top = int(fh.read().strip())
+        with open(os.path.join(dev, "brightness")) as fh:
+            now = int(fh.read().strip())
+        return max(0, min(100, round(now * 100 / top))) if top else None
+    except (OSError, ValueError):
+        return None
+
+
+def brightness_set(percent):
+    """brightnessctl rather than writing /sys directly.
+
+    The sysfs node is root-owned, and brightnessctl ships a udev rule that
+    grants the video group write access to it -- so this works as the user
+    where a direct write would need root for a screen dimmer, which is absurd.
+    Floored at 5%: a slider that reaches zero turns the display black and the
+    control to undo it is the one you can no longer see.
+    """
+    percent = max(5, min(100, int(percent)))
+    if shutil.which("brightnessctl"):
+        subprocess.run(["brightnessctl", "-q", "set", "%d%%" % percent],
+                       capture_output=True, timeout=10)
+        return brightness_get()
+    dev = backlight_device()
+    if dev:
+        try:
+            with open(os.path.join(dev, "max_brightness")) as fh:
+                top = int(fh.read().strip())
+            with open(os.path.join(dev, "brightness"), "w") as fh:
+                fh.write(str(round(top * percent / 100)))
+        except (OSError, ValueError):
+            pass
+    return brightness_get()
+
+
+def battery():
+    """Percent, charging state and time remaining where the kernel offers it."""
+    base = "/sys/class/power_supply"
+    try:
+        names = [n for n in sorted(os.listdir(base)) if n.startswith("BAT")]
+    except OSError:
+        return None
+    if not names:
+        return None
+    dev = os.path.join(base, names[0])
+
+    def read(name, cast=str):
+        try:
+            with open(os.path.join(dev, name)) as fh:
+                return cast(fh.read().strip())
+        except (OSError, ValueError):
+            return None
+
+    pct = read("capacity", int)
+    state = read("status") or "Unknown"
+    # energy_now/power_now on some machines, charge_now/current_now on others.
+    now = read("energy_now", int) or read("charge_now", int)
+    rate = read("power_now", int) or read("current_now", int)
+    left = ""
+    if now and rate and rate > 0:
+        if state == "Discharging":
+            hours = now / rate
+        elif state == "Charging":
+            full = read("energy_full", int) or read("charge_full", int) or now
+            hours = max(0, (full - now)) / rate
+        else:
+            hours = 0
+        if hours:
+            left = "%dh %02dm" % (int(hours), int((hours % 1) * 60))
+    return {"percent": pct, "state": state, "remaining": left}
+
+
+def wifi_state():
+    """Radio, current connection and what is in range."""
+    out = {"available": bool(shutil.which("nmcli")), "enabled": False,
+           "connected": "", "networks": []}
+    if not out["available"]:
+        return out
+    try:
+        r = subprocess.run(["nmcli", "-t", "radio", "wifi"],
+                           capture_output=True, text=True, timeout=8)
+        out["enabled"] = r.stdout.strip() == "enabled"
+        r = subprocess.run(
+            ["nmcli", "-t", "-f", "ACTIVE,SSID,SIGNAL,SECURITY", "device", "wifi", "list"],
+            capture_output=True, text=True, timeout=15)
+        seen = set()
+        for line in r.stdout.splitlines():
+            # -t escapes colons inside fields with a backslash, so split on
+            # unescaped ones only or an SSID with a colon shifts every column.
+            parts = re.split(r"(?<!\\):", line)
+            if len(parts) < 4:
+                continue
+            act, ssid, signal, sec = parts[0], parts[1].replace("\\:", ":"), parts[2], parts[3]
+            if not ssid or ssid in seen:
+                continue
+            seen.add(ssid)
+            if act == "yes":
+                out["connected"] = ssid
+            try:
+                strength = int(signal)
+            except ValueError:
+                strength = 0
+            out["networks"].append({"ssid": ssid, "signal": strength,
+                                    "secure": bool(sec and sec != "--"),
+                                    "active": act == "yes"})
+        out["networks"].sort(key=lambda n: -n["signal"])
+        del out["networks"][12:]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return out
+
+
+def wifi_connect(ssid, password):
+    """Join a network. Returns (ok, message)."""
+    cmd = ["nmcli", "device", "wifi", "connect", ssid]
+    if password:
+        cmd += ["password", password]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        msg = (p.stdout or p.stderr or "").strip().splitlines()
+        return p.returncode == 0, (msg[-1] if msg else "")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)
+
+
+# ---------------------------------------------------------------------------
 # files -- what the explorer and the extractor are built on
 # ---------------------------------------------------------------------------
 
@@ -210,6 +355,8 @@ ARCHIVE_TOOLS = [
 ]
 
 EXTRACT_JOB = {"active": "", "log": [], "ok": None}
+
+CONTROL_STATE = {"open": False}
 
 
 def extract_archive(src, dst):
@@ -1988,6 +2135,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"settings": read_settings(),
                                    "schema": SETTINGS_SCHEMA})
 
+        if route == "/api/control":
+            return self.send_json({
+                "battery": battery(),
+                "brightness": brightness_get(),
+                "wifi": wifi_state(),
+            })
+
         if route == "/api/files":
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             path = safe_path(qs.get("path", [""])[0])
@@ -2127,6 +2281,43 @@ class Handler(BaseHTTPRequestHandler):
         # invisible from the desktop and diagnosable only over SSH. These are
         # the three things that actually fixed them, in the order of how much
         # they disturb.
+        if route == "/api/control/brightness":
+            return self.send_json({"ok": True,
+                                   "brightness": brightness_set(data.get("value", 60))})
+
+        if route == "/api/control/wifi":
+            action = data.get("action", "")
+            if action in ("on", "off"):
+                subprocess.run(["nmcli", "radio", "wifi",
+                                "on" if action == "on" else "off"],
+                               capture_output=True, timeout=15)
+                EVENTS.publish("control", {})
+                return self.send_json({"ok": True})
+            if action == "scan":
+                subprocess.run(["nmcli", "device", "wifi", "rescan"],
+                               capture_output=True, timeout=25)
+                EVENTS.publish("control", {})
+                return self.send_json({"ok": True})
+            if action == "connect":
+                ssid = str(data.get("ssid", ""))
+                if not ssid:
+                    return self.send_json({"error": "no network named"}, 400)
+                # The password is used and dropped. It is never logged, never
+                # stored by us, and never echoed back -- NetworkManager keeps
+                # it in its own connection file, which is where it belongs.
+                ok, msg = wifi_connect(ssid, data.get("password", ""))
+                EVENTS.publish("control", {})
+                return self.send_json({"ok": ok, "message": msg},
+                                      200 if ok else 400)
+            return self.send_json({"error": "unknown action"}, 400)
+
+        if route == "/api/control/toggle":
+            CONTROL_STATE["open"] = (not CONTROL_STATE["open"]
+                                     if data.get("open") is None
+                                     else bool(data.get("open")))
+            EVENTS.publish("control-centre", {"open": CONTROL_STATE["open"]})
+            return self.send_json({"ok": True, "open": CONTROL_STATE["open"]})
+
         if route.startswith("/api/files/"):
             what = route[len("/api/files/"):]
             path = safe_path(data.get("path", ""))
