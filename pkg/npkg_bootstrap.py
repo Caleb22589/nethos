@@ -220,6 +220,12 @@ SETS = {
         # rather than dispatching to five different tools, four of which
         # would not be installed.
         "libarchive-tools", "unzip", "zip",
+        # Audio. Without these the machine has no sound at all and the control
+        # centre has no volume, which was the one gap in it. wireplumber is
+        # the session manager PipeWire needs to actually route anything;
+        # pipewire-pulse is what applications expect to find.
+        "pipewire", "pipewire-pulse", "pipewire-audio", "wireplumber",
+        "libspa-0.2-bluetooth", "alsa-utils",
         "gir1.2-gtk4layershell-1.0", "libgtk4-layer-shell0",
         "gir1.2-webkit-6.0", "libwebkitgtk-6.0-4",
 

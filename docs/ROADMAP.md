@@ -83,9 +83,8 @@ so an item could never activate even where clicks do land.
       black, plus a splash surface that waits for the panel and gives up after
       ten seconds rather than hiding a failure.
 - [x] Control centre: battery with time remaining, brightness, Wi-Fi.
-- [ ] Volume. No audio tools are installed (no PipeWire), and a slider that
-      silently does nothing is worse than no slider. Needs pipewire +
-      wireplumber in the desktop set first.
+- [x] Volume, with mute. PipeWire, pipewire-pulse and wireplumber are in the
+      desktop set now; before this the machine had no sound at all.
 - [ ] More customisation, and more settings behind the Settings app now that
       the schema-driven form makes adding one cheap.
 - [ ] Onboarding on first boot.

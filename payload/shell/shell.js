@@ -476,7 +476,6 @@ function initMenu() {
     document.body.classList.remove("ctx");
     if (typeof nethosHost !== "undefined" && !open) {
       nethosHost.inputRect(0, 0, 0, 0);
-      setTimeout(() => { if (!ctxOpen && !open) nethosHost.hide(); }, 180);
     }
     post("/api/contextmenu/choose", { token, index });
   }
@@ -498,7 +497,6 @@ function initMenu() {
     post("/api/control/toggle", { open: false });
     if (typeof nethosHost !== "undefined" && !open) {
       nethosHost.inputRect(0, 0, 0, 0);
-      setTimeout(() => { if (!ccOpen && !open) nethosHost.hide(); }, 180);
     }
   }
 
@@ -550,25 +548,74 @@ function initMenu() {
       card.append(b);
     }
 
-    // Wi-Fi
-    const w = d.wifi || {};
+    // Volume. Absent entirely when there is no audio stack -- a slider that
+    // cannot move is worse than no slider, because it looks like a fault.
+    if (d.volume) {
+      const b = el("div", "cc-block");
+      const head = el("div", "cc-head");
+      head.append(el("span", "cc-label", "Volume"));
+      const val = el("span", "cc-value", d.volume.muted ? "Muted" : d.volume.level + "%");
+      head.append(val);
+      const mute = el("button", "cc-toggle" + (d.volume.muted ? "" : " on"));
+      mute.append(el("i"));
+      mute.title = d.volume.muted ? "Unmute" : "Mute";
+      mute.addEventListener("click", async () => {
+        await post("/api/control/volume", { muted: !d.volume.muted });
+        ccRender();
+      });
+      head.append(mute);
+      const range = document.createElement("input");
+      range.type = "range"; range.min = "0"; range.max = "100"; range.step = "5";
+      range.value = d.volume.level;
+      range.className = "cc-range";
+      range.disabled = !!d.volume.muted;
+      range.addEventListener("input", () => { val.textContent = range.value + "%"; });
+      range.addEventListener("change", () =>
+        post("/api/control/volume", { value: Number(range.value) }));
+      b.append(head, range);
+      card.append(b);
+    }
+
+    // Wi-Fi. The block is drawn now and its contents arrive after: listing
+    // networks takes seconds, and nothing else on this panel should wait for
+    // it.
     const net = el("div", "cc-block");
+    net.id = "cc-wifi";
+    const head = el("div", "cc-head");
+    head.append(el("span", "cc-label", "Wi‑Fi"));
+    net.append(head);
+    if (d.wifi && d.wifi.available) {
+      const loading = el("div", "cc-sub", "Looking…");
+      net.append(loading);
+    } else {
+      net.append(el("div", "cc-sub", "NetworkManager is not installed"));
+    }
+    card.append(net);
+
+    cc.append(card);
+    if (d.wifi && d.wifi.available) ccNetworks();
+  }
+
+  async function ccNetworks() {
+    const r = await get("/api/control/networks").catch(() => null);
+    const net = document.getElementById("cc-wifi");
+    if (!r || !net) return;
+    const w = r.wifi || {};
+    net.replaceChildren();
     const head = el("div", "cc-head");
     head.append(el("span", "cc-label", "Wi‑Fi"));
     const toggle = el("button", "cc-toggle" + (w.enabled ? " on" : ""));
     toggle.append(el("i"));
     toggle.addEventListener("click", async () => {
       await post("/api/control/wifi", { action: w.enabled ? "off" : "on" });
-      setTimeout(ccRender, 900);
+      setTimeout(ccNetworks, 900);
     });
     head.append(toggle);
     net.append(head);
 
-    if (!w.available) {
-      net.append(el("div", "cc-sub", "NetworkManager is not installed"));
-    } else if (!w.enabled) {
+    if (!w.enabled) {
       net.append(el("div", "cc-sub", "Off"));
-    } else if (!w.networks.length) {
+    } else if (!w.networks || !w.networks.length) {
       net.append(el("div", "cc-sub", "Nothing in range yet"));
     } else {
       const list = el("div", "cc-nets");
@@ -585,12 +632,9 @@ function initMenu() {
     rescan.addEventListener("click", async () => {
       rescan.textContent = "Scanning…";
       await post("/api/control/wifi", { action: "scan" });
-      setTimeout(ccRender, 2500);
+      setTimeout(ccNetworks, 2500);
     });
     net.append(rescan);
-    card.append(net);
-
-    cc.append(card);
   }
 
   async function ccJoin(n) {
@@ -607,7 +651,7 @@ function initMenu() {
                  : "Could not join " + n.ssid + (r.message ? ": " + r.message : ""),
       level: r.ok ? "info" : "warn",
     });
-    ccRender();
+    ccNetworks();
   }
 
   onEvent((msg) => {
@@ -664,10 +708,15 @@ function initMenu() {
      nothing ever hid it until the launcher had been opened once. Until then a
      full-screen overlay sat above everything -- invisible, and eating every
      click aimed at the dock or a window. */
-  if (typeof nethosHost !== "undefined") {
-    nethosHost.inputRect(0, 0, 0, 0);
-    nethosHost.hide();
-  }
+  // Mapped, always -- but click-through and invisible when idle.
+  //
+  // Hiding it unmaps the surface, and WebKit suspends the page of an unmapped
+  // surface. A suspended page receives no events, so the overlay never heard
+  // the message telling it to show itself: the control centre simply did not
+  // open, and neither would a context menu after the first idle period. An
+  // empty input region gives the same protection hiding did -- nothing can
+  // click it -- without the page going to sleep.
+  if (typeof nethosHost !== "undefined") nethosHost.inputRect(0, 0, 0, 0);
 
   /* The launcher surface exists for the whole session and shows/hides itself,
      which is why opening it is instant: no process start, no compositor call. */
@@ -683,7 +732,6 @@ function initMenu() {
         nethosHost.show();
       } else {
         nethosHost.inputRect(0, 0, 0, 0);
-        setTimeout(() => nethosHost.hide(), 200);
       }
     }
     if (open) {
@@ -698,7 +746,10 @@ function initMenu() {
   }
 
   onEvent((msg) => { if (msg.type === "menu") setOpen(!!msg.data.open); });
-  if (typeof nethosHost !== "undefined") nethosHost.hide();
+  // Released, not unmapped: see the note above. The surface stays alive so it
+  // can hear the next message; the empty input region is what stops it
+  // intercepting clicks meant for the desktop.
+  if (typeof nethosHost !== "undefined") nethosHost.inputRect(0, 0, 0, 0);
   load();
 }
 

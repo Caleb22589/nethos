@@ -176,6 +176,63 @@ def battery():
     return {"percent": pct, "state": state, "remaining": left}
 
 
+def volume_get():
+    """0-100 and muted, or None where there is no audio stack at all.
+
+    wpctl is PipeWire's own tool and reports the default sink whatever it
+    happens to be; pactl is the fallback for a PulseAudio system. Returning
+    None rather than 0 matters: the control centre hides the slider entirely
+    rather than showing one that cannot move, because a dead control is worse
+    than a missing one.
+    """
+    if shutil.which("wpctl"):
+        try:
+            r = subprocess.run(["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"],
+                               capture_output=True, text=True, timeout=6)
+            # "Volume: 0.65" or "Volume: 0.65 [MUTED]"
+            m = re.search(r"Volume:\s*([0-9.]+)", r.stdout)
+            if m:
+                return {"level": round(float(m.group(1)) * 100),
+                        "muted": "MUTED" in r.stdout}
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+    if shutil.which("pactl"):
+        try:
+            r = subprocess.run(["pactl", "get-sink-volume", "@DEFAULT_SINK@"],
+                               capture_output=True, text=True, timeout=6)
+            m = re.search(r"(\d+)%", r.stdout)
+            mu = subprocess.run(["pactl", "get-sink-mute", "@DEFAULT_SINK@"],
+                                capture_output=True, text=True, timeout=6)
+            if m:
+                return {"level": int(m.group(1)),
+                        "muted": "yes" in mu.stdout}
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+    return None
+
+
+def volume_set(level=None, mute=None):
+    if shutil.which("wpctl"):
+        if mute is not None:
+            subprocess.run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@",
+                            "1" if mute else "0"], capture_output=True, timeout=6)
+        if level is not None:
+            # Capped at 100. wpctl will happily go past it into software
+            # amplification, which distorts and surprises people.
+            lvl = max(0, min(100, int(level)))
+            subprocess.run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@",
+                            "%d%%" % lvl], capture_output=True, timeout=6)
+    elif shutil.which("pactl"):
+        if mute is not None:
+            subprocess.run(["pactl", "set-sink-mute", "@DEFAULT_SINK@",
+                            "1" if mute else "0"], capture_output=True, timeout=6)
+        if level is not None:
+            subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@",
+                            "%d%%" % max(0, min(100, int(level)))],
+                           capture_output=True, timeout=6)
+    return volume_get()
+
+
 def wifi_state():
     """Radio, current connection and what is in range."""
     out = {"available": bool(shutil.which("nmcli")), "enabled": False,
@@ -2153,11 +2210,22 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"snapshots": out})
 
         if route == "/api/control":
+            # Deliberately without the Wi-Fi list. `nmcli device wifi list`
+            # takes seconds -- it may trigger a scan -- and putting it here
+            # meant the control centre rendered nothing at all until it
+            # returned: the panel opened blank and stayed blank, which reads
+            # as a broken button rather than a slow one. Battery, brightness
+            # and volume are all sysfs or a fast tool, so they answer at once
+            # and the networks arrive separately.
             return self.send_json({
                 "battery": battery(),
                 "brightness": brightness_get(),
-                "wifi": wifi_state(),
+                "volume": volume_get(),
+                "wifi": {"available": bool(shutil.which("nmcli"))},
             })
+
+        if route == "/api/control/networks":
+            return self.send_json({"wifi": wifi_state()})
 
         if route == "/api/files":
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -2321,6 +2389,10 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/control/brightness":
             return self.send_json({"ok": True,
                                    "brightness": brightness_set(data.get("value", 60))})
+
+        if route == "/api/control/volume":
+            return self.send_json({"ok": True, "volume": volume_set(
+                data.get("value"), data.get("muted"))})
 
         if route == "/api/control/wifi":
             action = data.get("action", "")
