@@ -161,6 +161,7 @@ class Surface:
     # a single web process, so the shell costs roughly one renderer no matter
     # how many surfaces it draws.
     _related_to = None
+    _input_warned = False
 
     def __init__(self, app, spec):
         self.spec = spec
@@ -337,9 +338,16 @@ class Surface:
             reg = cairo.Region(cairo.RectangleInt(
                 region.x, region.y, region.width, region.height))
             surface.set_input_region(reg)
-        except Exception:
-            # Not fatal: the surface simply stays fully clickable.
-            pass
+        except Exception as exc:                  # noqa: BLE001
+            # Not fatal, but never silent again. Without cairo this raised
+            # ImportError, the region was never set, and the dock captured
+            # every click in the strip across the bottom of the screen --
+            # which looks like a broken browser, not a missing package.
+            if not Surface._input_warned:
+                Surface._input_warned = True
+                print("nethos-view: cannot set input region (%s); surfaces "
+                      "will capture clicks across their whole area -- is "
+                      "python3-cairo installed?" % exc, file=sys.stderr)
 
     # -- layer shell -----------------------------------------------------
     def _init_layer_shell(self):

@@ -144,7 +144,12 @@ SETS = {
         # some later application that ships schemas of its own.
         # libgdk-pixbuf2.0-bin carries gdk-pixbuf-query-loaders, the last of
         # the cache builders we need; fontconfig carries fc-cache.
-        "python3-gi", "python3-dbus", "libgtk-4-1", "libglib2.0-bin",
+        # python3-cairo is not optional: nethos-view builds the dock's input
+        # region with it, and without it the import raises, the failure is
+        # swallowed, and the dock swallows every click in the strip along the
+        # bottom of the screen -- so a browser cannot be scrolled there.
+        "python3-gi", "python3-gi-cairo", "python3-cairo",
+        "python3-dbus", "libgtk-4-1", "libglib2.0-bin",
         "libgdk-pixbuf2.0-bin", "fontconfig", "shared-mime-info",
         "desktop-file-utils",
         "gir1.2-gtk4layershell-1.0", "libgtk4-layer-shell0",
