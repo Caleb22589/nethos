@@ -801,6 +801,10 @@ function applySettings(s) {
   if (s.accent) root.style.setProperty("--accent", s.accent);
   if (s.font_scale) root.style.fontSize = s.font_scale + "%";
   root.classList.toggle("no-motion", s.animations === false);
+  // The desktop surface paints the wallpaper; the others are transparent and
+  // let the compositor blur it. Setting it on body rather than root because
+  // the selectors key off body[data-view="desktop"].
+  if (s.wallpaper) document.body.dataset.wallpaper = s.wallpaper;
   if (typeof s.dock_size === "number")
     root.style.setProperty("--dock-icon", s.dock_size + "px");
   document.body.dataset.autohide = s.dock_autohide === false ? "0" : "1";

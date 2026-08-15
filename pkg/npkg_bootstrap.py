@@ -705,6 +705,15 @@ def install_desktop(root: str, payload: str, username: str) -> None:
         os.makedirs(os.path.join(home, ".config"), exist_ok=True)
         shutil.copy2(_wf_src, os.path.join(home, ".config", "wayfire.ini"))
 
+    # foot reads ~/.config/foot/foot.ini. Without it foot draws its own
+    # decorations and Wayfire draws none, so the terminal is the one window
+    # with no title bar while everything else has one.
+    _foot_src = os.path.join(payload, "foot", "foot.ini")
+    if os.path.isfile(_foot_src):
+        _footdir = os.path.join(home, ".config", "foot")
+        os.makedirs(_footdir, exist_ok=True)
+        shutil.copy2(_foot_src, os.path.join(_footdir, "foot.ini"))
+
     # Hyprland reads ~/.config/hypr/hyprland.conf, and nothing copies it there
     # at first login. Placed after `home` exists -- putting it earlier raised
     # UnboundLocalError and took the whole build with it.

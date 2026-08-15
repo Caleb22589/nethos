@@ -3,7 +3,15 @@
 Ordered by what blocks what, not by size. Anything marked **blocked** has a
 named cause, not a guess.
 
-## 0. Open defect: left-click on layer surfaces
+## 0. RESOLVED: left-click on layer surfaces
+
+**Cause:** the launcher's full-screen overlay surface had `opacity: 0` when
+closed but never `pointer-events: none`, and nothing hid it until the launcher
+had been opened once. An invisible sheet on the overlay layer swallowed every
+pointer event on the screen. Fixed in c8fba66. The investigation below is kept
+because the measurements were what found it.
+
+## 0b. Original investigation: left-click on layer surfaces
 
 The one that blocks the most, because it makes finished features look broken.
 
@@ -72,13 +80,33 @@ so an item could never activate even where clicks do land.
 
 ## 3. Applications
 
+**The App Store is the big one** -- stated priority, and it subsumes several
+other items: driver installation becomes an App Store category rather than a
+separate tool, and npkg already resolves capabilities well enough to back it.
+
+- [ ] App store, including auto-installing drivers.
 - [ ] File explorer.
 - [ ] Archive extractor.
-- [ ] App store.
 - [ ] Spotify viewer and similar helpers.
 
-All four want a shared window chrome and list/grid component first, or they
-will each invent their own and the family resemblance will be lost.
+All of them want a shared window chrome and a list/grid component first, or
+each will invent its own and the family resemblance will be lost. That shared
+chrome is also the answer to inconsistent window bars below.
+
+## 3b. Window decoration
+
+- [ ] Window bars are inconsistent, and absent on the terminal. Applications
+      that draw their own decorations (client-side) ignore Wayfire's, so a
+      NETHOS session shows two different title bars depending on the toolkit.
+      Force server-side decoration where the application allows it, and
+      configure the ones that do not (foot has a `csd` setting).
+
+## 3c. Troubleshooting
+
+- [ ] A troubleshooter that can restart and diagnose the interface without a
+      terminal: restart the shell, restart nethosd, reload surfaces, show the
+      diagnostics `nethos-doctor` already collects. Every UI fault in this
+      project so far has been invisible from the desktop itself.
 
 ## 4. Installer
 

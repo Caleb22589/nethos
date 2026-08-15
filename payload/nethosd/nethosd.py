@@ -1680,6 +1680,26 @@ class Handler(BaseHTTPRequestHandler):
             # what the daemon actually accepts, and cannot drift from it.
             return self.send_json({"settings": read_settings(),
                                    "schema": SETTINGS_SCHEMA})
+
+        if route == "/api/diagnostics":
+            # What a person would otherwise have to open a terminal and read
+            # four files to learn.
+            try:
+                with open(DIAG_PATH) as fh:
+                    tail = fh.readlines()[-40:]
+            except OSError:
+                tail = []
+            surfaces = {}
+            now = time.time()
+            for name, seen in list(HEARTBEAT.items()):
+                surfaces[name] = round(now - seen, 1)
+            return self.send_json({
+                "backend": backend(),
+                "surfaces": surfaces,
+                "windows": len(list_windows()),
+                "settings_path": SETTINGS_PATH,
+                "log": [ln.rstrip() for ln in tail],
+            })
         if route == "/api/menu":
             return self.send_json({"open": MENU_STATE["open"]})
         if route == "/api/version":
@@ -1763,6 +1783,31 @@ class Handler(BaseHTTPRequestHandler):
                 "index": int(data.get("index", -1)),
             })
             return self.send_json({"ok": True})
+
+        # Repairing the interface from inside the interface.
+        #
+        # Every fault in this desktop so far -- a stopped clock, a dock that
+        # ignored clicks, an overlay swallowing the screen -- has been
+        # invisible from the desktop and diagnosable only over SSH. These are
+        # the three things that actually fixed them, in the order of how much
+        # they disturb.
+        if route == "/api/troubleshoot":
+            action = data.get("action", "")
+            if action == "reload":
+                EVENTS.publish("reload", {"reason": "troubleshooter"})
+                return self.send_json({"ok": True, "did": "reloaded surfaces"})
+            if action == "restart-shell":
+                # The surfaces, not the compositor: losing the compositor
+                # takes every open application with it.
+                spawn(["sh", "-c",
+                       "pkill -f 'nethos-view url=' ; sleep 2 ; "
+                       "setsid nethos-session >/dev/null 2>&1 &"])
+                return self.send_json({"ok": True, "did": "restarting shell"})
+            if action == "restart-daemon":
+                spawn(["sh", "-c",
+                       "sleep 1 ; systemctl --user restart nethosd"])
+                return self.send_json({"ok": True, "did": "restarting nethosd"})
+            return self.send_json({"error": "unknown action"}, 400)
 
         if route == "/api/settings":
             if data.get("reset"):

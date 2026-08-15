@@ -84,6 +84,49 @@
 
   <div id="form"><p class="neth-sub">Loading…</p></div>
 
+  <section class="group" id="trouble">
+    <h3>Troubleshoot</h3>
+    <div class="neth-card" style="padding:0">
+      <div class="row">
+        <div class="label">
+          <strong class="name">Reload the interface</strong>
+          <span class="help">Repaints every surface. Nothing is lost.</span>
+        </div>
+        <div class="control">
+          <button class="neth-btn" data-fix="reload">Reload</button>
+        </div>
+      </div>
+      <div class="row">
+        <div class="label">
+          <strong class="name">Restart the shell</strong>
+          <span class="help">Panel, dock and launcher only — your windows stay open.</span>
+        </div>
+        <div class="control">
+          <button class="neth-btn" data-fix="restart-shell">Restart shell</button>
+        </div>
+      </div>
+      <div class="row">
+        <div class="label">
+          <strong class="name">Restart the daemon</strong>
+          <span class="help">nethosd, which everything else talks to.</span>
+        </div>
+        <div class="control">
+          <button class="neth-btn" data-fix="restart-daemon">Restart nethosd</button>
+        </div>
+      </div>
+      <div class="row">
+        <div class="label">
+          <strong class="name">Diagnostics</strong>
+          <span class="help" id="diag-sub">Compositor, surfaces and the last of the log.</span>
+        </div>
+        <div class="control">
+          <button class="neth-btn" id="diag-btn">Show</button>
+        </div>
+      </div>
+    </div>
+    <pre id="diag" class="neth-pre" hidden></pre>
+  </section>
+
 <script>
 (async () => {
   const api = await nethos.ready();
@@ -245,6 +288,55 @@
     render();
     flashSaved();
   };
+
+  // ------------------------------------------------------------ troubleshoot
+  const diag = document.getElementById("diag");
+  for (const b of document.querySelectorAll("[data-fix]")) {
+    b.addEventListener("click", async () => {
+      const was = b.textContent;
+      b.disabled = true;
+      b.textContent = "Working…";
+      try {
+        const r = await fetch("/api/troubleshoot", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: b.dataset.fix }),
+        }).then((x) => x.json());
+        b.textContent = r.did ? "Done" : (r.error || "Failed");
+      } catch (e) {
+        // Restarting the daemon kills this request by design; that is not a
+        // failure, and reporting it as one teaches people to distrust the
+        // button that just did what they asked.
+        b.textContent = b.dataset.fix === "restart-daemon" ? "Restarting…" : "Failed";
+      }
+      setTimeout(() => { b.textContent = was; b.disabled = false; }, 2200);
+    });
+  }
+
+  document.getElementById("diag-btn").addEventListener("click", async () => {
+    if (!diag.hidden) { diag.hidden = true; return; }
+    try {
+      const d = await fetch("/api/diagnostics").then((x) => x.json());
+      const stale = Object.entries(d.surfaces)
+        .filter(([, age]) => age > 30)
+        .map(([n, age]) => n + " (" + age + "s)");
+      diag.textContent = [
+        "compositor : " + d.backend,
+        "windows    : " + d.windows,
+        "surfaces   : " + Object.entries(d.surfaces)
+          .map(([n, a]) => n + " " + a + "s").join("  "),
+        stale.length ? "STALE      : " + stale.join(", ")
+                     : "all surfaces reporting",
+        "settings   : " + d.settings_path,
+        "",
+        ...d.log,
+      ].join("\n");
+      diag.hidden = false;
+    } catch (e) {
+      diag.textContent = "nethosd is not answering.";
+      diag.hidden = false;
+    }
+  });
 
   // Another surface may change a setting; reflect it rather than going stale.
   api.on("settings", (v) => { if (v) { values = v; render(); } });

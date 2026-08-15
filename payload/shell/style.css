@@ -341,12 +341,79 @@ body[data-view="desktop"] {
     linear-gradient(160deg, #eef2f8 0%, #e6ebf4 55%, #dfe6f0 100%);
 }
 @media (prefers-color-scheme: dark) {
-  body[data-view="desktop"] {
+  body[data-view="desktop"]:not([data-wallpaper]) {
     background:
       radial-gradient(1200px 800px at 12% 8%,  #1b2a4a 0%, transparent 60%),
       radial-gradient(900px 700px at 88% 22%, #2a1f45 0%, transparent 55%),
       radial-gradient(1000px 900px at 60% 96%, #102b26 0%, transparent 60%),
       linear-gradient(160deg, #0e1218 0%, #121722 55%, #0d1016 100%);
+  }
+}
+
+/* ------------------------------------------------------------ wallpapers --
+ *
+ * Drawn, not shipped. Four gradients weigh nothing, scale to any display, and
+ * -- unlike a photograph -- give the glass above them something smooth to
+ * refract. A photograph behind a frosted panel reads as noise.
+ *
+ * Each has a light and a dark form, because "dark mode" that leaves a pale
+ * wallpaper behind the glass is not dark mode. The dark forms are lifted in
+ * lightness rather than saturated, per docs/DESIGN.md.
+ *
+ * Set by the shell from the stored setting; the default above still applies
+ * when no wallpaper has been chosen.
+ */
+body[data-view="desktop"][data-wallpaper="dawn"] {
+  background:
+    radial-gradient(1200px 800px at 12% 8%,  #cfe0ff 0%, transparent 60%),
+    radial-gradient(900px 700px at 88% 22%, #e9d9ff 0%, transparent 55%),
+    radial-gradient(1000px 900px at 60% 96%, #d6f0e6 0%, transparent 60%),
+    linear-gradient(160deg, #eef2f8 0%, #e6ebf4 55%, #dfe6f0 100%);
+}
+body[data-view="desktop"][data-wallpaper="slate"] {
+  background:
+    radial-gradient(1100px 780px at 18% 12%, #d4dae6 0%, transparent 58%),
+    radial-gradient(950px 700px at 84% 30%, #c8d2e2 0%, transparent 55%),
+    linear-gradient(155deg, #eceff5 0%, #e0e5ee 60%, #d5dbe6 100%);
+}
+body[data-view="desktop"][data-wallpaper="meadow"] {
+  background:
+    radial-gradient(1150px 820px at 10% 88%, #d8efd9 0%, transparent 60%),
+    radial-gradient(900px 700px at 82% 12%, #e6f2d4 0%, transparent 55%),
+    linear-gradient(165deg, #f0f5ec 0%, #e4eee0 55%, #dbe8d8 100%);
+}
+body[data-view="desktop"][data-wallpaper="dusk"] {
+  background:
+    radial-gradient(1200px 820px at 16% 14%, #e6d6e8 0%, transparent 58%),
+    radial-gradient(900px 700px at 86% 78%, #d8d2ee 0%, transparent 55%),
+    linear-gradient(160deg, #f2eef6 0%, #e8e2f0 55%, #ded8ea 100%);
+}
+
+@media (prefers-color-scheme: dark) {
+  body[data-view="desktop"][data-wallpaper="dawn"] {
+    background:
+      radial-gradient(1200px 800px at 12% 8%,  #1b2a4a 0%, transparent 60%),
+      radial-gradient(900px 700px at 88% 22%, #2a1f45 0%, transparent 55%),
+      radial-gradient(1000px 900px at 60% 96%, #102b26 0%, transparent 60%),
+      linear-gradient(160deg, #0e1218 0%, #121722 55%, #0d1016 100%);
+  }
+  body[data-view="desktop"][data-wallpaper="slate"] {
+    background:
+      radial-gradient(1100px 780px at 18% 12%, #232a36 0%, transparent 58%),
+      radial-gradient(950px 700px at 84% 30%, #1c222e 0%, transparent 55%),
+      linear-gradient(155deg, #14181f 0%, #11151c 60%, #0e1116 100%);
+  }
+  body[data-view="desktop"][data-wallpaper="meadow"] {
+    background:
+      radial-gradient(1150px 820px at 10% 88%, #16301f 0%, transparent 60%),
+      radial-gradient(900px 700px at 82% 12%, #1e3320 0%, transparent 55%),
+      linear-gradient(165deg, #0f1512 0%, #101811 55%, #0d1310 100%);
+  }
+  body[data-view="desktop"][data-wallpaper="dusk"] {
+    background:
+      radial-gradient(1200px 820px at 16% 14%, #2b2140 0%, transparent 58%),
+      radial-gradient(900px 700px at 86% 78%, #241f3c 0%, transparent 55%),
+      linear-gradient(160deg, #14111c 0%, #121019 55%, #0e0c14 100%);
   }
 }
 
