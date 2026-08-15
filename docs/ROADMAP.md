@@ -146,6 +146,20 @@ separate tool, and npkg already resolves capabilities well enough to back it.
       with everything included; what is missing is the installer knowing to
       use the local packages instead of the network.
 
+## 4b. Not done, and why
+
+- [ ] **Spotify viewer.** Needs a Spotify developer application and OAuth
+      credentials that only you can create; a viewer without them is a window
+      that says "not configured". Worth doing once those exist.
+- [ ] **Offline installer.** The image can already be built with everything
+      included; what is missing is the installer preferring local packages
+      over the network.
+- [ ] **A/B partitions.** Snapshots cover a bad NETHOS update. They do not
+      cover a kernel that will not boot, which is what the partition scheme
+      in docs/ABUPDATE.md is for.
+- [ ] **GTK4 window decoration.** GTK4 ignores GTK_CSD=0 and keeps its own
+      header bars. Upstream's decision, not a missing setting.
+
 ## 5. Performance
 
 - [x] Shell memory 1.69GB -> 392MB, by sharing one web process again.
