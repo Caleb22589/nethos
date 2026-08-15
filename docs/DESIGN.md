@@ -412,3 +412,78 @@ which is not the same as the same size mathematically.
 
 Text in a dock is the tell that the icons are not recognisable enough — and
 the cure is better icons, not labels.
+
+---
+
+# The feeling: power
+
+The test this system is actually designed against: put on something with real
+weight to it, look at the screen, and see whether the interface holds up. No
+Linux desktop currently does. That is a legitimate criterion, and it decomposes
+into things that can be built.
+
+Powerful music is not loud music. It is dynamic range — the quiet passages are
+what make the loud ones land, and compressing everything to maximum is exactly
+what stops it hitting. Interfaces are the same. Emphasise everything and
+nothing is emphasised, which is why a maximalist desktop feels like a toy and
+an almost-empty one feels like a machine.
+
+## 34. Latency is the strongest signal of power there is
+
+Nothing that lags feels powerful. Nothing. A response inside 16ms reads as the
+machine *waiting for you*; 150ms reads as the machine deciding whether to
+bother.
+
+This outranks every visual decision in this document. A plain interface that
+answers instantly feels more powerful than a beautiful one that stutters, and
+no amount of glass compensates. It is also why the frame-clock, connection-pool
+and blur-cost bugs mattered far beyond their symptoms.
+
+## 35. Stillness
+
+Powerful things do not fidget. No pulsing, no breathing, no idle animation, no
+gradient drifting behind the work. Everything on screen holds absolutely still
+until the user does something.
+
+Then it responds immediately, decisively, and stops. Motion that starts on its
+own is nervous, and nervous is the opposite of powerful.
+
+## 36. Mass
+
+Weight comes from type and from surface, not from ornament. A heavy weight used
+*once* on a surface carries more force than three medium ones. Big type where
+it matters and small type everywhere else, with nothing in between hedging.
+
+Thin type reads as delicate. Delicate is a legitimate aim and it is not this
+one.
+
+## 37. Darkness, with real contrast
+
+Dark reads as authoritative — it is why professional tools are dark and
+consumer toys are bright. Ableton, DaVinci Resolve, a mixing desk, a cockpit.
+But dark only works with genuine contrast: near-white on near-black, not grey
+on charcoal. Low-contrast dark reads as murky, which is the opposite again.
+
+## 38. Precision
+
+Nothing approximate. Alignments exact, spacing on the grid, numbers that do not
+shimmer, edges that land on whole pixels. The feeling of power is very largely
+the accumulated feeling that *someone made every one of these decisions on
+purpose* — and the eye detects that long before the mind can name it.
+
+## 39. Restraint reads as capability held back
+
+The most powerful interfaces look like they are doing almost nothing while
+being able to do everything. An empty desk in a room full of tools.
+
+This is why rule 9 and rule 25 matter more than any amount of styling: the
+near-empty desktop is not minimalism for its own sake. It is the visual
+statement that the system is not straining.
+
+## In practice, for NETHOS
+
+- Latency first, always. Measure it. (`nethos-doctor`.)
+- Dark as the serious default, with real contrast rather than murk.
+- One weight, used once per surface, and generous scale.
+- Nothing moves unless the user moved it.
+- The desktop is empty until asked.
