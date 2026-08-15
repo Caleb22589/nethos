@@ -21,9 +21,12 @@
 
 :root {
   /* Surfaces are translucent; the compositor blurs what is behind them. */
-  --glass:        rgba(255, 255, 255, 0.66);
-  --glass-strong: rgba(255, 255, 255, 0.82);
-  --glass-dim:    rgba(255, 255, 255, 0.44);
+  /* Thinner than before. At 0.66 the panel reads as a white bar with a blur
+     behind it; at 0.42 it reads as glass, because you can see that there is
+     something behind it. Glass is defined by what shows through. */
+  --glass:        rgba(255, 255, 255, 0.42);
+  --glass-strong: rgba(255, 255, 255, 0.62);
+  --glass-dim:    rgba(255, 255, 255, 0.26);
   --glass-sunk:   rgba(120, 130, 150, 0.10);
 
   --rim:      rgba(255, 255, 255, 0.75);

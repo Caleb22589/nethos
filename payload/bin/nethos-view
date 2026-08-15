@@ -162,6 +162,7 @@ class Surface:
     # how many surfaces it draws.
     _related_to = None
     _input_warned = False
+    _transparent_css = False
 
     def __init__(self, app, spec):
         self.spec = spec
@@ -176,6 +177,30 @@ class Surface:
                                      int(spec.get("height", 600)))
         if self.role != "window":
             self.window.set_decorated(False)
+
+        # Make the window itself transparent.
+        #
+        # Setting the WebView's background to transparent is not enough: the
+        # GtkApplicationWindow underneath still paints the theme's background,
+        # and that is what shows in the margin around the panel's pill -- a
+        # white band across the top of the screen with a rounded pill sitting
+        # on it, instead of a pill floating over the wallpaper.
+        #
+        # There is no property for this in GTK4; the supported route is a CSS
+        # provider on the display.
+        if self.role != "window" and not Surface._transparent_css:
+            Surface._transparent_css = True
+            provider = Gtk.CssProvider()
+            provider.load_from_data(
+                b"window, window.background, .background {"
+                b"  background-color: transparent;"
+                b"  background-image: none;"
+                b"}")
+            Gtk.StyleContext.add_provider_for_display(
+                Gdk.Display.get_default(), provider,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        if self.role != "window":
+            self.window.add_css_class("background")
 
         # webkit_web_view_new_with_related_view() is a C constructor that the
         # GI bindings do not expose as a method; the same thing is reachable as
