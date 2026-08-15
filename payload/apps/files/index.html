@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Files — NETHOS</title>
+  <link rel="stylesheet" href="/lib/nethos.css">
+  <script src="/lib/nethos.js"></script>
+  <style>
+    body { padding: 0; }
+    .split { display: flex; flex: 1; min-height: 0; }
+
+    /* Places. Narrow, quiet, and never scrolls with the file list -- the
+       point of a sidebar is that it stays where you left it. */
+    .side {
+      width: 190px; flex: none;
+      padding: 14px 10px;
+      overflow-y: auto;
+      box-shadow: inset -1px 0 0 0 var(--rim-soft);
+    }
+    .place {
+      all: unset; display: flex; align-items: center; gap: 10px;
+      width: 100%; box-sizing: border-box;
+      padding: 8px 11px; border-radius: var(--r-sm);
+      font-size: 13.5px; color: var(--ink-soft); cursor: default;
+    }
+    .place:hover { background: var(--glass-sunk); color: var(--ink); }
+    .place[aria-current="true"] { background: var(--accent); color: #fff; }
+    .place .g { font-size: 15px; width: 18px; text-align: center; }
+    .side h4 {
+      font-family: var(--display);
+      text-transform: uppercase; letter-spacing: 0.08em;
+      font-size: 10.5px; color: var(--ink-faint);
+      margin: 14px 0 6px 11px; font-weight: 500;
+    }
+
+    .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+    /* The path, as buttons. Every segment is a place you can go back to,
+       which is faster than a Back button pressed four times. */
+    .crumbs {
+      display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
+      padding: 10px 16px;
+      box-shadow: inset 0 -1px 0 0 var(--rim-soft);
+    }
+    .crumb {
+      all: unset; cursor: default;
+      padding: 4px 8px; border-radius: var(--r-sm);
+      font-size: 13px; color: var(--ink-soft);
+    }
+    .crumb:hover { background: var(--glass-sunk); color: var(--ink); }
+    .crumb:last-child { color: var(--ink); font-weight: 500; }
+    .sep { color: var(--ink-faint); font-size: 12px; }
+
+    .g { font-size: 17px; }
+    .row .g { font-size: 19px; }
+    .row.sel { background: var(--accent); }
+    .row.sel .title, .row.sel .sub, .row.sel .g { color: #fff; }
+    .row .when {
+      font-size: 12px; color: var(--ink-faint);
+      font-variant-numeric: tabular-nums; white-space: nowrap;
+    }
+    .row.sel .when { color: rgba(255,255,255,0.8); }
+    .row .size {
+      font-size: 12px; color: var(--ink-faint);
+      font-variant-numeric: tabular-nums; width: 74px; text-align: right;
+    }
+    .row.sel .size { color: rgba(255,255,255,0.8); }
+
+    .btn {
+      all: unset; cursor: default;
+      padding: 6px 13px; border-radius: var(--r-pill);
+      font-size: 12.5px; font-weight: 500;
+      background: var(--glass-sunk); color: var(--ink-soft);
+      box-shadow: inset 0 0 0 1px var(--rim-soft);
+    }
+    .btn:hover { color: var(--ink); }
+    .btn.go { background: var(--accent); color: #fff; box-shadow: none; }
+  </style>
+</head>
+<body>
+<div class="app-shell">
+  <div class="app-toolbar">
+    <h1>Files</h1>
+    <input class="app-search" id="q" type="search" spellcheck="false"
+           placeholder="Filter this folder">
+    <span class="spacer"></span>
+    <button class="btn" id="hidden-toggle">Show hidden</button>
+    <button class="btn" id="newdir">New folder</button>
+    <span class="chip" id="count"></span>
+  </div>
+
+  <div class="crumbs" id="crumbs"></div>
+
+  <div class="job" id="job" hidden style="margin:0 16px 10px;padding:12px 14px;
+       border-radius:var(--r);background:var(--glass);
+       box-shadow:inset 0 0 0 1px var(--rim-soft)">
+    <div style="display:flex;align-items:center;gap:10px">
+      <span class="spin" id="job-spin"></span>
+      <strong style="flex:1;font-weight:500" id="job-title"></strong>
+      <span class="chip" id="job-state"></span>
+    </div>
+  </div>
+
+  <div class="split">
+    <div class="side" id="side"></div>
+    <div class="main">
+      <div class="app-body" id="list"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(async () => {
+  const api = await nethos.ready();
+  const side = document.getElementById("side");
+  const list = document.getElementById("list");
+  const crumbs = document.getElementById("crumbs");
+  const count = document.getElementById("count");
+  const q = document.getElementById("q");
+  const job = document.getElementById("job");
+  const jobTitle = document.getElementById("job-title");
+  const jobState = document.getElementById("job-state");
+  const jobSpin = document.getElementById("job-spin");
+
+  // One glyph per kind. Text, not icon files: they are always present, they
+  // scale with the type size, and they cost nothing to ship.
+  const GLYPH = {
+    folder: "📁", image: "🖼", video: "🎞", audio: "♪", text: "📄",
+    pdf: "📕", archive: "🗜", file: "📄",
+    home: "⌂", desktop: "🖥", documents: "📄", downloads: "⇩",
+    pictures: "🖼", music: "♪", videos: "🎞", drive: "💾",
+  };
+
+  let state = { path: "", entries: [], places: [], showHidden: false, sel: null };
+
+  const el = (t, c) => { const n = document.createElement(t); if (c) n.className = c; return n; };
+  const txt = (t, c, s) => { const n = el(t, c); n.textContent = s; return n; };
+
+  function when(ts) {
+    if (!ts) return "";
+    const d = new Date(ts * 1000);
+    const now = new Date();
+    const sameYear = d.getFullYear() === now.getFullYear();
+    return d.toLocaleDateString(undefined,
+      sameYear ? { day: "numeric", month: "short" }
+               : { day: "numeric", month: "short", year: "numeric" });
+  }
+
+  function renderPlaces() {
+    side.replaceChildren();
+    let drives = false;
+    for (const p of state.places) {
+      if (p.kind === "drive" && !drives) {
+        drives = true;
+        side.append(txt("h4", null, "Drives"));
+      }
+      const b = el("button", "place");
+      b.setAttribute("aria-current", p.path === state.path ? "true" : "false");
+      b.append(txt("span", "g", GLYPH[p.kind] || "📁"));
+      b.append(txt("span", null, p.name));
+      b.addEventListener("click", () => go(p.path));
+      side.append(b);
+    }
+  }
+
+  function renderCrumbs() {
+    crumbs.replaceChildren();
+    const home = state.home || "";
+    let rest = state.path, prefix = "";
+    if (home && state.path.startsWith(home)) {
+      prefix = home;
+      rest = state.path.slice(home.length).replace(/^\//, "");
+    }
+    const first = txt("button", "crumb", prefix ? "Home" : "/");
+    first.addEventListener("click", () => go(prefix || "/"));
+    crumbs.append(first);
+    let acc = prefix || "";
+    for (const part of rest.split("/").filter(Boolean)) {
+      acc += "/" + part;
+      crumbs.append(txt("span", "sep", "›"));
+      const target = acc;
+      const b = txt("button", "crumb", part);
+      b.addEventListener("click", () => go(target));
+      crumbs.append(b);
+    }
+  }
+
+  function visible() {
+    const filter = q.value.trim().toLowerCase();
+    return state.entries.filter((e) =>
+      (state.showHidden || !e.hidden) &&
+      (!filter || e.name.toLowerCase().includes(filter)));
+  }
+
+  function renderList() {
+    list.replaceChildren();
+    const items = visible();
+    if (!items.length) {
+      const e = el("div", "empty");
+      e.append(txt("strong", null, q.value.trim() ? "Nothing matches" : "This folder is empty"));
+      e.append(document.createTextNode(
+        q.value.trim() ? "Try part of the name."
+                       : "Drop something in, or make a new folder."));
+      list.append(e);
+      count.textContent = "";
+      return;
+    }
+    for (const entry of items) {
+      const row = el("div", "row");
+      row.append(txt("span", "g", GLYPH[entry.kind] || "📄"));
+      const grow = el("div", "grow");
+      grow.append(txt("span", "title", entry.name));
+      grow.append(txt("span", "sub", entry.dir ? "Folder" : (entry.kind === "file" ? "" : entry.kind)));
+      row.append(grow);
+      row.append(txt("span", "size", entry.size_h));
+      row.append(txt("span", "when", when(entry.mtime)));
+
+      row.addEventListener("click", () => {
+        for (const c of list.querySelectorAll(".row.sel")) c.classList.remove("sel");
+        row.classList.add("sel");
+        state.sel = entry;
+      });
+      row.addEventListener("dblclick", () => activate(entry));
+      row.addEventListener("contextmenu", (ev) => {
+        ev.preventDefault();
+        menu(ev, entry);
+      });
+      list.append(row);
+    }
+    count.textContent = items.length + " item" + (items.length === 1 ? "" : "s");
+  }
+
+  function activate(entry) {
+    if (entry.dir) return go(entry.path);
+    if (entry.kind === "archive") return act("extract", entry.path);
+    act("open", entry.path);
+  }
+
+  // The explorer draws its own menu rather than using the shell's: this is a
+  // plain window, so nothing here needs the overlay routing the panel does.
+  let openMenu = null;
+  function menu(ev, entry) {
+    if (openMenu) openMenu.remove();
+    const m = el("div", "ctxmenu glass");
+    m.style.position = "fixed";
+    m.style.zIndex = "2000";
+    const add = (label, fn, danger) => {
+      const b = txt("button", "ctxitem" + (danger ? " danger" : ""), label);
+      b.addEventListener("click", () => { m.remove(); openMenu = null; fn(); });
+      m.append(b);
+    };
+    add(entry.dir ? "Open" : "Open", () => activate(entry));
+    if (entry.kind === "archive") add("Extract here", () => act("extract", entry.path));
+    add("Rename…", () => rename(entry));
+    m.append(el("div", "ctxsep"));
+    add("Move to Trash", () => act("trash", entry.path), true);
+    document.body.append(m);
+    const r = m.getBoundingClientRect();
+    m.style.left = Math.min(ev.clientX, window.innerWidth - r.width - 8) + "px";
+    m.style.top = Math.min(ev.clientY, window.innerHeight - r.height - 8) + "px";
+    openMenu = m;
+    setTimeout(() => window.addEventListener("pointerdown", function once(e) {
+      if (m.contains(e.target)) return;
+      m.remove(); openMenu = null;
+      window.removeEventListener("pointerdown", once, true);
+    }, true), 0);
+  }
+
+  async function act(what, path, extra) {
+    const r = await fetch("/api/files/" + what, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.assign({ path }, extra || {})),
+    }).then((x) => x.json()).catch(() => ({ error: "unreachable" }));
+    if (r.error) nethos.system.notify("Files: " + r.error, "warn");
+    else if (what !== "open" && what !== "extract") await go(state.path);
+    return r;
+  }
+
+  function rename(entry) {
+    const name = prompt("New name", entry.name);
+    if (name && name !== entry.name) act("rename", entry.path, { name });
+  }
+
+  async function go(path) {
+    const r = await fetch("/api/files?path=" + encodeURIComponent(path))
+      .then((x) => x.json()).catch(() => null);
+    if (!r || r.error) {
+      nethos.system.notify("Files: " + ((r && r.error) || "cannot open"), "warn");
+      return;
+    }
+    state.path = r.path;
+    state.home = r.home;
+    state.entries = r.entries;
+    state.places = r.places;
+    state.sel = null;
+    renderPlaces(); renderCrumbs(); renderList();
+    showJob(r.job);
+  }
+
+  function showJob(j) {
+    if (!j) return;
+    if (j.active) {
+      job.hidden = false;
+      jobSpin.style.display = "";
+      jobTitle.textContent = "Extracting " + j.active;
+      jobState.textContent = "Working";
+      jobState.className = "chip";
+    }
+  }
+
+  api.on("extract", (d) => {
+    if (!d) return;
+    if (d.state === "working") {
+      job.hidden = false;
+      jobSpin.style.display = "";
+      jobTitle.textContent = "Extracting " + d.name;
+      jobState.textContent = "Working";
+      jobState.className = "chip";
+    } else {
+      jobSpin.style.display = "none";
+      jobState.textContent = d.ok ? "Done" : "Failed";
+      jobState.className = "chip " + (d.ok ? "on" : "warn");
+      go(state.path);
+      setTimeout(() => { job.hidden = true; }, 3500);
+    }
+  });
+
+  document.getElementById("hidden-toggle").addEventListener("click", (e) => {
+    state.showHidden = !state.showHidden;
+    e.target.textContent = state.showHidden ? "Hide hidden" : "Show hidden";
+    renderList();
+  });
+  document.getElementById("newdir").addEventListener("click", () => {
+    const name = prompt("Folder name", "New folder");
+    if (name) act("mkdir", state.path, { name });
+  });
+  q.addEventListener("input", renderList);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Backspace" && document.activeElement !== q) {
+      const up = state.path.replace(/\/[^/]+\/?$/, "") || "/";
+      go(up);
+    }
+  });
+
+  await go("");
+})();
+</script>
+</body>
+</html>

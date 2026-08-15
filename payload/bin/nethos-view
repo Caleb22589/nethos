@@ -252,6 +252,14 @@ class Surface:
 
         self.window = Gtk.ApplicationWindow(application=app)
         self.window.set_title(spec.get("title", self.name))
+        # Without this every NETHOS window reports app_id "python3" -- GTK
+        # takes it from the program name -- so the taskbar and the dock label
+        # the Settings window "P" and the App Store "P" as well, and two of
+        # our own applications are indistinguishable from each other and from
+        # any other Python program. Wayland has no way to change this after
+        # the surface is created, so it is set before the window is realised.
+        if self.role == "window":
+            GLib.set_prgname("nethos-" + self.name)
         # The app-id is how the compositor identifies plain windows; layer
         # surfaces use the namespace set below instead.
         self.window.set_default_size(int(spec.get("width", 800)),

@@ -35,6 +35,7 @@ import re
 import shlex
 import socket
 import struct
+import shutil
 import subprocess
 import threading
 import time
@@ -81,6 +82,189 @@ BUILTINS = {
     "menu-toggle": None,
 }
 
+
+
+# ---------------------------------------------------------------------------
+# files -- what the explorer and the extractor are built on
+# ---------------------------------------------------------------------------
+
+HOME = os.path.expanduser("~")
+
+# Everything is confined to the user's own tree. nethosd listens on localhost
+# and anything that can reach it can already run as this user, so this is not a
+# security boundary -- it is a guard against a path bug in the explorer walking
+# into /proc or /sys and hanging on a pipe.
+FILE_ROOTS = [HOME, "/media", "/mnt", "/run/media"]
+
+# Kind decides the icon and what a double-click does. Extension matching only:
+# reading the first bytes of every file in a directory to identify it makes
+# opening a folder of a thousand files take a second, and the answer is not
+# needed until the user acts on one.
+KINDS = {
+    "image": (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif"),
+    "video": (".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v"),
+    "audio": (".mp3", ".flac", ".ogg", ".wav", ".m4a", ".opus"),
+    "text":  (".txt", ".md", ".log", ".conf", ".ini", ".json", ".yaml", ".yml",
+              ".py", ".js", ".css", ".html", ".sh", ".c", ".h", ".cpp", ".rs"),
+    "pdf":   (".pdf",),
+    "archive": (".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".zst", ".7z",
+                ".rar", ".deb", ".pkg.tar.zst"),
+}
+
+
+def file_kind(name, is_dir):
+    if is_dir:
+        return "folder"
+    lower = name.lower()
+    for kind, exts in KINDS.items():
+        if lower.endswith(exts):
+            return kind
+    return "file"
+
+
+def safe_path(raw):
+    """Resolve a client path, or None if it escapes the allowed roots."""
+    if not raw:
+        return HOME
+    path = os.path.realpath(os.path.expanduser(str(raw)))
+    for root in FILE_ROOTS:
+        if path == root or path.startswith(root.rstrip("/") + "/"):
+            return path
+    return None
+
+
+def human_size(n):
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return ("%d %s" % (n, unit)) if unit == "B" else ("%.1f %s" % (n, unit))
+        n /= 1024.0
+    return "%d B" % n
+
+
+def list_dir(path):
+    """One directory. Folders first, then by name, both case-insensitively.
+
+    os.scandir rather than listdir+stat: it carries the type with the entry, so
+    a directory of a few thousand files costs one syscall per entry instead of
+    two. Hidden files are included and flagged; the client decides.
+    """
+    out = []
+    try:
+        with os.scandir(path) as it:
+            for entry in it:
+                try:
+                    is_dir = entry.is_dir(follow_symlinks=True)
+                    st = entry.stat(follow_symlinks=False)
+                    size = 0 if is_dir else st.st_size
+                    out.append({
+                        "name": entry.name,
+                        "path": os.path.join(path, entry.name),
+                        "dir": is_dir,
+                        "hidden": entry.name.startswith("."),
+                        "kind": file_kind(entry.name, is_dir),
+                        "size": size,
+                        "size_h": "" if is_dir else human_size(size),
+                        "mtime": int(st.st_mtime),
+                    })
+                except OSError:
+                    # A broken symlink or a file removed mid-walk is not a
+                    # reason to fail the whole listing.
+                    continue
+    except OSError as exc:
+        return None, str(exc)
+    out.sort(key=lambda e: (not e["dir"], e["name"].lower()))
+    return out, None
+
+
+def places():
+    """The left-hand list: the user's own directories, then anything mounted."""
+    out = [{"name": "Home", "path": HOME, "kind": "home"}]
+    for name in ("Desktop", "Documents", "Downloads", "Pictures", "Music",
+                 "Videos"):
+        p = os.path.join(HOME, name)
+        if os.path.isdir(p):
+            out.append({"name": name, "path": p, "kind": name.lower()})
+    for base in ("/media", "/run/media", "/mnt"):
+        try:
+            for entry in sorted(os.listdir(base)):
+                p = os.path.join(base, entry)
+                if os.path.ismount(p) or (os.path.isdir(p) and base != "/mnt"):
+                    out.append({"name": entry, "path": p, "kind": "drive"})
+                elif os.path.isdir(p):
+                    for sub in sorted(os.listdir(p)):
+                        sp = os.path.join(p, sub)
+                        if os.path.ismount(sp):
+                            out.append({"name": sub, "path": sp, "kind": "drive"})
+        except OSError:
+            continue
+    return out
+
+
+# Archive handling. bsdtar reads every format worth reading -- tar in all its
+# compressions, zip, 7z, iso, and Debian's own .deb -- so one tool covers the
+# lot rather than dispatching to five.
+ARCHIVE_TOOLS = [
+    ("bsdtar", ["bsdtar", "-xf", "{src}", "-C", "{dst}"]),
+    ("tar",    ["tar", "-xf", "{src}", "-C", "{dst}"]),
+    ("unzip",  ["unzip", "-o", "{src}", "-d", "{dst}"]),
+]
+
+EXTRACT_JOB = {"active": "", "log": [], "ok": None}
+
+
+def extract_archive(src, dst):
+    """Unpack src into a new directory under dst. Background, reports as it goes."""
+    def worker():
+        EXTRACT_JOB["active"] = os.path.basename(src)
+        EXTRACT_JOB["log"] = []
+        EXTRACT_JOB["ok"] = None
+        EVENTS.publish("extract", {"state": "working", "name": os.path.basename(src)})
+        # Into a folder named after the archive, never loose into the current
+        # directory: a tarball with a hundred files at its root turns the
+        # folder you were looking at into a mess you have to clean up by hand.
+        stem = os.path.basename(src)
+        for suffix in (".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst", ".pkg.tar.zst"):
+            if stem.lower().endswith(suffix):
+                stem = stem[: -len(suffix)]
+                break
+        else:
+            stem = os.path.splitext(stem)[0]
+        target = os.path.join(dst, stem)
+        n = 2
+        while os.path.exists(target):
+            target = os.path.join(dst, "%s (%d)" % (stem, n))
+            n += 1
+        rc = 1
+        try:
+            os.makedirs(target, exist_ok=True)
+            for name, template in ARCHIVE_TOOLS:
+                if not shutil.which(name):
+                    continue
+                cmd = [c.format(src=src, dst=target) for c in template]
+                p = subprocess.run(cmd, capture_output=True, text=True,
+                                   timeout=1800)
+                EXTRACT_JOB["log"] = ((p.stdout or "") + (p.stderr or "")).splitlines()[-60:]
+                rc = p.returncode
+                if rc == 0:
+                    break
+            else:
+                if rc != 0:
+                    EXTRACT_JOB["log"].append("no extraction tool available")
+        except (OSError, subprocess.SubprocessError) as exc:
+            EXTRACT_JOB["log"].append(str(exc))
+            rc = 1
+        if rc != 0:
+            # Do not leave an empty directory behind after a failure.
+            try:
+                if os.path.isdir(target) and not os.listdir(target):
+                    os.rmdir(target)
+            except OSError:
+                pass
+        EXTRACT_JOB["ok"] = (rc == 0)
+        EXTRACT_JOB["active"] = ""
+        EVENTS.publish("extract", {"state": "done", "ok": rc == 0,
+                                   "target": target})
+    threading.Thread(target=worker, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
@@ -1804,6 +1988,24 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"settings": read_settings(),
                                    "schema": SETTINGS_SCHEMA})
 
+        if route == "/api/files":
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            path = safe_path(qs.get("path", [""])[0])
+            if path is None:
+                return self.send_json({"error": "outside the allowed roots"}, 403)
+            entries, err = list_dir(path)
+            if err:
+                return self.send_json({"error": err, "path": path}, 404)
+            parent = os.path.dirname(path.rstrip("/")) or "/"
+            return self.send_json({
+                "path": path,
+                "parent": parent if safe_path(parent) else "",
+                "home": HOME,
+                "entries": entries,
+                "places": places(),
+                "job": dict(EXTRACT_JOB),
+            })
+
         if route == "/api/packages":
             q = urllib.parse.parse_qs(
                 urllib.parse.urlparse(self.path).query).get("q", [""])[0]
@@ -1925,6 +2127,67 @@ class Handler(BaseHTTPRequestHandler):
         # invisible from the desktop and diagnosable only over SSH. These are
         # the three things that actually fixed them, in the order of how much
         # they disturb.
+        if route.startswith("/api/files/"):
+            what = route[len("/api/files/"):]
+            path = safe_path(data.get("path", ""))
+            if path is None:
+                return self.send_json({"error": "outside the allowed roots"}, 403)
+
+            if what == "open":
+                # xdg-open, so the user's own default applies rather than a
+                # table of ours that would immediately be wrong.
+                spawn(["xdg-open", path])
+                return self.send_json({"ok": True})
+
+            if what == "mkdir":
+                name = str(data.get("name", "")).strip().strip("/")
+                if not name or name in (".", "..") or "/" in name:
+                    return self.send_json({"error": "bad name"}, 400)
+                try:
+                    os.makedirs(os.path.join(path, name))
+                except OSError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                return self.send_json({"ok": True})
+
+            if what == "rename":
+                name = str(data.get("name", "")).strip().strip("/")
+                if not name or name in (".", "..") or "/" in name:
+                    return self.send_json({"error": "bad name"}, 400)
+                target = os.path.join(os.path.dirname(path), name)
+                if os.path.exists(target):
+                    return self.send_json({"error": "already exists"}, 409)
+                try:
+                    os.rename(path, target)
+                except OSError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                return self.send_json({"ok": True, "path": target})
+
+            if what == "trash":
+                # Moved, not deleted. A file manager that destroys on a
+                # mis-click is one people stop trusting, and the recovery for
+                # "I meant the other file" should not be a backup.
+                trash = os.path.join(HOME, ".local/share/Trash/files")
+                try:
+                    os.makedirs(trash, exist_ok=True)
+                    base = os.path.basename(path)
+                    dest = os.path.join(trash, base)
+                    n = 2
+                    while os.path.exists(dest):
+                        dest = os.path.join(trash, "%s.%d" % (base, n))
+                        n += 1
+                    shutil.move(path, dest)
+                except OSError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                return self.send_json({"ok": True})
+
+            if what == "extract":
+                if EXTRACT_JOB["active"]:
+                    return self.send_json({"error": "busy"}, 409)
+                extract_archive(path, os.path.dirname(path))
+                return self.send_json({"ok": True})
+
+            return self.send_json({"error": "unknown action"}, 400)
+
         if route == "/api/packages/install" or route == "/api/packages/remove":
             names = data.get("packages") or ([data["id"]] if data.get("id") else [])
             names = [n for n in names

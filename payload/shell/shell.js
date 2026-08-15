@@ -347,7 +347,10 @@ function initDock() {
       dock.append(el("div", "dock-sep"));
       for (const w of extras) {
         const b = el("button", "dock-item running");
-        b.append(el("span", "fallback", initials(w.app_id || w.title)));
+        // Title first, app_id second. The app_id of a NETHOS window is
+        // "nethos-files", which initials to "NF" -- correct and useless. The
+        // title is "Files".
+        b.append(el("span", "fallback", initials(w.title || w.app_id)));
         b.append(el("span", "dock-tip", w.title || w.app_id));
         b.addEventListener("click", () => post("/api/window", { action: "focus", id: w.id }));
         onContext(b, () => windowMenuItems(w).concat([

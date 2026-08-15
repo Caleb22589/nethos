@@ -215,6 +215,11 @@ SETS = {
         "python3-dbus", "libgtk-4-1", "libglib2.0-bin",
         "libgdk-pixbuf2.0-bin", "fontconfig", "shared-mime-info",
         "desktop-file-utils",
+        # libarchive-tools is bsdtar: one binary that reads tar in every
+        # compression, zip, 7z, iso and .deb. The Files app extracts with it
+        # rather than dispatching to five different tools, four of which
+        # would not be installed.
+        "libarchive-tools", "unzip", "zip",
         "gir1.2-gtk4layershell-1.0", "libgtk4-layer-shell0",
         "gir1.2-webkit-6.0", "libwebkitgtk-6.0-4",
 

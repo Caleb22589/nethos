@@ -1,0 +1,12 @@
+{
+  "id": "files",
+  "name": "Files",
+  "description": "Browse, organise and extract — your home, your drives, your archives",
+  "icon": "FI",
+  "version": "1.0.0",
+  "categories": ["NETHOS", "System", "Utility"],
+  "entry": "index.html",
+  "permissions": ["system", "files"],
+  "mode": "window",
+  "window": { "width": 980, "height": 660 }
+}
