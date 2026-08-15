@@ -278,7 +278,9 @@ class Surface:
         """ % (json.dumps(self.name),
                "true" if os.environ.get("NETHOS_GPU") else "false",
                json.dumps(_theme()),
-               "true" if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") else "false")
+               "true" if (os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+                          or "wayfire" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+                          or os.environ.get("WAYFIRE_CONFIG_FILE")) else "false")
         manager.add_script(WebKit.UserScript.new(
             shim,
             WebKit.UserContentInjectedFrames.TOP_FRAME,

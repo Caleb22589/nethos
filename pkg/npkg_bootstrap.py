@@ -142,6 +142,13 @@ SETS = {
         #
         # sway stays installed as the fallback -- the session picks whichever is
         # present, and nethosd already speaks both IPCs.
+        # Wayfire: floating windows, real decorations with minimise and
+        # maximise, edge snapping on drag, and blur done in the compositor --
+        # which is what makes the glass real instead of a per-frame CSS cost.
+        # sway can do none of those four.
+        "wayfire", "wayfire-plugins-extra", "wf-shell",
+        # sway stays as the fallback so a machine where Wayfire will not start
+        # still reaches a desktop.
         "sway", "swaybg", "swayidle", "swaylock", "xwayland",
         "seatd", "libseat1",
 
@@ -598,6 +605,12 @@ def install_desktop(root: str, payload: str, username: str) -> None:
     # the user's session
     home = os.path.join(root, "home", username)
 
+    # Wayfire reads ~/.config/wayfire.ini.
+    _wf_src = os.path.join(payload, "wayfire", "wayfire.ini")
+    if os.path.isfile(_wf_src):
+        os.makedirs(os.path.join(home, ".config"), exist_ok=True)
+        shutil.copy2(_wf_src, os.path.join(home, ".config", "wayfire.ini"))
+
     # Hyprland reads ~/.config/hypr/hyprland.conf, and nothing copies it there
     # at first login. Placed after `home` exists -- putting it earlier raised
     # UnboundLocalError and took the whole build with it.
@@ -666,6 +679,11 @@ def install_desktop(root: str, payload: str, username: str) -> None:
             "    # give layer-shell surfaces and nethosd speaks both IPCs, so\n"
             "    # the shell is identical either way -- Hyprland just blurs\n"
             "    # behind it and rounds the corners.\n"
+            "    if command -v wayfire >/dev/null 2>&1; then\n"
+            "        wayfire >~/.cache/wayfire.log 2>&1 && exit\n"
+            "        echo '--- wayfire failed; falling back ---' "
+            ">>~/.cache/wayfire.log\n"
+            "    fi\n"
             "    if [ \"${NETHOS_HYPRLAND:-0}\" = 1 ] && "
             "command -v Hyprland >/dev/null 2>&1; then\n"
             "        Hyprland >~/.cache/hyprland.log 2>&1 && exit\n"

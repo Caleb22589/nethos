@@ -310,8 +310,20 @@ def _focused_floating(node):
 
 def backend():
     """Which compositor are we driving? Decided per call so a session that
-    restarts under the other one keeps working without restarting nethosd."""
-    return "hypr" if HyprIPC.available() else "sway"
+    restarts under another one keeps working without restarting nethosd.
+
+    Wayfire is recognised but not yet driven: it does its own snapping,
+    decorations and blur, so the things nethosd adds to sway are already there
+    -- but its window list needs a Wayfire IPC backend that does not exist
+    here. Returning "wayfire" makes that explicit, so the sway paths decline
+    instead of firing IPC at a socket that will never answer.
+    """
+    if HyprIPC.available():
+        return "hypr"
+    if (os.environ.get("WAYFIRE_CONFIG_FILE")
+            or "wayfire" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower()):
+        return "wayfire"
+    return "sway"
 
 
 def spawn(argv):
@@ -1509,7 +1521,10 @@ def main():
         while True:
             time.sleep(0.2)
             try:
+                # Only sway needs this. Wayfire snaps on drag itself, and doing
+                # it twice would fight the compositor.
                 if backend() != "sway":
+                    time.sleep(2)
                     continue
                 tree = SWAY.request(SWAY.GET_TREE) or {}
                 out = (SWAY.request(SWAY.GET_OUTPUTS) or [{}])[0]
