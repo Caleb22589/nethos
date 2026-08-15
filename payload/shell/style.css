@@ -119,10 +119,19 @@ body[data-view="dock"] {
   margin-bottom: 10px;
   background: var(--glass);
   border-radius: var(--r-xl);
+  /* A tight shadow, not the wide soft one.
+     The dock slides on a transparent full-width surface, and a large blurred
+     shadow moving across it leaves stale pixels behind: the compositor is not
+     told to repaint what the shadow vacated, so a smear stays on screen after
+     the dock has gone. A contact shadow moves with the surface and cannot
+     smear, and at this size the wide one was not doing much anyway. */
   box-shadow: inset 0 1px 0 0 var(--rim), inset 0 0 0 1px var(--rim-soft),
-              inset 0 -1px 0 0 var(--edge), var(--shadow);
+              inset 0 -1px 0 0 var(--edge), var(--shadow-sm);
   position: relative; isolation: isolate;
-  transition: transform var(--slow), opacity var(--slow);
+  /* Opacity only. Animating transform moves the painted area around the
+     surface; fading it in place does not, so nothing is left behind. */
+  transition: opacity var(--fast);
+  will-change: opacity;
 }
 #dock::before {
   content: ""; position: absolute; inset: 0; border-radius: inherit;
@@ -130,7 +139,8 @@ body[data-view="dock"] {
 }
 /* Auto-hide: slide out of sight, leaving a hover strip the host keeps clickable. */
 body[data-view="dock"].hidden #dock {
-  transform: translateY(calc(100% + 14px));
+  opacity: 0;
+  pointer-events: none;
   opacity: 0;
 }
 

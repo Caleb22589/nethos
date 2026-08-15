@@ -450,7 +450,9 @@ class App(Gtk.Application):
         # This process is plain GTK and is never throttled, and calling into a
         # view wakes it. So the shell's periodic work is driven from here: the
         # page exposes window.nethosTick and we call it.
-        GLib.timeout_add_seconds(3, self._tick)
+        # One second, not three. This is a fallback for work that is not
+        # event-driven; three seconds of it is visible as lag.
+        GLib.timeout_add(1000, self._tick)
         threading.Thread(target=self._events, daemon=True).start()
 
     def _events(self):
@@ -483,6 +485,15 @@ class App(Gtk.Application):
         script = "window.nethosEvent && window.nethosEvent(%s);" % payload
         for surface in self.surfaces:
             try:
+                # Wake the surface before handing it the event. A hidden
+                # surface's web process is suspended, and evaluate_javascript
+                # on a suspended process waits for it to be scheduled again --
+                # which was the tick, up to three seconds away. That is the
+                # entire delay between pressing the key and the launcher
+                # appearing: not the daemon, not the IPC, just an event sitting
+                # in a queue waiting for a timer.
+                surface.view.queue_draw()
+                surface.window.queue_draw()
                 surface.view.evaluate_javascript(script, -1, None, None, None,
                                                  None, None)
             except Exception:                 # noqa: BLE001
