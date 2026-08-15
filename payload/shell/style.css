@@ -397,7 +397,19 @@ body[data-view="desktop"] {
  * Skipped under a compositor that blurs for us (Hyprland), because doing both
  * pays the cost twice for a worse result.
  */
-#panel, #dock {
+/* Only where the compositor is not already blurring behind us.
+ *
+ * The gate was described in the comment above but never actually written into
+ * the selector, so this ran under Wayfire as well -- and the compositor was
+ * blurring the same surface at the same time. Two blurs is not just twice the
+ * cost: a backdrop-filter region is invalidated by its own damage rules, and
+ * when only part of the surface changes the filtered area is not fully
+ * repainted. The panel therefore accumulated, exactly as the dock did for a
+ * different reason: closing a window left the old title painted under the new
+ * one, so "Settings" and "foot" appeared on top of each other as "footings".
+ * Verified by screenshotting a close on the running machine. */
+html:not(.neth-compositor-blur) #panel,
+html:not(.neth-compositor-blur) #dock {
   -webkit-backdrop-filter: blur(16px) saturate(170%);
   backdrop-filter: blur(16px) saturate(170%);
 }
@@ -436,3 +448,48 @@ body[data-view="desktop"] .widget .num { color: var(--ink); }
    sticks when the surface stops receiving pointer events (see shell.js). */
 body[data-view="dock"]:not(.hovering) .dock-label,
 body[data-view="dock"]:not(.hovering) [data-label]::after { opacity: 0 !important; }
+
+/* ========================================================= context menu */
+/* WebKit's browser menu is suppressed in nethos-view, so this is the only
+   answer to a right-click. Positioned by script; the styling is here.
+   No backdrop-filter: this sits on a surface the compositor already blurs,
+   and doubling it is what made the panel accumulate. */
+.ctxmenu {
+  position: fixed;
+  z-index: 2000;
+  min-width: 188px;
+  padding: 6px;
+  border-radius: var(--r-lg, 14px);
+  background: var(--menu-fill, rgba(255, 255, 255, 0.82));
+  box-shadow: var(--refract), inset 0 1px 0 0 var(--rim),
+              inset 0 0 0 1px var(--rim-soft), var(--shadow-lg);
+  display: flex; flex-direction: column;
+  animation: ctx-in 120ms var(--ease);
+}
+@keyframes ctx-in {
+  from { opacity: 0; transform: scale(0.97) translateY(-3px); }
+  to   { opacity: 1; transform: none; }
+}
+html.no-motion .ctxmenu { animation: none; }
+
+.ctxitem {
+  all: unset;
+  display: block;
+  padding: 8px 12px;
+  border-radius: 9px;
+  font-size: 13.5px;
+  color: var(--ink);
+  cursor: default;
+  white-space: nowrap;
+}
+.ctxitem:hover { background: var(--accent); color: #fff; }
+.ctxitem.danger { color: var(--danger, #b3261e); }
+.ctxitem.danger:hover { background: var(--danger, #b3261e); color: #fff; }
+.ctxitem:disabled { opacity: 0.4; }
+.ctxitem:disabled:hover { background: none; color: var(--ink); }
+
+.ctxsep {
+  height: 1px;
+  margin: 5px 8px;
+  background: var(--rim-soft);
+}

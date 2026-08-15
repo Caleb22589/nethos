@@ -234,6 +234,21 @@ class Surface:
             if Surface._related_to is None:
                 Surface._related_to = self.view
 
+        # No browser menu anywhere in the shell.
+        #
+        # WebKit's default context menu is a web browser's: Reload, Go Back,
+        # Open Frame in New Window, Inspect Element. On a desktop panel those
+        # are not merely useless, they are a statement about what the thing
+        # is -- right-clicking the dock and being offered "Reload Frame" tells
+        # the user they are looking at a web page pretending to be an
+        # operating system. Suppressed here; the shell draws its own menus in
+        # JavaScript, where it knows what was actually clicked.
+        #
+        # Developer tools stay reachable deliberately, but only when asked
+        # for: NETHOS_INSPECTOR=1 in the environment.
+        if os.environ.get("NETHOS_INSPECTOR") != "1":
+            self.view.connect("context-menu", lambda *_a: True)
+
         settings = self.view.get_settings()
         settings.set_enable_developer_extras(True)
         settings.set_enable_write_console_messages_to_stdout(True)
@@ -313,9 +328,18 @@ class Surface:
         """ % (json.dumps(self.name),
                "true" if os.environ.get("NETHOS_GPU") else "false",
                json.dumps(_theme()),
+               # WAYFIRE_SOCKET is the one Wayfire actually exports.
+               # XDG_CURRENT_DESKTOP reads "sway" on a NETHOS session -- it is
+               # set by the session for portal matching, not by the
+               # compositor -- and WAYFIRE_CONFIG_FILE is only present when
+               # the config path was overridden. So neither of those fired,
+               # the class was never added, and the stylesheet blurred a
+               # surface the compositor was already blurring.
                "true" if (os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
-                          or "wayfire" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
-                          or os.environ.get("WAYFIRE_CONFIG_FILE")) else "false")
+                          or os.environ.get("WAYFIRE_SOCKET")
+                          or os.environ.get("WAYFIRE_CONFIG_FILE")
+                          or "wayfire" in os.environ.get(
+                              "XDG_CURRENT_DESKTOP", "").lower()) else "false")
         manager.add_script(WebKit.UserScript.new(
             shim,
             WebKit.UserContentInjectedFrames.TOP_FRAME,

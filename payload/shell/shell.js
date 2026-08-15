@@ -20,6 +20,16 @@ const post = async (p, b) => {
   });
   return r.json().catch(() => ({}));
 };
+/* /api/storage/<key> is written with PUT, not POST -- posting to it returns
+   404 and the write is silently lost. */
+const put = async (p, b) => {
+  const r = await fetch(API + p, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(b || {}),
+  });
+  return r.json().catch(() => ({}));
+};
 
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
@@ -66,6 +76,16 @@ function initPanel() {
   const metrics = document.getElementById("metrics");
   const tray = document.getElementById("tray");
 
+  /* The surface is 360px so menus have somewhere to open; only the bar takes
+     input. Without this the transparent area below the bar would swallow
+     every click in the top third of the screen. */
+  const BAR_H = 54;
+  function applyPanelRect() {
+    setHostRect({ x: 0, y: 0, w: window.innerWidth, h: BAR_H });
+  }
+  applyPanelRect();
+  window.addEventListener("resize", applyPanelRect);
+
   let busy = false;
   brand.addEventListener("click", async () => {
     if (busy) return;
@@ -90,6 +110,7 @@ function initPanel() {
       b.append(x);
       b.title = w.title || "";
       b.addEventListener("click", () => post("/api/window", { action: "focus", id: w.id }));
+      onContext(b, () => windowMenuItems(w));
       tasks.append(b);
     }
   }
@@ -185,15 +206,17 @@ function initDock() {
     if (typeof nethosHost === "undefined") return;
     const hidden = body.classList.contains("hidden");
     const h = window.innerHeight;
+    // setHostRect rather than inputRect directly, so an open context menu can
+    // widen the region and put it back afterwards.
     if (!autohide) {
       nethosHost.exclusive(82);
-      nethosHost.inputRect(0, h - 82, window.innerWidth, 82);
+      setHostRect({ x: 0, y: h - 82, w: window.innerWidth, h: 82 });
     } else if (hidden) {
       nethosHost.exclusive(0);
-      nethosHost.inputRect(0, h - 4, window.innerWidth, 4);   // hover strip
+      setHostRect({ x: 0, y: h - 4, w: window.innerWidth, h: 4 }); // hover strip
     } else {
       nethosHost.exclusive(0);
-      nethosHost.inputRect(0, h - 92, window.innerWidth, 92);
+      setHostRect({ x: 0, y: h - 92, w: window.innerWidth, h: 92 });
     }
   }
 
@@ -241,6 +264,34 @@ function initDock() {
     applyHostGeometry();
   }
 
+  async function savePrefs() {
+    try {
+      await put("/api/storage/shell.dock", { data: { pinned, autohide } });
+    } catch { /* the dock still shows the change; it just will not survive */ }
+  }
+
+  function pin(id) {
+    if (!id || pinned.includes(id)) return;
+    // .desktop entries are stored with their suffix, NETHOS apps without one.
+    // A window's app_id carries neither, so try both spellings against what
+    // is actually installed rather than guessing.
+    const known = apps.some((a) => a.id === id);
+    const alt = id.endsWith(".desktop") ? id.slice(0, -8) : id + ".desktop";
+    const use = known ? id : (apps.some((a) => a.id === alt) ? alt : id);
+    if (pinned.includes(use)) return;
+    pinned.push(use);
+    savePrefs();
+    render();
+  }
+
+  function unpin(id) {
+    const i = pinned.indexOf(id);
+    if (i < 0) return;
+    pinned.splice(i, 1);
+    savePrefs();
+    render();
+  }
+
   function render() {
     const byId = new Map(apps.map((a) => [a.id, a]));
     const runningIds = new Set(running.map((w) => w.nethos_app).filter(Boolean));
@@ -256,6 +307,31 @@ function initDock() {
       if (live) b.classList.add("running");
       b.append(el("span", "dock-tip", app.name));
       b.addEventListener("click", () => post("/api/launch", { id: app.id }));
+      // Right-click acts on the app's windows if it has any, and offers to
+      // unpin whether it does or not. Built at click time so "Quit" only
+      // appears when there is actually something to quit.
+      onContext(b, () => {
+        const wins = running.filter((w) =>
+          w.nethos_app === app.id ||
+          (w.app_id || "").toLowerCase() ===
+            (app.id || "").replace(/\.desktop$/, "").toLowerCase());
+        const items = [{ label: "Open", run: () => post("/api/launch", { id: app.id }) }];
+        if (wins.length === 1) {
+          items.push({ label: "Focus",
+                       run: () => post("/api/window", { action: "focus", id: wins[0].id }) });
+        }
+        items.push("-");
+        items.push({ label: "Unpin from dock", run: () => unpin(app.id) });
+        if (wins.length) {
+          items.push({
+            label: wins.length > 1 ? "Quit all (" + wins.length + ")" : "Quit",
+            danger: true,
+            run: () => wins.forEach((w) =>
+              post("/api/window", { action: "close", id: w.id })),
+          });
+        }
+        return items;
+      });
       dock.append(b);
     }
 
@@ -274,6 +350,10 @@ function initDock() {
         b.append(el("span", "fallback", initials(w.app_id || w.title)));
         b.append(el("span", "dock-tip", w.title || w.app_id));
         b.addEventListener("click", () => post("/api/window", { action: "focus", id: w.id }));
+        onContext(b, () => windowMenuItems(w).concat([
+          "-",
+          { label: "Pin to dock", run: () => pin(w.nethos_app || w.app_id) },
+        ]));
         dock.append(b);
       }
     }
@@ -401,6 +481,16 @@ function initMenu() {
 function initDesktop() {
   const host = document.getElementById("widgets");
 
+  // The desktop is the surface most likely to be right-clicked by reflex, and
+  // the one where a browser menu looked most obviously wrong.
+  onContext(document.body, () => [
+    { label: "Open terminal", run: () => post("/api/launch", { builtin: "terminal" }) },
+    { label: "Applications", run: () => post("/api/launch", { builtin: "menu-toggle" }) },
+    "-",
+    { label: "Settings", run: () => post("/api/launch", { id: "settings" }) },
+    { label: "Reload desktop", run: () => post("/api/reload", { reason: "context menu" }) },
+  ]);
+
   /* Widgets are iframes in this one surface rather than one window each, so
      five widgets cost one web process instead of five. */
   async function load() {
@@ -480,6 +570,102 @@ function toast(text, level) {
   const node = el("div", "toast toast-" + (level || "info"), text);
   host.appendChild(node);
   setTimeout(() => node.remove(), 4000);
+}
+
+/* --------------------------------------------------------- context menu --
+ * WebKit's own menu is suppressed in nethos-view, so every right-click that
+ * should do something has to be answered here. A menu that appears only on
+ * some surfaces is worse than none: the user learns the gesture does nothing.
+ * So the desktop, the dock and the taskbar all answer it.
+ *
+ * Items are {label, run, danger, disabled} or the string "-" for a divider.
+ */
+let ctxEl = null;
+
+/* The surface a menu opens on is usually larger than the part of it that
+   accepts clicks -- the panel is a 360px surface showing a 54px bar, so that
+   the empty space below does not swallow clicks meant for windows. A menu
+   opening into that space needs the input region widened to cover it, or it
+   draws correctly and cannot be clicked. Restored when the menu closes. */
+let hostBaseRect = null;
+
+function setHostRect(r) {
+  hostBaseRect = r;
+  if (typeof nethosHost !== "undefined" && r)
+    nethosHost.inputRect(r.x, r.y, r.w, r.h);
+}
+
+function hostRectFor(menu) {
+  if (typeof nethosHost === "undefined" || !hostBaseRect) return;
+  const m = menu.getBoundingClientRect();
+  const b = hostBaseRect;
+  const x1 = Math.min(b.x, m.left), y1 = Math.min(b.y, m.top);
+  const x2 = Math.max(b.x + b.w, m.right), y2 = Math.max(b.y + b.h, m.bottom);
+  nethosHost.inputRect(Math.floor(x1), Math.floor(y1),
+                       Math.ceil(x2 - x1), Math.ceil(y2 - y1));
+}
+
+function closeContextMenu() {
+  if (!ctxEl) return;
+  ctxEl.remove();
+  ctxEl = null;
+  if (hostBaseRect) setHostRect(hostBaseRect);
+}
+
+function contextMenu(x, y, items) {
+  closeContextMenu();
+  const menu = el("div", "ctxmenu glass");
+  for (const item of items) {
+    if (item === "-") { menu.append(el("div", "ctxsep")); continue; }
+    const b = el("button", "ctxitem" + (item.danger ? " danger" : ""));
+    b.textContent = item.label;
+    if (item.disabled) b.disabled = true;
+    else b.addEventListener("click", () => { closeContextMenu(); item.run(); });
+    menu.append(b);
+  }
+  document.body.append(menu);
+
+  // Placed after insertion so the real size is known: a menu near the right
+  // or bottom edge has to open back towards the middle rather than off-screen.
+  const r = menu.getBoundingClientRect();
+  const px = Math.min(x, window.innerWidth - r.width - 8);
+  const py = Math.min(y, window.innerHeight - r.height - 8);
+  menu.style.left = Math.max(8, px) + "px";
+  menu.style.top = Math.max(8, py) + "px";
+  ctxEl = menu;
+  hostRectFor(menu);
+
+  // One-shot dismissal. capture:true so a click on something with its own
+  // handler still closes the menu first.
+  setTimeout(() => {
+    window.addEventListener("pointerdown", closeContextMenu, { once: true, capture: true });
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeContextMenu();
+    }, { once: true });
+  }, 0);
+}
+
+/* Attach a menu builder to an element. The builder returns the item list, so
+   it is evaluated at click time and can reflect current state. */
+function onContext(node, build) {
+  node.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const items = build();
+    if (items && items.length) contextMenu(e.clientX, e.clientY, items);
+  });
+}
+
+/* Menu for one window, used by both the taskbar and the dock. */
+function windowMenuItems(w) {
+  return [
+    { label: "Focus", run: () => post("/api/window", { action: "focus", id: w.id }) },
+    { label: "Minimise", run: () => post("/api/window", { action: "minimize", id: w.id }) },
+    { label: "Maximise", run: () => post("/api/window", { action: "maximize", id: w.id }) },
+    "-",
+    { label: "Close", danger: true,
+      run: () => post("/api/window", { action: "close", id: w.id }) },
+  ];
 }
 
 /* ------------------------------------------------------------- settings --

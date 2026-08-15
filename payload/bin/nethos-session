@@ -132,8 +132,19 @@ if ! shell_ready; then
         --user-data-dir="$HOME/.config/nethos-chromium"
 fi
 
+# The panel is 360 tall, not 54. The bar itself is still 54 and the exclusive
+# zone is still 46 -- the rest is transparent surface for menus to open into.
+# A context menu on a 54px surface is clipped to 54px, which is what happened:
+# right-clicking a task showed the first item and nothing else. The panel
+# limits its own input region to the bar (initPanel/applyPanelRect), so the
+# empty space below it does not eat clicks meant for windows.
+#
+# No comments inside the argument list below: a `\` splices the next line onto
+# this command, so a `#` line in the middle comments out every argument after
+# it. Doing exactly that silently reduced the shell to its desktop layer --
+# no panel, no dock, no launcher, and no error anywhere.
 exec nethos-view \
     "url=$API/desktop.html,role=widget,name=desktop,layer=bottom,anchor=top,exclusive=-1" \
-    "url=$API/panel.html,role=panel,name=panel,height=54,anchor=top,exclusive=46" \
+    "url=$API/panel.html,role=panel,name=panel,height=360,anchor=top,exclusive=46" \
     "url=$API/dock.html,role=dock,name=dock,height=110,anchor=bottom,exclusive=0" \
     "url=$API/menu.html,role=overlay,name=menu,keyboard=on,exclusive=0"
