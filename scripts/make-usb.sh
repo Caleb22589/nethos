@@ -72,11 +72,23 @@ qemu-img convert -p -O raw "$SRC" "$IMG"
 #
 # Needs root and loop devices, so it only runs on Linux. Everywhere else the
 # image is written as-is, which is correct, just slower.
+# Which tool is missing, by name. "needs one of four things" is not a
+# diagnostic, it is a shrug -- and it cost a round trip to find out that the
+# only absentee was sgdisk.
+SHRINK_WHY=""
+shrink_possible() {
+    [ "$(uname -s)" = "Linux" ] || { SHRINK_WHY="not Linux"; return 1; }
+    for t in losetup resize2fs dumpe2fs partx; do
+        command -v "$t" >/dev/null || { SHRINK_WHY="$t is not installed"; return 1; }
+    done
+    # sfdisk (util-linux, always present) or sgdisk (gptfdisk, often not).
+    command -v sfdisk >/dev/null || command -v sgdisk >/dev/null \
+        || { SHRINK_WHY="neither sfdisk nor sgdisk is installed"; return 1; }
+    return 0
+}
+
 shrink_image() {
-    command -v losetup   >/dev/null || return 1
-    command -v resize2fs >/dev/null || return 1
-    command -v sgdisk    >/dev/null || return 1
-    [ "$(uname -s)" = "Linux" ] || return 1
+    shrink_possible || return 1
 
     SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
 
@@ -104,11 +116,28 @@ shrink_image() {
     end_sector=$(( start + (fs_bytes + 511) / 512 + 16384 ))
 
     # Rewrite partition 2 at its new size. The filesystem UUID is untouched by
-    # resize2fs, and GRUB boots by filesystem UUID, so this does not break it.
-    $SUDO sgdisk -d 2 -n "2:${start}:${end_sector}" -t 2:8300 -c 2:root "$IMG" \
-        >/dev/null 2>&1 || return 1
+    # resize2fs, and GRUB boots by filesystem UUID, so this cannot break it.
+    #
+    # Truncate first, then write the table: sfdisk puts the GPT backup header
+    # at the end of the file it is given, so doing it in this order leaves a
+    # correct table rather than one pointing past the end.
     truncate -s $(( (end_sector + 34) * 512 )) "$IMG" || return 1
-    $SUDO sgdisk -e "$IMG" >/dev/null 2>&1 || true
+
+    if command -v sfdisk >/dev/null; then
+        local size=$(( end_sector - start + 1 ))
+        $SUDO sfdisk --dump "$IMG" 2>/dev/null \
+            | sed -E "s|^(.*img2 : start=[[:space:]]*[0-9]+, size=)[[:space:]]*[0-9]+|\\1 $size|" \
+            > "$IMG.table" || return 1
+        # If the dump did not name the partition as expected, do not guess.
+        grep -q "size= *$size" "$IMG.table" || { rm -f "$IMG.table"; return 1; }
+        $SUDO sfdisk --no-reread --force "$IMG" < "$IMG.table" >/dev/null 2>&1 \
+            || { rm -f "$IMG.table"; return 1; }
+        rm -f "$IMG.table"
+    else
+        $SUDO sgdisk -d 2 -n "2:${start}:${end_sector}" -t 2:8300 -c 2:root "$IMG" \
+            >/dev/null 2>&1 || return 1
+        $SUDO sgdisk -e "$IMG" >/dev/null 2>&1 || true
+    fi
     return 0
 }
 
@@ -119,7 +148,7 @@ if shrink_image; then
     say "  $(( before / 1048576 ))MB -> $(( after / 1048576 ))MB to write"
     say "  the filesystem grows back to fill the disk on first boot"
 else
-    say "  skipped (needs Linux, losetup, resize2fs and sgdisk)"
+    say "  skipped: ${SHRINK_WHY:-the resize did not complete}"
     say "  the image still works; dd will just write its empty space too"
 fi
 
