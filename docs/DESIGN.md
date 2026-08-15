@@ -272,3 +272,78 @@ sudo cp CopperplateGothic*.ttf /usr/local/share/fonts/
 sudo fc-cache -f
 nethos-reload
 ```
+
+---
+
+# Why ricer desktops look like concepts
+
+A ricer designs a screenshot. An operating system designs a workday. The
+screenshot is optimised for the moment it is photographed; nobody spends eight
+hours in it. That difference produces a consistent set of tells.
+
+## 22. Monospace in the interface is the loudest amateur signal
+
+Nothing marks a desktop as homemade faster than a menu, a clock or a window
+title set in a monospace font. No shipping operating system does it — macOS,
+Windows and Android all use a proportional humanist sans, because that is what
+reads well at 13px in a list.
+
+Monospace belongs to code, terminals and columns of figures. NETHOS uses it for
+numbers only, where the fixed width is doing actual work.
+
+Nerd Font icon glyphs in the UI are the same tell, one step further.
+
+## 23. Saturated accents look like software that is not finished
+
+`#00ff88` and `#ff00aa` do not appear in shipping operating systems, and the
+reason is not conservatism. A saturated accent vibrates against text, cannot
+carry small type at accessible contrast, and exhausts the eye across a working
+day.
+
+Every serious accent is desaturated and slightly dark: a blue that is nearly
+grey until you look at it. If the colour is memorable on its own, it is wrong.
+
+## 24. Animation you notice is animation that failed
+
+Ricer motion announces itself: bounces, springs, overshoot, windows that wobble.
+It reads as a toy because a toy is the only thing that behaves that way.
+
+Serious motion is 150–200ms, eased out, no overshoot, and you should be unable
+to describe it afterwards. Its job is to explain where a thing went, then get
+out of the way. Anything you can admire is too slow.
+
+## 25. Decoration is not interface
+
+Audio visualisers, circular CPU gauges, album art at a third of the screen,
+animated wallpapers behind the work. Every one is a thing to look at rather
+than a thing to use, and each one is a permanent tax on attention.
+
+**This is the rule NETHOS is currently closest to breaking.** The desktop
+widgets — the system monitor, the news feed, the ticker — are the same idea as
+conky, and they are on screen at all times whether or not anyone is reading
+them. They earn their place only if they are genuinely glanced at; if they are
+there because they look good in a screenshot, they are decoration and rule 9
+already says they go.
+
+## 26. Density is what work looks like
+
+Ricer desktops are sparse because sparse photographs well. Real operating
+systems are dense: small type, tight lists, many rows visible, because the
+person is looking for one file among four hundred.
+
+Generous *space between groups*, tight *within* them. A file list with 40px
+rows is a concept; the same list at 22px is a tool.
+
+## 27. It must survive the ugly parts
+
+Anyone can design a desktop with one terminal and a wallpaper. A serious system
+also has to look right with a file dialog open, sixteen windows in the
+switcher, a progress bar, an error, a password prompt, a printer queue.
+
+Concepts never show those screens, which is exactly why they look effortless.
+If a design has only been tested on an empty desktop, it has not been tested.
+
+## 28. The desktop is empty because it is a desk
+
+Not a canvas, not a display. The default state is a surface with nothing on it,
+because everything on it is something the user did not put there.
