@@ -268,9 +268,17 @@ class Surface:
         // each page. "auto" adds no class and lets prefers-color-scheme win.
         var _t = %s;
         if (_t) { document.documentElement.classList.add("neth-" + _t); }
+        // Hyprland blurs behind transparent surfaces itself, so the stylesheet
+        // must not blur as well -- doubling it pays the cost we removed twice,
+        // for a worse result. Checked at run time, since the same binary hosts
+        // the shell under either compositor.
+        if (%s) {
+          document.documentElement.classList.add("neth-compositor-blur");
+        }
         """ % (json.dumps(self.name),
                "true" if os.environ.get("NETHOS_GPU") else "false",
-               json.dumps(_theme()))
+               json.dumps(_theme()),
+               "true" if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") else "false")
         manager.add_script(WebKit.UserScript.new(
             shim,
             WebKit.UserContentInjectedFrames.TOP_FRAME,
