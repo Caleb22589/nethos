@@ -129,6 +129,16 @@ SETS = {
         "firmware-mediatek",         # MT76xx, common in recent AMD machines
         "firmware-ti-connectivity",
         "firmware-libertas",
+        # regulatory.db. Without it cfg80211 falls back to a domain with
+        # effectively no permitted channels, so a card whose driver and
+        # firmware both loaded correctly scans and finds nothing -- which
+        # looks exactly like broken wifi. It lived only in the "net" set,
+        # which the default build does not include, while network-manager and
+        # wpasupplicant were duplicated into "desktop" and made networking
+        # look complete. It is about 10KB.
+        "wireless-regdb",
+        # iw, so the regulatory domain can be inspected and set by hand.
+        "iw",
     ],
 
     # The floor for an installer: enough to partition a disk, make filesystems,
