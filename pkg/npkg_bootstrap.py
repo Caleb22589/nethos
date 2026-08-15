@@ -74,6 +74,11 @@ SETS = {
         # git: nethos-update pulls the repository in place. Without it the
         # only way to change a line of CSS is a full image rebuild.
         "git",
+        # openssh-server, because a desktop that misbehaves is far easier to
+        # diagnose over a shell than over photographs of a screen. Installed,
+        # not enabled -- see the build, which sets it up but leaves the service
+        # off. `systemctl enable --now ssh` turns it on deliberately.
+        "openssh-server", "openssh-client",
         # growpart, for filling the disk the image was written to. The image is
         # small so that flashing is quick; without this a 6G image on a 256G
         # SSD leaves 250G unreachable and tells the user to resize it by hand.

@@ -368,6 +368,34 @@ done
 after=$(du -sm /usr/share 2>/dev/null | cut -f1)
 echo "trimmed /usr/share: ${before:-?}MB -> ${after:-?}MB"
 
+# openssh, minus its postinst. Debian ships the config template in
+# /usr/share/openssh and the postinst installs it; without that step sshd exits
+# immediately with "/etc/ssh/sshd_config: No such file or directory". Host keys
+# are per-machine, so they are generated on first boot rather than baked into
+# every image.
+if [ -f /usr/share/openssh/sshd_config ] && [ ! -f /etc/ssh/sshd_config ]; then
+    mkdir -p /etc/ssh
+    cp /usr/share/openssh/sshd_config /etc/ssh/sshd_config
+    echo "sshd_config installed"
+fi
+cat > /etc/systemd/system/nethos-sshd-keys.service <<'SSHKEYS'
+[Unit]
+Description=Generate ssh host keys on first boot
+ConditionPathExists=!/etc/ssh/ssh_host_ed25519_key
+Before=ssh.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/ssh-keygen -A
+
+[Install]
+WantedBy=multi-user.target
+SSHKEYS
+mkdir -p /etc/systemd/system/multi-user.target.wants
+ln -sf /etc/systemd/system/nethos-sshd-keys.service \
+    /etc/systemd/system/multi-user.target.wants/nethos-sshd-keys.service
+
 # File capabilities do not survive the .deb -> .npk conversion, and ping is the
 # one that shows: without cap_net_raw it cannot open a raw socket and reports
 # "Operation not permitted". Debian's dpkg applies these from package metadata;
