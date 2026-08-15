@@ -87,7 +87,8 @@ so an item could never activate even where clicks do land.
       desktop set now; before this the machine had no sound at all.
 - [ ] More customisation, and more settings behind the Settings app now that
       the schema-driven form makes adding one cheap.
-- [ ] Onboarding on first boot.
+- [x] Onboarding on first boot: four steps, all of them reversible in
+      Settings, and it says so. Shown once, flagged in settings.json.
 
 ## 3. Applications
 

@@ -140,6 +140,24 @@ if ! shell_ready; then
         --user-data-dir="$HOME/.config/nethos-chromium"
 fi
 
+# First run: show the welcome once, and only once.
+#
+# Launched in the background rather than before the shell -- a welcome screen
+# that appears before the desktop it describes has nothing to point at, and if
+# it ever failed to start the machine would have no desktop at all.
+#
+# The flag is read with python -c rather than a heredoc: a heredoc nested
+# inside a command substitution inside a subshell is three levels of quoting
+# and it only has to be wrong once to take the whole session script with it.
+nethos_first_run() {
+    sleep 6
+    seen=$(python3 -c 'import json,os,sys; p=os.path.expanduser("~/.config/nethos/settings.json"); sys.stdout.write("yes" if (os.path.exists(p) and json.load(open(p)).get("onboarded")) else "no")' 2>/dev/null || echo no)
+    [ "$seen" = "no" ] || return 0
+    curl -sf -X POST -H 'Content-Type: application/json' \
+         -d '{"id":"welcome"}' "$API/api/launch" >/dev/null 2>&1 || true
+}
+nethos_first_run &
+
 # The panel is 360 tall, not 54. The bar itself is still 54 and the exclusive
 # zone is still 46 -- the rest is transparent surface for menus to open into.
 # A context menu on a 54px surface is clipped to 54px, which is what happened:

@@ -619,6 +619,12 @@ SETTINGS_SCHEMA = [
      "unit": "px"},
     {"key": "panel_clock_seconds", "label": "Show seconds",
      "group": "Panel", "type": "bool", "default": False},
+    # Not shown in Settings: this is state, not a preference. It is in the
+    # same file because that is the file that already exists and is already
+    # written atomically, and inventing a second one for a single boolean is
+    # how a system ends up with six places to look.
+    {"key": "onboarded", "label": "", "group": "", "type": "bool",
+     "default": False, "hidden": True},
     {"key": "animations", "label": "Animations", "group": "Motion",
      "type": "bool", "default": True,
      "help": "Turn off on a machine without a GPU."},

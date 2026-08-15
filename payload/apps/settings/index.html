@@ -264,6 +264,7 @@
     form.textContent = "";
     const groups = [];
     for (const spec of schema) {
+      if (spec.hidden) continue;
       let g = groups.find((x) => x.name === spec.group);
       if (!g) { g = { name: spec.group, items: [] }; groups.push(g); }
       g.items.push(spec);

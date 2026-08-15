@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Welcome — NETHOS</title>
+  <link rel="stylesheet" href="/lib/nethos.css">
+  <script src="/lib/nethos.js"></script>
+  <style>
+    body { padding: 0; }
+    .wrap { display: flex; flex-direction: column; height: 100%; }
+    .stage { flex: 1; overflow-y: auto; padding: 40px 46px 20px; }
+    .foot {
+      display: flex; align-items: center; gap: 12px;
+      padding: 16px 26px;
+      box-shadow: inset 0 1px 0 0 var(--rim-soft);
+    }
+    .foot .spacer { flex: 1; }
+    .dots { display: flex; gap: 6px; }
+    .dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--rim-soft);
+      transition: background var(--fast), transform var(--fast);
+    }
+    .dot.on { background: var(--accent); transform: scale(1.25); }
+
+    h2 {
+      font-family: var(--display);
+      font-size: 26px; font-weight: 400;
+      letter-spacing: 0.06em; text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+    .lede { font-size: 15px; color: var(--ink-soft); max-width: 46ch; line-height: 1.6; }
+
+    .choices { display: flex; gap: 12px; margin-top: 26px; flex-wrap: wrap; }
+    .choice {
+      all: unset; cursor: default;
+      width: 128px; padding: 14px;
+      border-radius: var(--r);
+      background: var(--glass-sunk);
+      box-shadow: inset 0 0 0 1px var(--rim-soft);
+      text-align: center; font-size: 13px; color: var(--ink-soft);
+    }
+    .choice[aria-selected="true"] {
+      box-shadow: inset 0 0 0 2px var(--accent);
+      color: var(--ink);
+    }
+    .swatch-lg {
+      height: 54px; border-radius: var(--r-sm); margin-bottom: 9px;
+      box-shadow: inset 0 0 0 1px rgba(0,0,0,0.06);
+    }
+    .keys { margin-top: 22px; display: grid; gap: 9px; max-width: 460px; }
+    .key { display: flex; align-items: center; gap: 14px; font-size: 13.5px; color: var(--ink-soft); }
+    .key kbd {
+      font-family: var(--mono); font-size: 11.5px;
+      padding: 3px 8px; border-radius: 6px;
+      background: var(--glass-sunk);
+      box-shadow: inset 0 0 0 1px var(--rim-soft);
+      color: var(--ink); white-space: nowrap;
+    }
+    .btn {
+      all: unset; cursor: default;
+      padding: 9px 20px; border-radius: var(--r-pill);
+      font-size: 14px; font-weight: 500;
+      background: var(--accent); color: #fff;
+    }
+    .btn.ghost { background: var(--glass-sunk); color: var(--ink-soft);
+                 box-shadow: inset 0 0 0 1px var(--rim-soft); }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="stage" id="stage"></div>
+  <div class="foot">
+    <div class="dots" id="dots"></div>
+    <span class="spacer"></span>
+    <button class="btn ghost" id="back">Back</button>
+    <button class="btn" id="next">Continue</button>
+  </div>
+</div>
+
+<script>
+(async () => {
+  const api = await nethos.ready();
+  const stage = document.getElementById("stage");
+  const dots = document.getElementById("dots");
+  const back = document.getElementById("back");
+  const next = document.getElementById("next");
+
+  let settings = {};
+  try { settings = (await fetch("/api/settings").then((r) => r.json())).settings; }
+  catch (e) { settings = {}; }
+
+  async function save(key, value) {
+    settings[key] = value;
+    await fetch("/api/settings", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ settings: { [key]: value } }),
+    }).catch(() => {});
+  }
+
+  const el = (t, c, s) => {
+    const n = document.createElement(t);
+    if (c) n.className = c;
+    if (s != null) n.textContent = s;
+    return n;
+  };
+
+  function chooser(options, current, onPick) {
+    const row = el("div", "choices");
+    for (const o of options) {
+      const b = el("button", "choice");
+      b.setAttribute("aria-selected", o.value === current ? "true" : "false");
+      if (o.swatch) {
+        const sw = el("div", "swatch-lg");
+        sw.style.background = o.swatch;
+        b.append(sw);
+      }
+      b.append(el("span", null, o.label));
+      b.addEventListener("click", () => {
+        for (const c of row.children) c.setAttribute("aria-selected", "false");
+        b.setAttribute("aria-selected", "true");
+        onPick(o.value);
+      });
+      row.append(b);
+    }
+    return row;
+  }
+
+  // Four steps, and no more. An onboarding that asks twelve questions before
+  // the desktop appears is a form, not a welcome -- everything here is
+  // changeable later in Settings, and it says so.
+  const STEPS = [
+    {
+      title: "Welcome",
+      render() {
+        stage.append(el("h2", null, "Welcome"));
+        stage.append(el("p", "lede",
+          "This is NETHOS. A few questions, none of them permanent — "
+          + "everything here is in Settings afterwards."));
+      },
+    },
+    {
+      title: "Appearance",
+      render() {
+        stage.append(el("h2", null, "Appearance"));
+        stage.append(el("p", "lede", "Light, dark, or follow the time of day."));
+        stage.append(chooser([
+          { value: "auto",  label: "Auto",  swatch: "linear-gradient(120deg,#eef2f8,#171b22)" },
+          { value: "light", label: "Light", swatch: "#eef2f8" },
+          { value: "dark",  label: "Dark",  swatch: "#171b22" },
+        ], settings.theme || "auto", (v) => save("theme", v)));
+
+        stage.append(el("p", "lede", "And a wallpaper.")).style = "margin-top:30px";
+        stage.append(chooser([
+          { value: "dawn",   label: "Dawn",   swatch: "linear-gradient(150deg,#cfe0ff,#e9d9ff)" },
+          { value: "slate",  label: "Slate",  swatch: "linear-gradient(150deg,#d4dae6,#c8d2e2)" },
+          { value: "meadow", label: "Meadow", swatch: "linear-gradient(150deg,#d8efd9,#e6f2d4)" },
+          { value: "dusk",   label: "Dusk",   swatch: "linear-gradient(150deg,#e6d6e8,#d8d2ee)" },
+        ], settings.wallpaper || "dawn", (v) => save("wallpaper", v)));
+      },
+    },
+    {
+      title: "Network",
+      render() {
+        stage.append(el("h2", null, "Network"));
+        stage.append(el("p", "lede",
+          "Wi-Fi lives in the control centre — the status area at the right of "
+          + "the top bar. Open it now if you want to connect."));
+        const b = el("button", "btn", "Open the control centre");
+        b.style.marginTop = "24px";
+        b.addEventListener("click", () =>
+          fetch("/api/control/toggle", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ open: true }),
+          }).catch(() => {}));
+        stage.append(b);
+      },
+    },
+    {
+      title: "Getting around",
+      render() {
+        stage.append(el("h2", null, "Getting around"));
+        stage.append(el("p", "lede", "Four things worth knowing."));
+        const keys = el("div", "keys");
+        for (const [k, what] of [
+          ["Super", "Open the launcher — or click the dot at the top left"],
+          ["Super + Return", "A terminal"],
+          ["Super + ← →", "Snap the window to half the screen"],
+          ["Right-click", "Works on the dock, the taskbar and the desktop"],
+        ]) {
+          const row = el("div", "key");
+          row.append(el("kbd", null, k));
+          row.append(el("span", null, what));
+          keys.append(row);
+        }
+        stage.append(keys);
+      },
+    },
+  ];
+
+  let step = 0;
+  function render() {
+    stage.replaceChildren();
+    STEPS[step].render();
+    dots.replaceChildren(...STEPS.map((_, i) => el("div", "dot" + (i === step ? " on" : ""))));
+    back.style.visibility = step === 0 ? "hidden" : "visible";
+    next.textContent = step === STEPS.length - 1 ? "Start using NETHOS" : "Continue";
+  }
+
+  back.addEventListener("click", () => { if (step > 0) { step--; render(); } });
+  next.addEventListener("click", async () => {
+    if (step < STEPS.length - 1) { step++; render(); return; }
+    // The flag is what stops this appearing again. Written before the window
+    // closes, not after, so a crash on the way out does not mean seeing the
+    // welcome screen on every boot forever.
+    await fetch("/api/settings", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ settings: { onboarded: true } }),
+    }).catch(() => {});
+    window.close();
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

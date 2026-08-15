@@ -1,0 +1,12 @@
+{
+  "id": "welcome",
+  "name": "Welcome",
+  "description": "First run — appearance, network, and where things are",
+  "icon": "WE",
+  "version": "1.0.0",
+  "categories": ["NETHOS"],
+  "entry": "index.html",
+  "permissions": ["system", "settings"],
+  "mode": "window",
+  "window": { "width": 720, "height": 560 }
+}
