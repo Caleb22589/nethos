@@ -187,6 +187,13 @@ SETS = {
         "sway", "swaybg", "swayidle", "swaylock", "xwayland",
         "seatd", "libseat1",
 
+        # polkit. Without it logind refuses every privileged request from a
+        # normal user: "Shut down" and "Restart" in the menu return "Call to
+        # Reboot failed: Access denied", and NetworkManager cannot be driven
+        # from the desktop at all -- wifi only works from a root shell. The
+        # buttons look dead, because nothing surfaces the refusal.
+        "polkitd",
+
         # the shell: WebKit + GTK4 layer-shell, driven from Python
         # libglib2.0-bin carries glib-compile-schemas. GTK apps abort outright
         # with "No GSettings schemas are installed on the system" until the
@@ -460,6 +467,17 @@ def setup_users(root: str, username: str, password: str,
         ("tty", 5, []), ("disk", 6, []), ("audio", 29, [username]),
         ("video", 44, [username]), ("input", 97, [username]),
         ("kvm", 78, []), ("render", 105, []), ("nogroup", 65534, []),
+        # wpa_supplicant.service declares Group=netdev. Without the group the
+        # unit dies at 216/GROUP before it ever runs, NetworkManager reports
+        # the wifi device as "unavailable" rather than as broken, and every
+        # visible symptom points at the driver -- which is loaded, has its
+        # firmware, and scans perfectly from `iw` the whole time. Debian
+        # creates this group from wpasupplicant's postinst; npkg runs no
+        # maintainer scripts, so it has to be created here.
+        ("netdev", 104, [username]),
+        # polkit.service runs as User=polkitd. Missing, it exits before it
+        # starts and every power button in the menu silently does nothing.
+        ("polkitd", 103, []),
         (username, gid, []),
     ]
     with open(os.path.join(etc, "group"), "w") as fh:
@@ -469,6 +487,7 @@ def setup_users(root: str, username: str, password: str,
     with open(os.path.join(etc, "passwd"), "w") as fh:
         fh.write("root:x:0:0:root:/root:/bin/bash\n")
         fh.write("nobody:x:65534:65534:Nobody:/nonexistent:/usr/bin/nologin\n")
+        fh.write("polkitd:x:991:103:polkit:/nonexistent:/usr/sbin/nologin\n")
         fh.write(f"{username}:x:{uid}:{gid}:{username}:/home/{username}:{shell}\n")
 
     shadow = os.path.join(etc, "shadow")
@@ -546,6 +565,13 @@ def setup_network(root: str) -> None:
     enable("systemd-networkd.service", "multi-user.target")
     enable("systemd-networkd.socket", "sockets.target")
     enable("systemd-resolved.service", "multi-user.target")
+    # Deliberately *not* enabling wpa_supplicant.service. NetworkManager
+    # activates wpa_supplicant over D-Bus itself, and that instance owns
+    # fi.w1.wpa_supplicant1; a second copy started by the unit finds the name
+    # taken and exits 255. Enabling it buys nothing and leaves a failed unit
+    # in `systemctl status` on every boot, which is exactly the kind of noise
+    # that hides a real fault later. What wifi actually needs from us is the
+    # netdev group -- see setup_users.
 
 
 def install_npkg(root: str) -> None:
@@ -882,6 +908,91 @@ def setup_sudo(root: str) -> None:
             os.chmod(path, 0o4755)
 
 
+POLKIT_RULE = """\
+// NETHOS: an active local session in wheel is not asked for a password to
+// power the machine off, manage its own networking, or mount its own disks.
+// Those are things a person at the keyboard can already do by holding the
+// power button or pulling the drive; a prompt there is theatre, not security.
+//
+// Deliberately scoped to local && active && wheel. An SSH session gets the
+// default treatment, which is a challenge it cannot answer.
+polkit.addRule(function(action, subject) {
+    if (!subject.local || !subject.active || !subject.isInGroup("wheel"))
+        return;
+    var ok = ["org.freedesktop.login1.",
+              "org.freedesktop.NetworkManager.",
+              "org.freedesktop.udisks2.",
+              "org.freedesktop.timedate1."];
+    for (var i = 0; i < ok.length; i++)
+        if (action.id.indexOf(ok[i]) === 0)
+            return polkit.Result.YES;
+});
+"""
+
+
+def setup_polkit(root: str) -> None:
+    """The rule that makes the power buttons work, and the directory for it.
+
+    polkitd reads /etc/polkit-1/rules.d, which the package does not create --
+    and with no rule, an active local user still only gets "challenge" for
+    org.freedesktop.login1.power-off. Something must then answer the
+    challenge, and a minimal system has no polkit agent to do it, so the
+    request is refused and the button appears dead.
+    """
+    rules = os.path.join(root, "etc/polkit-1/rules.d")
+    os.makedirs(rules, exist_ok=True)
+    with open(os.path.join(rules, "49-nethos.rules"), "w") as fh:
+        fh.write(POLKIT_RULE)
+
+
+def fix_alternatives(root: str) -> int:
+    """Resolve the symlinks update-alternatives would have made.
+
+    Debian ships a family of files as `name-variant` plus a symlink
+    `name -> /etc/alternatives/name`, and leaves the second half of the link
+    to update-alternatives, which runs from a postinst we never execute. What
+    lands on disk is a symlink into an empty directory: present, correct
+    looking, and pointing at nothing.
+
+    Nothing reports this. `ls -l` shows the link, the kernel asks the firmware
+    loader for the file, gets ENOENT, and carries on with a silent default --
+    which is how a wifi card ends up in the world regulatory domain, refusing
+    most channels, with a driver that is loaded and firmware that is fine.
+
+    So: find dangling links into /etc/alternatives, pick the variant they were
+    meant to point at, and make the link real. Upstream first, then the
+    distribution's, then whatever single candidate exists.
+    """
+    alt = os.path.join(root, "etc/alternatives")
+    os.makedirs(alt, exist_ok=True)
+    fixed = 0
+    for base, _dirs, files in os.walk(root):
+        for name in files:
+            path = os.path.join(base, name)
+            if not os.path.islink(path):
+                continue
+            target = os.readlink(path)
+            if "/etc/alternatives/" not in target:
+                continue
+            if os.path.exists(path):          # already resolves; leave it
+                continue
+            stem = os.path.basename(target)
+            cands = [c for c in os.listdir(base)
+                     if c.startswith(stem + "-") and not os.path.islink(
+                         os.path.join(base, c))]
+            if not cands:
+                continue
+            pick = next((c for c in cands if c.endswith("-upstream")), None) \
+                or next((c for c in cands if c.endswith("-debian")), None) \
+                or sorted(cands)[0]
+            real = os.path.join(alt, stem)
+            shutil.copy2(os.path.join(base, pick), real)
+            os.remove(path)
+            os.symlink(os.path.relpath(real, base), path)
+            fixed += 1
+    return fixed
+
+
 def setup_etc(root: str, hostname: str) -> None:
     etc = os.path.join(root, "etc")
     writes = {
@@ -890,6 +1001,23 @@ def setup_etc(root: str, hostname: str) -> None:
                   f"127.0.1.1\t{hostname}\n"),
         "shells": "/bin/sh\n/bin/bash\n/usr/bin/bash\n",
         "resolv.conf": "nameserver 1.1.1.1\nnameserver 9.9.9.9\n",
+        # Without this glibc resolves nothing but /etc/hosts -- no DNS at all,
+        # while ping to a literal address works perfectly. Debian ships it in
+        # base-files, which we unpack but whose maintainer scripts never run,
+        # and the failure reads as "the network is broken" rather than as a
+        # missing config file. It cost an afternoon on a laptop that had a
+        # working link the whole time.
+        "nsswitch.conf": ("passwd:         files\n"
+                          "group:          files\n"
+                          "shadow:         files\n"
+                          "gshadow:        files\n"
+                          "hosts:          files dns myhostname\n"
+                          "networks:       files\n"
+                          "protocols:      db files\n"
+                          "services:       db files\n"
+                          "ethers:         db files\n"
+                          "rpc:            db files\n"
+                          "netgroup:       nis\n"),
         "fstab": "# <file system> <dir> <type> <options> <dump> <pass>\n",
         "os-release": ('NAME="NETHOS"\nPRETTY_NAME="NETHOS"\nID=nethos\n'
                        'ID_LIKE=debian\nBUILD_ID=rolling\nANSI_COLOR="0;36"\n'
@@ -1071,6 +1199,10 @@ def bootstrap(root: str, sets: list[str], arch: str, username: str,
     setup_pam(root)
     setup_sudo(root)
     setup_network(root)
+    setup_polkit(root)
+    fixed = fix_alternatives(root)
+    if fixed:
+        say(f"  resolved {fixed} dangling alternatives link(s)")
     install_npkg(root)
 
     if "desktop" in sets:
