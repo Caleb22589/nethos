@@ -605,7 +605,14 @@ function hostRectFor(menu) {
                        Math.ceil(x2 - x1), Math.ceil(y2 - y1));
 }
 
+let ctxDismiss = null;
+
 function closeContextMenu() {
+  if (ctxDismiss) {
+    window.removeEventListener("pointerdown", ctxDismiss, true);
+    window.removeEventListener("keydown", ctxDismiss, true);
+    ctxDismiss = null;
+  }
   if (!ctxEl) return;
   ctxEl.remove();
   ctxEl = null;
@@ -635,13 +642,26 @@ function contextMenu(x, y, items) {
   ctxEl = menu;
   hostRectFor(menu);
 
-  // One-shot dismissal. capture:true so a click on something with its own
-  // handler still closes the menu first.
-  setTimeout(() => {
-    window.addEventListener("pointerdown", closeContextMenu, { once: true, capture: true });
-    window.addEventListener("keydown", (e) => {
+  // Dismissal must ignore presses that land inside the menu.
+  //
+  // This was `{ once: true, capture: true }` on pointerdown, unconditionally
+  // closing. Pressing an item therefore removed the menu from the document on
+  // pointerdown, and `click` -- which needs press and release on the same
+  // element -- never fired, because that element was gone by the time the
+  // button came up. The menu opened, looked right, highlighted on hover, and
+  // did nothing at all when chosen.
+  ctxDismiss = (e) => {
+    if (e.type === "keydown") {
       if (e.key === "Escape") closeContextMenu();
-    }, { once: true });
+      return;
+    }
+    if (ctxEl && ctxEl.contains(e.target)) return;   // let the item run
+    closeContextMenu();
+  };
+  setTimeout(() => {
+    if (!ctxDismiss) return;
+    window.addEventListener("pointerdown", ctxDismiss, true);
+    window.addEventListener("keydown", ctxDismiss, true);
   }, 0);
 }
 
