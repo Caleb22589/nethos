@@ -79,6 +79,21 @@ panels, drawn with CSS.
 Window management is real too — the taskbar lists and controls actual windows
 over sway's IPC.
 
+### It is readable where it runs
+
+```bash
+nethos-source            # every part of the running system, and its size
+nethos-source -e css     # open the design system in $EDITOR
+```
+
+`nethosd` is a Python script. The shell is HTML and CSS. The compositor config
+is a text file. None of it is compiled, bundled or minified, so any of it can
+be read and changed on the machine it is running on.
+
+That is a deliberate property rather than an artefact of being early. A system
+you cannot read is one you have to trust; a system you can read is one you can
+check.
+
 ### The whole desktop reloads live
 
 ```bash

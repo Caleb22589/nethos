@@ -1,0 +1,65 @@
+#!/bin/sh
+# Where the running system's source is.
+#
+#   nethos-source              everything, and its size
+#   nethos-source panel        the panel's HTML, CSS and JS
+#   nethos-source nethosd      the daemon
+#   nethos-source -e shell     open the shell in $EDITOR
+#
+# NETHOS is readable where it runs. nethosd is a Python script, the shell is
+# HTML and CSS, the compositor config is a text file -- none of it is compiled,
+# bundled or minified. Change a line, run nethos-reload, see the result.
+#
+# That is deliberate. A system you cannot read is a system you have to trust;
+# one you can read is a system you can check.
+set -eu
+
+SHELL_DIR=/usr/share/nethos/shell
+LIB_DIR=/usr/share/nethos/lib
+APPS_DIR=/usr/share/nethos/apps
+
+open_it() {
+    if [ "${EDIT:-0}" = "1" ]; then
+        ${EDITOR:-nano} "$@"
+    else
+        printf '%s\n' "$@"
+    fi
+}
+
+EDIT=0
+[ "${1:-}" = "-e" ] && { EDIT=1; shift; }
+
+case "${1:-all}" in
+    panel)    open_it "$SHELL_DIR/panel.html" "$SHELL_DIR/shell.js" "$SHELL_DIR/style.css" ;;
+    dock)     open_it "$SHELL_DIR/dock.html" "$SHELL_DIR/style.css" ;;
+    menu|launcher) open_it "$SHELL_DIR/menu.html" "$SHELL_DIR/shell.js" ;;
+    desktop)  open_it "$SHELL_DIR/desktop.html" ;;
+    shell)    open_it "$SHELL_DIR/shell.js" "$SHELL_DIR/style.css" ;;
+    css|design) open_it "$LIB_DIR/nethos.css" ;;
+    nethosd|daemon) open_it "$(command -v nethosd)" ;;
+    view)     open_it "$(command -v nethos-view)" ;;
+    session)  open_it "$(command -v nethos-session)" ;;
+    wm|compositor) open_it "$HOME/.config/wayfire.ini" ;;
+    apps)     open_it "$APPS_DIR" ;;
+    all)
+        printf '\033[1mThe running system, in the order it starts\033[0m\n\n'
+        for entry in \
+            "compositor  $HOME/.config/wayfire.ini" \
+            "session     $(command -v nethos-session 2>/dev/null)" \
+            "daemon      $(command -v nethosd 2>/dev/null)" \
+            "host        $(command -v nethos-view 2>/dev/null)" \
+            "shell       $SHELL_DIR/shell.js" \
+            "styles      $SHELL_DIR/style.css" \
+            "design      $LIB_DIR/nethos.css"
+        do
+            name=${entry%% *}; path=${entry#* }
+            path=$(printf '%s' "$path" | sed 's/^ *//')
+            [ -e "$path" ] || continue
+            lines=$(wc -l < "$path" 2>/dev/null || echo "?")
+            printf '  %-11s %-42s %6s lines\n' "$name" "$path" "$lines"
+        done
+        printf '\nEdit any of it, then: nethos-reload\n'
+        ;;
+    -h|--help) sed -n '2,14p' "$0" | sed 's/^# \?//' ;;
+    *) echo "unknown: $1 (try: nethos-source)" >&2; exit 2 ;;
+esac
