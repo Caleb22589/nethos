@@ -73,11 +73,35 @@ CHROME_PROFILE = os.path.expanduser("~/.config/nethos-chromium")
 BUILTINS = {
     "poweroff": ["systemctl", "poweroff"],
     "reboot": ["systemctl", "reboot"],
+    # logout and lock are per-compositor; see session_command(). These entries
+    # are the sway spellings and exist so the key is known to be valid.
     "logout": ["swaymsg", "exit"],
     "lock": ["swaylock", "-f", "-c", "0b0e14"],
     "terminal": ["foot"],
     "menu-toggle": None,
 }
+
+
+def session_command(builtin):
+    """Ending or locking a session, in the running compositor's dialect.
+
+    "Log out" ran `swaymsg exit` regardless of what was actually running, so
+    under Wayfire it talked to a socket that does not exist and the button did
+    nothing at all -- no error, no log line, no session ended.
+
+    Wayfire has no "quit" over its IPC, so the session is ended through logind
+    instead, which is both compositor-agnostic and the thing that actually
+    tears the session down.
+    """
+    kind = backend()
+    if builtin == "lock":
+        return BUILTINS["lock"]
+    if kind == "sway":
+        return ["swaymsg", "exit"]
+    if kind == "hypr":
+        return ["hyprctl", "dispatch", "exit"]
+    return ["loginctl", "terminate-session",
+            os.environ.get("XDG_SESSION_ID", "self")]
 
 PANEL_MARK = "panel.html"
 MENU_MARK = "menu.html"
@@ -523,14 +547,77 @@ def compositor_event_loop():
     """
     while True:
         try:
-            if backend() == "hypr":
+            kind = backend()
+            if kind == "hypr":
                 hypr_event_loop()
+            elif kind == "wayfire":
+                wayfire_event_loop()
             else:
                 sway_event_loop()
         except (OSError, struct.error):
             pass
         EVENTS.publish("disconnected", {})
         time.sleep(2)
+
+
+# The events worth a taskbar redraw. Deliberately not view-geometry-changed:
+# that fires for every pixel of a drag and would redraw the panel continuously
+# while a window is being moved.
+WAYFIRE_INTERESTING = (
+    "view-mapped", "view-unmapped", "view-focused",
+    "view-title-changed", "view-app-id-changed",
+)
+
+
+def wayfire_event_loop():
+    """Subscribe to Wayfire's event stream.
+
+    Without this the taskbar under Wayfire was never told anything. The
+    dispatch above sent every non-Hyprland session to sway_event_loop(), which
+    opens SWAYSOCK -- absent under Wayfire -- so it raised OSError, the caller
+    swallowed it, slept two seconds and tried again, forever. Nothing logged a
+    failure and the panel still worked, because a 20s poll in the shell was
+    quietly carrying it. Closing a window from the top bar therefore took up
+    to twenty seconds to leave the taskbar, which reads as slow IPC even
+    though /api/windows answers in about two milliseconds.
+    """
+    path = WayfireIPC.socket_path()
+    if not path:
+        raise OSError("no wayfire socket")
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(None)
+    sock.connect(path)
+    with contextlib.closing(sock):
+        payload = json.dumps({
+            "method": "window-rules/events/watch",
+            "data": {"events": list(WAYFIRE_INTERESTING)},
+        }).encode()
+        sock.sendall(struct.pack("=I", len(payload)) + payload)
+        buf = b""
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                raise OSError("wayfire closed the event socket")
+            buf += chunk
+            # One recv can carry several frames, or half of one.
+            while len(buf) >= 4:
+                size = struct.unpack("=I", buf[:4])[0]
+                if len(buf) < 4 + size:
+                    break
+                frame, buf = buf[4:4 + size], buf[4 + size:]
+                try:
+                    msg = json.loads(frame.decode("utf-8", "replace"))
+                except ValueError:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("event") not in WAYFIRE_INTERESTING:
+                    continue
+                # views() holds its answer for 0.8s. Publishing without
+                # clearing that means the panel asks the instant it is told
+                # and gets the list from before the window closed.
+                WayfireIPC._cache = {"at": 0.0, "views": []}
+                EVENTS.publish("windows", {})
 
 
 def sway_event_loop():
@@ -1378,19 +1465,42 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "nethosd/3.0"
     protocol_version = "HTTP/1.1"
 
+    # Timing starts once the request has been read, not when we begin waiting
+    # for one. handle_one_request() opens by blocking on readline() for the
+    # request line, and on a keep-alive connection that blocks until the
+    # client's next request -- so timing the whole call measured how long the
+    # shell stayed idle between heartbeats. With a 1s heartbeat every entry
+    # came out at "1.00s", which reads exactly like a daemon that takes a
+    # second to answer. It answers in about two milliseconds.
+    _started = None
+
+    def parse_request(self):
+        ok = BaseHTTPRequestHandler.parse_request(self)
+        self._started = time.time()
+        return ok
+
     def handle_one_request(self):
-        started = time.time()
+        self._started = None
         BaseHTTPRequestHandler.handle_one_request(self)
-        took = time.time() - started
+        if self._started is None:
+            return
+        took = time.time() - self._started
         # 250ms is the threshold at which a person notices. Anything over it
         # between a click and the screen is worth a line in the log.
         if took > 0.25:
             diag("slow", "%.2fs  %s" % (took, getattr(self, "path", "?")))
 
+    # Endpoints the shell hits on a timer. Logging them buries every
+    # interesting line under heartbeats -- this log reached 1.8MB in minutes,
+    # which is its own kind of silence.
+    QUIET = ("/api/log", "/api/status", "/api/events")
+
     def log_message(self, fmt, *args):
         # Was `pass`. Silence is why several evenings went into guessing what
         # the shell was doing: nothing anywhere recorded that a request had
         # been made, succeeded, or stopped arriving.
+        if any(q in (getattr(self, "path", "") or "") for q in self.QUIET):
+            return
         diag("http", fmt % args)
 
     def send_json(self, obj, code=200):
@@ -1546,6 +1656,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json({"error": "unknown builtin"}, 400)
                 if builtin == "menu-toggle":
                     return self.send_json({"ok": True, "open": menu_toggle()})
+                if builtin in ("logout", "lock"):
+                    spawn(session_command(builtin))
+                    return self.send_json({"ok": True})
                 spawn(BUILTINS[builtin])
                 return self.send_json({"ok": True})
 
