@@ -70,7 +70,26 @@ true
 # machine with a real GPU the check passed and turned acceleration on, into the
 # broken path. Correctness first; NETHOS_GPU_COMPOSITING=1 for anyone whose
 # driver actually works.
-if [ "${NETHOS_GPU_COMPOSITING:-0}" = "1" ]; then
+# Update: that reasoning was built on a misdiagnosis. The frozen clock and the
+# dead buttons were connection-pool exhaustion -- the shell held every
+# connection WebKit would give a single origin open on /api/events, so nothing
+# else could be fetched -- and that is fixed properly now, in nethos-view.
+# Disabling compositing never addressed it and outlived the bug it was for.
+#
+# It also causes a bug of its own, which is worse because it is visible. With
+# compositing off WebKit repaints only the damaged rectangle and assumes an
+# opaque backdrop. On a transparent layer surface nothing ever clears what was
+# there before, so the dock accumulates: every frame of the hover animation
+# stays on screen, tooltips pile up on top of each other, and the dock "will
+# not hide" because its last frame is simply never erased. Confirmed by
+# screenshotting the running machine with and without it.
+#
+# So: composite on hardware that can, fall back where there is no render node
+# (a VM with llvmpipe, where the accelerated path buys nothing anyway).
+# NETHOS_GPU_COMPOSITING=0 forces the fallback; =1 forces acceleration.
+if [ "${NETHOS_GPU_COMPOSITING:-auto}" = "0" ]; then
+    export WEBKIT_DISABLE_COMPOSITING_MODE=1
+elif [ "${NETHOS_GPU_COMPOSITING:-auto}" = "1" ] || ls /dev/dri/renderD* >/dev/null 2>&1; then
     NETHOS_GPU=1; export NETHOS_GPU
 else
     export WEBKIT_DISABLE_COMPOSITING_MODE=1

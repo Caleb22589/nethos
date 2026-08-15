@@ -213,10 +213,20 @@ class Surface:
         # minute, no button worked afterwards, while nethosd kept answering on
         # its socket and Super+D still opened the launcher.
         #
-        # A frozen desktop is worse than a hundred megabytes, so each surface
-        # gets its own process by default. Set NETHOS_SHARE_WEBPROCESS=1 to go
-        # back to sharing on a machine short of memory.
-        if os.environ.get("NETHOS_SHARE_WEBPROCESS") == "1" \
+        # Update: that freeze was not the shared process. It was connection
+        # pool exhaustion -- one WebKitNetworkProcess is shared across every
+        # web process regardless of this setting, so the SSE stream on
+        # /api/events held a connection from the single per-origin pool and
+        # starved every other fetch. The clock stopped because its request
+        # never left, not because a page hung. That is fixed in _deliver()
+        # below: the event stream lives in this process now and is pushed into
+        # the pages, so no surface holds a connection open at all.
+        #
+        # Splitting the processes cost far more than the hundred megabytes
+        # first estimated. Measured on real hardware: four renderers at ~181MB
+        # each, 1.69GB for the shell. Sharing brings that to roughly one.
+        # Set NETHOS_SHARE_WEBPROCESS=0 to go back to a process per surface.
+        if os.environ.get("NETHOS_SHARE_WEBPROCESS") != "0" \
                 and Surface._related_to is not None:
             self.view = WebKit.WebView(related_view=Surface._related_to)
         else:
