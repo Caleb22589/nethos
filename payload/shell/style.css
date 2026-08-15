@@ -349,8 +349,7 @@ body[data-view="desktop"] {
  * Skipped under a compositor that blurs for us (Hyprland), because doing both
  * pays the cost twice for a worse result.
  */
-html:not(.neth-compositor-blur) #panel,
-html:not(.neth-compositor-blur) #dock {
+#panel, #dock {
   -webkit-backdrop-filter: blur(16px) saturate(170%);
   backdrop-filter: blur(16px) saturate(170%);
 }
@@ -377,3 +376,9 @@ body[data-view="desktop"] .widget h3 { color: var(--ink-faint); }
 /* Figures stay legible -- rule 30: soften the surface, never the text. */
 body[data-view="desktop"] .widget .stat,
 body[data-view="desktop"] .widget .num { color: var(--ink); }
+
+
+/* The panel and dock are the glass. If they are opaque there is nothing for
+   blur to do, and the screenshot looks like a white bar. */
+#panel { background: var(--glass); }
+#dock  { background: var(--glass); }

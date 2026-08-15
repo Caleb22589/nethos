@@ -182,9 +182,11 @@ body { padding: 22px 24px; }
    The CSS blur below is only for compositors that cannot -- and even then only
    with hardware behind it. Never both: doubling the blur is the per-frame CPU
    cost we removed, paid twice for a worse result. */
-/* Under a compositor that blurs (Hyprland), CSS must not blur as well. */
-html.neth-compositor-blur .glass-blur { -webkit-backdrop-filter: none;
-                                        backdrop-filter: none; }
+/* Deliberately NOT disabling CSS blur under a blurring compositor any more.
+   That assumed the compositor's blur was working, and when it was not -- a VM
+   with no usable GPU, where blur is a GPU effect -- the result was no blur at
+   all from either side. Doubling it on a 38px strip and a small pill costs
+   little; having none costs the entire look. Correctness over theory. */
 
 /* Under sway, which cannot blur, the stylesheet has to -- and the cost is
    entirely area. The panel is a 54px strip and the dock is a small pill, so

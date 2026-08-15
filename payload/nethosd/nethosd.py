@@ -308,6 +308,76 @@ def _focused_floating(node):
     return None
 
 
+class WayfireIPC:
+    """Wayfire's IPC, which is JSON behind a 4-byte little-endian length.
+
+    Enabled by the ipc and ipc-rules plugins; the socket path arrives in
+    WAYFIRE_SOCKET. Without this the panel has no window list under Wayfire,
+    because sway's IPC is a different protocol on a different socket.
+    """
+
+    _lock = threading.Lock()
+
+    @staticmethod
+    def socket_path():
+        path = os.environ.get("WAYFIRE_SOCKET", "")
+        if path and os.path.exists(path):
+            return path
+        for candidate in glob.glob("/tmp/wayfire-wayland-*.socket"):
+            return candidate
+        return None
+
+    @classmethod
+    def available(cls):
+        return bool(cls.socket_path())
+
+    @classmethod
+    def call(cls, method, **data):
+        path = cls.socket_path()
+        if not path:
+            return None
+        payload = json.dumps({"method": method, "data": data}).encode()
+        try:
+            with cls._lock:
+                with contextlib.closing(
+                        socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)) as sock:
+                    sock.settimeout(3)
+                    sock.connect(path)
+                    sock.sendall(struct.pack("=I", len(payload)) + payload)
+                    head = sock.recv(4)
+                    if len(head) < 4:
+                        return None
+                    size = struct.unpack("=I", head)[0]
+                    buf = b""
+                    while len(buf) < size:
+                        chunk = sock.recv(size - len(buf))
+                        if not chunk:
+                            break
+                        buf += chunk
+            return json.loads(buf.decode("utf-8", "replace"))
+        except (OSError, ValueError, struct.error):
+            return None
+
+    @classmethod
+    def views(cls):
+        reply = cls.call("window-rules/list-views") or []
+        out = []
+        for v in reply if isinstance(reply, list) else []:
+            # Layer surfaces and Wayfire's own bits are not windows.
+            if v.get("role") != "toplevel" or not v.get("mapped", True):
+                continue
+            out.append({
+                "id": str(v.get("id")),
+                "title": v.get("title") or "",
+                "app_id": v.get("app-id") or v.get("app_id") or "",
+                "focused": bool(v.get("activated")),
+                "workspace": "1",
+                "floating": True,
+                "nethos_app": "",
+            })
+        return out
+
+
 def backend():
     """Which compositor are we driving? Decided per call so a session that
     restarts under another one keeps working without restarting nethosd.
@@ -320,8 +390,7 @@ def backend():
     """
     if HyprIPC.available():
         return "hypr"
-    if (os.environ.get("WAYFIRE_CONFIG_FILE")
-            or "wayfire" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower()):
+    if WayfireIPC.available():
         return "wayfire"
     return "sway"
 
@@ -525,6 +594,8 @@ def walk_tree(node, out, workspace=None):
 
 
 def list_windows():
+    if backend() == "wayfire":
+        return WayfireIPC.views()
     if backend() == "hypr":
         return hypr_windows()
     tree = SWAY.get_tree()
@@ -938,8 +1009,25 @@ def launch_desktop_app(app):
 # --------------------------------------------------------------------------
 
 def window_action(action, wid):
-    """Act on a window. Ids are opaque strings: a sway con_id or a Hyprland
-    address, so the shell never has to know which compositor is running."""
+    """Act on a window. Ids are opaque strings: a sway con_id, a Hyprland
+    address or a Wayfire view id, so the shell never has to know which
+    compositor is running."""
+    if backend() == "wayfire":
+        try:
+            view = int(wid)
+        except (TypeError, ValueError):
+            return False
+        if action == "focus":
+            return WayfireIPC.call("window-rules/focus-view", id=view) is not None
+        if action == "close":
+            return WayfireIPC.call("window-rules/close-view", id=view) is not None
+        if action in ("fullscreen", "maximize"):
+            return WayfireIPC.call("window-rules/configure-view", id=view,
+                                   maximized=True) is not None
+        if action == "minimize":
+            return WayfireIPC.call("window-rules/minimize-view", id=view,
+                                   state=True) is not None
+        return False
     if backend() == "hypr":
         target = "address:%s" % wid
         if action == "focus":
