@@ -248,3 +248,27 @@ noise.
 What makes something look expensive is the number of things that were left
 out — and that is legible to the viewer even though they could not name a
 single omission.
+
+## 21. The signature face is display only
+
+Copperplate is the NETHOS display face: section labels, the wordmark, anything
+carrying identity rather than information.
+
+It is never body text, and the reason is structural rather than taste. It is an
+engraver's type — cut for business cards and stationery — with no true
+lowercase, wide proportions, and flared stroke ends that are its whole
+character and that disappear below about 14px. A file list set in Copperplate
+is unreadable; a section label set in it is unmistakable.
+
+Two faces, and only two: `--display` for identity, `--sans` for everything a
+person actually reads. A third would make it a style guide again (rule 19).
+
+Copperplate Gothic is licensed and not in Debian, so `--display` falls through
+to Cinzel and then to any serif. The interface is correct without it; it is
+*ours* with it. To install the real thing:
+
+```bash
+sudo cp CopperplateGothic*.ttf /usr/local/share/fonts/
+sudo fc-cache -f
+nethos-reload
+```

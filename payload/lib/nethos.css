@@ -59,6 +59,18 @@
   --slow: 320ms var(--ease);
 
   --sans: "Inter", "SF Pro Text", "DejaVu Sans", system-ui, sans-serif;
+
+  /* The signature face. Copperplate is an engraver's type: no true lowercase
+     (what reads as lowercase is small caps), wide, and defined by the flared
+     stroke ends that turn to mush below ~14px. So it is the *display* face,
+     never body -- used where the design already calls for uppercase with wide
+     tracking, which is exactly what it was cut for.
+     Copperplate Gothic is licensed (Monotype/URW) and is not in Debian; the
+     stack falls through to Cinzel, then to any serif, so the interface is
+     correct with or without it. Drop the real thing in
+     /usr/local/share/fonts and run fc-cache to have it picked up. */
+  --display: "Copperplate Gothic Light", "Copperplate Gothic", "Copperplate",
+             "Cinzel", "Optima", "Palatino", Georgia, serif;
   --mono: "JetBrains Mono", "SF Mono", "DejaVu Sans Mono", ui-monospace, monospace;
 
   /* Legacy aliases: apps written against the first design system keep working
@@ -165,9 +177,21 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.015em; line-height: 1.25; }
 h1 { font-size: 22px; }
 h2 { font-size: 17px; }
 h3, .neth-card-title, .card-title {
-  font-size: 11px; font-weight: 600; letter-spacing: 0.07em;
+  font-family: var(--display);
+  font-size: 12px; font-weight: 600; letter-spacing: 0.14em;
   text-transform: uppercase; color: var(--ink-faint); margin-bottom: 6px;
 }
+
+/* The wordmark and anything else meant to carry the identity rather than
+   information. Tracking is wide because Copperplate was cut for engraving,
+   where letters were never set tight. */
+.display, .wordmark {
+  font-family: var(--display);
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-weight: 600;
+}
+.wordmark { font-size: 13px; color: var(--ink-soft); }
 .dim, .neth-dim   { color: var(--ink-soft); }
 .faint            { color: var(--ink-faint); }
 .mono, .neth-mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
