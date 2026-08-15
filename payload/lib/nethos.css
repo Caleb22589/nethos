@@ -381,3 +381,48 @@ pre code { background: none; padding: 0; }
 @media (prefers-color-scheme: dark) {
   :root:not(.neth-light):not(.neth-dark) { color-scheme: dark; }
 }
+
+/* ------------------------------------------------- the boutique details --
+ * docs/DESIGN.md, 11-20. None of this costs rendering time; it is all
+ * decisions that happen to have been made.
+ */
+
+/* 11. Numbers do not shimmer. Anything that updates gets fixed-width digits,
+ *     or the clock jitters every second as glyph widths change -- the eye
+ *     catches it even when the mind does not. */
+.clock, .stat, .neth-stat, .num, .metric, time, [data-num] {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* 12. Tracking follows size: large type tightens, small caps need air. */
+h1, .t-xl { letter-spacing: -0.022em; }
+h2, .t-lg { letter-spacing: -0.012em; }
+.t-sm     { letter-spacing: 0; }
+.t-caps, h3, .neth-card-title, .card-title { letter-spacing: 0.07em; }
+
+/* 13. One light source, above. Every shadow falls straight down -- no
+ *     horizontal offsets anywhere in the system. */
+
+/* 15. Hairlines are faint, not thin. A 1px line at low opacity is an edge in
+ *     the interface; a 1px line at full opacity is drawn on top of it. */
+.hr, .divider { height: 1px; background: var(--rim-soft); border: 0; }
+
+/* 16/17. One curve, short durations, nothing appears instantly. */
+.appear { animation: neth-appear 180ms var(--ease) both; }
+@keyframes neth-appear {
+  from { opacity: 0; transform: translateY(4px) scale(0.995); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* 18. Empty states are designed. Not an error message in grey. */
+.empty {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 28px 24px; text-align: left;
+}
+.empty-title { font-size: 14px; font-weight: 600; color: var(--ink); }
+.empty-hint  { font-size: 12.5px; color: var(--ink-soft); max-width: 34ch; }
+
+@media (prefers-reduced-motion: reduce) {
+  .appear { animation: none; }
+}
