@@ -182,6 +182,11 @@ SETS = {
         # its own panel, dock and wallpaper. Installing it puts a second bar
         # across the top of the screen and a second thing drawing the desktop.
         "wayfire", "wayfire-plugins-extra",
+        # reform-firedecor is firedecor, packaged. Wayfire's own decorator has
+        # no corner radius and no way to move its buttons off the right, so
+        # without this a foreign window can never match a NETHOS one. Despite
+        # the name it is not Reform-specific; it is the upstream plugin.
+        "reform-firedecor",
         # sway stays as the fallback so a machine where Wayfire will not start
         # still reaches a desktop.
         "sway", "swaybg", "swayidle", "swaylock", "xwayland",

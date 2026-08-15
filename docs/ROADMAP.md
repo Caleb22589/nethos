@@ -99,15 +99,14 @@ chrome is also the answer to inconsistent window bars below.
       lights on the left with the symbol revealed on hover, centred title,
       38px bar. Built in GTK rather than HTML so dragging and resizing are the
       compositor's, not ours.
-- [ ] **Limitation, not yet solved:** foreign windows still get Wayfire's
-      decorator, which is square and puts its buttons on the right. Wayfire's
-      entire option set is font, title_height, border_size, button_order,
-      active_color, inactive_color, ignore_views -- there is no corner radius
-      and no way to move the buttons, and no rounded-corner plugin is
-      packaged. Matching them needs a Wayfire decoration plugin in C++
-      (firedecor and pixdecor both do this, neither is in Debian), or building
-      one. Until then foot is configured for server-side decoration so it at
-      least has a bar, and the colours are matched.
+- [x] Foreign windows match, via firedecor -- which *is* in Debian, as
+      `reform-firedecor`, despite the name. It has the corner radius and the
+      layout string Wayfire's built-in decorator lacks, so Chromium, Thunar
+      and the terminal wear the same rounded frame and the same three lights.
+      No C++ needed after all.
+- [ ] GTK4 applications still draw their own header bars and ignore
+      GTK_CSD=0. That is the remaining gap, and it is upstream's decision
+      rather than a missing setting.
 - [ ] Window bars are inconsistent, and absent on the terminal. Applications
       that draw their own decorations (client-side) ignore Wayfire's, so a
       NETHOS session shows two different title bars depending on the toolkit.

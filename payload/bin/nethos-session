@@ -95,6 +95,14 @@ else
     export WEBKIT_DISABLE_COMPOSITING_MODE=1
 fi
 
+# GTK3 applications draw their own title bars by default, which is why Thunar
+# and the terminal used to look like visitors from another desktop. GTK_CSD=0
+# asks them to let the compositor decorate instead, so firedecor gives them the
+# same rounded frame and the same three lights as everything else.
+# GTK4 ignores it -- those apps keep their own header bars, and that is the
+# remaining gap.
+export GTK_CSD=0
+
 # LIBGL_ALWAYS_SOFTWARE is *not* forced here. It used to be, on the assumption
 # that a VM has no GPU -- but virtio_gpu is a real DRM device, and Mesa rejects
 # the combination outright: "Not allowed to force software rendering when API
