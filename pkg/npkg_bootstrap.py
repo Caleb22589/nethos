@@ -111,7 +111,20 @@ SETS = {
     # for a VM and add "firmware" for hardware.
     "firmware": [
         "firmware-linux-free", "firmware-misc-nonfree",
-        "firmware-amd-graphics", "firmware-realtek", "firmware-iwlwifi",
+        "firmware-amd-graphics",
+        # Wi-Fi, and all of it rather than a guess. Only Intel and Realtek were
+        # here, so a Broadcom, Atheros or MediaTek card loaded its driver, found
+        # no firmware and reported no networks -- which looks exactly like a
+        # broken wifi stack rather than a missing file. These are a few tens of
+        # megabytes between them and they remove a whole class of "it does not
+        # work on my machine".
+        "firmware-iwlwifi",          # Intel
+        "firmware-realtek",          # Realtek
+        "firmware-brcm80211",        # Broadcom -- very common in laptops
+        "firmware-atheros",          # Qualcomm Atheros
+        "firmware-mediatek",         # MT76xx, common in recent AMD machines
+        "firmware-ti-connectivity",
+        "firmware-libertas",
     ],
 
     # The floor for an installer: enough to partition a disk, make filesystems,
