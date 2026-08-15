@@ -153,6 +153,21 @@ flattened away, `sbin` merged into `bin`, `wheel` for administrators.
 | `docs/ABUPDATE.md` | A/B slot updates: the design, and why it is not built yet |
 | `docs/HANDOFF.md` | current state and open problems |
 
+## Downloads
+
+Releases carry a compressed disk image and a `SHA256SUMS` beside it:
+<https://github.com/Caleb22589/nethos/releases>
+
+```bash
+zstd -d nethos-x86_64.img.zst
+sha256sum -c SHA256SUMS
+sudo dd if=nethos-x86_64.img of=/dev/sdX bs=4M status=progress conv=fsync
+```
+
+UEFI, Secure Boot off. The root filesystem grows to fill the disk on first
+boot. The design system runs in a browser at
+<https://caleb22589.github.io/nethos/tools/workbench.html>.
+
 ## Status
 
 Boots and runs on real hardware. Not finished. `docs/HANDOFF.md` keeps the
