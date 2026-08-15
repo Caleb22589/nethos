@@ -572,14 +572,6 @@ def install_desktop(root: str, payload: str, username: str) -> None:
     if os.path.isfile(sway_src):
         shutil.copy2(sway_src, os.path.join(swaydir, "config"))
 
-    # Into the user's config as well as /etc: Hyprland reads
-    # ~/.config/hypr/hyprland.conf and nothing copies it there at first login.
-    hypr_user = os.path.join(home, ".config", "hypr")
-    os.makedirs(hypr_user, exist_ok=True)
-    _hs = os.path.join(payload, "hypr", "hyprland.conf")
-    if os.path.isfile(_hs):
-        shutil.copy2(_hs, os.path.join(hypr_user, "hyprland.conf"))
-
     hypr_src = os.path.join(payload, "hypr", "hyprland.conf")
     if os.path.isfile(hypr_src):
         os.makedirs(os.path.join(root, "etc/nethos"), exist_ok=True)
@@ -605,6 +597,15 @@ def install_desktop(root: str, payload: str, username: str) -> None:
 
     # the user's session
     home = os.path.join(root, "home", username)
+
+    # Hyprland reads ~/.config/hypr/hyprland.conf, and nothing copies it there
+    # at first login. Placed after `home` exists -- putting it earlier raised
+    # UnboundLocalError and took the whole build with it.
+    _hypr_user = os.path.join(home, ".config", "hypr")
+    _hypr_src = os.path.join(payload, "hypr", "hyprland.conf")
+    if os.path.isfile(_hypr_src):
+        os.makedirs(_hypr_user, exist_ok=True)
+        shutil.copy2(_hypr_src, os.path.join(_hypr_user, "hyprland.conf"))
     cfg = os.path.join(home, ".config", "sway")
     os.makedirs(cfg, exist_ok=True)
     link = os.path.join(cfg, "config")
