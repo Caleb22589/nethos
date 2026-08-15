@@ -57,41 +57,76 @@ say "Converting $(basename "$SRC") to a raw disk image"
 rm -f "$IMG"
 qemu-img convert -p -O raw "$SRC" "$IMG"
 
-# Two different numbers, and confusing them wastes real time: the file is
-# sparse, so it costs little on disk, but dd reads it end to end and writes
-# every empty byte to the stick. What matters for flashing is the apparent
-# size, so trim the file to where the partitions actually end.
-end=$(partx -g -o END "$IMG" 2>/dev/null | tail -1 | tr -d ' ' || true)
-if [ -n "$end" ]; then
-    # +34 sectors for the GPT backup header at the end of the disk.
-    bytes=$(( (end + 34) * 512 ))
-    if [ "$bytes" -gt 0 ] && [ "$bytes" -lt "$(stat -c%s "$IMG" 2>/dev/null || stat -f%z "$IMG")" ]; then
-        truncate -s "$bytes" "$IMG"
-        command -v sgdisk >/dev/null && sgdisk -e "$IMG" >/dev/null 2>&1 || true
-        say "Trimmed to the end of the last partition"
-    fi
+# Shrink to what is actually used, then let it grow again on first boot.
+#
+# The image is a 6G disk holding about 2G, and dd does not care that the rest
+# is zeroes -- it writes every byte. Telling the user to "rebuild smaller" was
+# useless advice, because the disk was already the smaller size; the space is
+# free space *inside* the filesystem, which only a filesystem resize can
+# reclaim.
+#
+# So: shrink the root filesystem to its minimum, shrink the partition to match,
+# truncate the file, and move the GPT backup header to the new end. The stick
+# then gets ~2G written instead of 6G, and nethos-growroot expands the
+# filesystem to fill the disk on first boot -- so nothing is lost.
+#
+# Needs root and loop devices, so it only runs on Linux. Everywhere else the
+# image is written as-is, which is correct, just slower.
+shrink_image() {
+    command -v losetup   >/dev/null || return 1
+    command -v resize2fs >/dev/null || return 1
+    command -v sgdisk    >/dev/null || return 1
+    [ "$(uname -s)" = "Linux" ] || return 1
+
+    SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+
+    local loop start blocks bsize fs_bytes end_sector
+    loop=$($SUDO losetup --find --show -P "$IMG") || return 1
+    # Everything from here must release the loop device, however it exits.
+    trap '$SUDO losetup -d "$loop" 2>/dev/null || true' RETURN
+
+    $SUDO e2fsck -fy "${loop}p2" >/dev/null 2>&1 || true
+    $SUDO resize2fs -M "${loop}p2" >/dev/null 2>&1 || return 1
+
+    blocks=$($SUDO dumpe2fs -h "${loop}p2" 2>/dev/null \
+             | awk -F: '/Block count/  {gsub(/ /,"",$2); print $2}')
+    bsize=$($SUDO dumpe2fs -h "${loop}p2" 2>/dev/null \
+             | awk -F: '/Block size/   {gsub(/ /,"",$2); print $2}')
+    [ -n "$blocks" ] && [ -n "$bsize" ] || return 1
+    fs_bytes=$(( blocks * bsize ))
+
+    $SUDO losetup -d "$loop" 2>/dev/null || true
+    trap - RETURN
+
+    start=$(partx -g -o START -n 2 "$IMG" 2>/dev/null | tr -d ' ')
+    [ -n "$start" ] || return 1
+    # 8MB of slack so the filesystem is not wedged exactly against the end.
+    end_sector=$(( start + (fs_bytes + 511) / 512 + 16384 ))
+
+    # Rewrite partition 2 at its new size. The filesystem UUID is untouched by
+    # resize2fs, and GRUB boots by filesystem UUID, so this does not break it.
+    $SUDO sgdisk -d 2 -n "2:${start}:${end_sector}" -t 2:8300 -c 2:root "$IMG" \
+        >/dev/null 2>&1 || return 1
+    truncate -s $(( (end_sector + 34) * 512 )) "$IMG" || return 1
+    $SUDO sgdisk -e "$IMG" >/dev/null 2>&1 || true
+    return 0
+}
+
+before=$(stat -c%s "$IMG" 2>/dev/null || stat -f%z "$IMG")
+say "Shrinking to the data actually in it"
+if shrink_image; then
+    after=$(stat -c%s "$IMG" 2>/dev/null || stat -f%z "$IMG")
+    say "  $(( before / 1048576 ))MB -> $(( after / 1048576 ))MB to write"
+    say "  the filesystem grows back to fill the disk on first boot"
+else
+    say "  skipped (needs Linux, losetup, resize2fs and sgdisk)"
+    say "  the image still works; dd will just write its empty space too"
 fi
-on_disk_b=$(du -B1 "$IMG" 2>/dev/null | cut -f1)
-to_write_b=$(stat -c%s "$IMG" 2>/dev/null || stat -f%z "$IMG")
+
 on_disk=$(du -h "$IMG" | cut -f1)
 to_write=$(du -h --apparent-size "$IMG" 2>/dev/null | cut -f1 || echo "$on_disk")
 say "Wrote $IMG"
-say "  $to_write to flash   ($on_disk of that is real data -- the rest is empty space)"
-
-# Trimming cannot help when the root partition spans the whole disk, which is
-# how the build lays it out. The only way to write less is to build a smaller
-# disk in the first place, so say so rather than quietly handing over an image
-# that is mostly zeroes.
-if [ -n "$on_disk_b" ] && [ "$to_write_b" -gt $(( on_disk_b * 2 )) ]; then
-    echo
-    say "This image is mostly empty space."
-    say "  Root fills the whole disk, so there is nothing here to trim."
-    say "  Rebuild smaller and dd will take a fraction of the time:"
-    case "$ARCH" in
-      x86_64)  say "      ./scripts/build-x86.sh --size 6G && ./scripts/make-usb.sh" ;;
-      aarch64) say "      ./scripts/build-image.sh --size 6G && ./scripts/make-usb.sh --arch aarch64" ;;
-    esac
-fi
+say "  $to_write to flash"
 
 if [ -z "$TARGET" ]; then
     cat <<EOF
@@ -110,9 +145,9 @@ Flash it to a USB stick (the stick is completely overwritten):
   Or use Balena Etcher, which accepts a .img and is harder to point at the
   wrong disk.
 
-The image is small on purpose so that writing it is quick. On first boot the
-root filesystem grows to fill whatever it was written to, so a 6G image on a
-256G SSD gives you the whole 256G -- no resizing by hand.
+Only the used data is written -- the filesystem was shrunk to fit it. On first
+boot it grows again to fill whatever it landed on, so a 2G write on a 256G SSD
+still gives you the whole 256G.
 
 Then boot the PC from it with UEFI. Disable Secure Boot: this GRUB is not
 signed, so a machine with Secure Boot on will refuse it without explanation.
