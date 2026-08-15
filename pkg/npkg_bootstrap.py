@@ -68,6 +68,10 @@ SETS = {
         "systemd", "systemd-sysv", "udev", "dbus", "kmod", "libcap2-bin",
         "iproute2", "iputils-ping", "netbase", "ca-certificates",
         "nano", "less", "procps", "psmisc", "e2fsprogs", "mount",
+        # pciutils and usbutils: lspci and lsusb are the first commands anyone
+        # reaches for when hardware does not work, and their absence turns a
+        # thirty second answer into an evening. They are under 2MB.
+        "pciutils", "usbutils", "rfkill",
         # npkg is Python, so the system needs one to manage itself. curl and
         # ca-certificates are what it fetches packages with.
         "python3", "python3-minimal", "curl", "wget", "ca-certificates",
