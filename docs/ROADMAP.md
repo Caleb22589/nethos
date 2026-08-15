@@ -137,8 +137,14 @@ separate tool, and npkg already resolves capabilities well enough to back it.
 
 ## 4. Installer
 
-- [ ] Online installer, light, with a proper UI.
-- [ ] Offline image for machines with no network interface.
+- [x] Online installer with a real interface. Still drawn straight to
+      /dev/fb0 -- a GUI stack would be several hundred megabytes to draw a
+      progress bar, on an image whose entire point is being small -- but it
+      now has the wallpaper, the mark, a soft shadow and a hairline rim, and
+      it still falls back to plain text where there is no framebuffer.
+- [ ] Offline image. `scripts/build-x86.sh --sets "..."` already produces one
+      with everything included; what is missing is the installer knowing to
+      use the local packages instead of the network.
 
 ## 5. Performance
 

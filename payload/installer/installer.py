@@ -28,6 +28,11 @@ sys.path.insert(0, "/nethos/pkg")
 INK        = (0x1c, 0x20, 0x24)
 INK_SOFT   = (0x5a, 0x64, 0x70)
 INK_FAINT  = (0x8b, 0x94, 0xa0)
+# Four bands, top to bottom: the wallpaper the desktop will have, reduced to
+# what a framebuffer can draw cheaply.
+BACKDROP   = ((0xee, 0xf2, 0xf8), (0xea, 0xef, 0xf6),
+              (0xe6, 0xeb, 0xf4), (0xe1, 0xe7, 0xf1))
+SHADOW     = ((0xdc, 0xe2, 0xea), (0xe4, 0xe9, 0xf0), (0xea, 0xee, 0xf4))
 ACCENT     = (0x2f, 0x7c, 0xf6)
 BG         = (0xf2, 0xf4, 0xf7)
 SURFACE    = (0xff, 0xff, 0xff)
@@ -192,26 +197,56 @@ class UI:
         if not s.fb:
             return
         s.clear()
+
+        # A gradient rather than a flat fill. Four bands is enough at this
+        # size and costs four rectangle fills; a per-pixel gradient on a
+        # framebuffer with no GPU is thousands of writes per frame, and this
+        # redraws on every progress update.
+        for i, band in enumerate(BACKDROP):
+            s.fill(0, i * s.h // len(BACKDROP), s.w,
+                   s.h // len(BACKDROP) + 1, band)
+
         cx = s.w // 2
-        card_w, card_h = min(720, s.w - 96), 260
+        card_w = min(760, s.w - 96)
+        card_h = 300
         cx0, cy0 = cx - card_w // 2, s.h // 2 - card_h // 2
 
-        # One surface, floating. Shadow first, then the card over it.
-        s.fill(cx0 + 2, cy0 + 6, card_w, card_h, (0xe4, 0xe8, 0xee))
+        # A soft shadow: three progressively lighter rings rather than one
+        # hard offset rectangle, which reads as a drop shadow from 1995.
+        for i, tone in enumerate(SHADOW):
+            s.fill(cx0 - i, cy0 + 4 + i * 2, card_w + i * 2, card_h, tone)
         s.fill(cx0, cy0, card_w, card_h, SURFACE)
+        # The rim: one hairline along the top, which is what makes a flat
+        # rectangle read as a lit surface.
+        s.fill(cx0, cy0, card_w, 1, (0xff, 0xff, 0xff))
 
+        pad = 46
         scale = 2 if s.w >= 1280 else 1
-        fh = (s.font["h"] if s.font else 16) * scale
-        s.text(cx0 + 40, cy0 + 44, self.step[:48], INK, scale)
-        s.text(cx0 + 40, cy0 + 44 + fh + 14, self.detail[:64], INK_SOFT, 1)
+        fh = (s.font["h"] if s.font else 16)
 
-        # Progress: a rail and a fill. The only accent on screen.
-        bar_y = cy0 + card_h - 84
-        bar_w = card_w - 80
-        s.fill(cx0 + 40, bar_y, bar_w, 6, (0xe6, 0xea, 0xf0))
-        s.fill(cx0 + 40, bar_y, int(bar_w * max(0.0, min(1.0, self.pct))), 6,
-               ACCENT)
-        s.text(cx0 + 40, bar_y + 26, "%d%%" % int(self.pct * 100), INK_FAINT, 1)
+        # The mark. Same one the shell uses, and the only colour up here.
+        dot = 10 if scale == 1 else 14
+        s.fill(cx0 + pad, cy0 + 40, dot, dot, ACCENT)
+
+        s.text(cx0 + pad, cy0 + 78, "NETHOS", INK, scale)
+        s.text(cx0 + pad, cy0 + 78 + fh * scale + 22, self.step[:52], INK, 1)
+        s.text(cx0 + pad, cy0 + 78 + fh * scale + 22 + fh + 8,
+               self.detail[:72], INK_FAINT, 1)
+
+        # Progress: a rail and a fill, with the percentage on the same line as
+        # the rail rather than under it, so the eye reads one row not two.
+        bar_y = cy0 + card_h - 74
+        bar_w = card_w - pad * 2 - 62
+        s.fill(cx0 + pad, bar_y, bar_w, 6, (0xe4, 0xe9, 0xf0))
+        filled = int(bar_w * max(0.0, min(1.0, self.pct)))
+        if filled:
+            s.fill(cx0 + pad, bar_y, filled, 6, ACCENT)
+        s.text(cx0 + pad + bar_w + 18, bar_y - 4,
+               "%3d%%" % int(self.pct * 100), INK_SOFT, 1)
+
+        # The one line that matters if something goes wrong at 3am.
+        s.text(cx0 + pad, cy0 + card_h - 34,
+               "Do not power the machine off", INK_FAINT, 1)
 
     def say(self, step=None, detail=None, pct=None):
         if step is not None:
