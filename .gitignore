@@ -10,3 +10,6 @@ nethos-shot*.png
 
 # dev server state
 payload/.devstate/
+__pycache__/
+*.pyc
+build/
