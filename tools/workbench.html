@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NETHOS workbench</title>
+
+<!-- The real stylesheets, not a copy. Anything that looks right here looks
+     right on the machine, and anything that does not is a bug in the system
+     rather than in the mock. -->
+<link rel="stylesheet" href="../payload/lib/nethos.css">
+<link rel="stylesheet" href="../payload/shell/style.css">
+
+<style>
+/* Workbench chrome only. Nothing here describes NETHOS -- it is the room the
+   desktop is being looked at in, and it is deliberately plain so it cannot be
+   mistaken for the thing being designed. */
+:root { --wb-bg: #16181c; --wb-panel: #1e2126; --wb-line: #2c3037;
+        --wb-ink: #e7eaee; --wb-dim: #9aa3ae; }
+* { box-sizing: border-box; }
+body { margin: 0; display: flex; height: 100vh; overflow: hidden;
+       font: 13px/1.5 Inter, system-ui, sans-serif; background: var(--wb-bg);
+       color: var(--wb-ink); }
+
+/* ---- the stage ---- */
+#stage { flex: 1; display: flex; align-items: center; justify-content: center;
+         padding: 28px; overflow: auto; }
+#screen { position: relative; width: 1280px; height: 800px; flex: none;
+          border-radius: 10px; overflow: hidden;
+          box-shadow: 0 24px 80px rgba(0,0,0,.6);
+          background-size: cover; background-position: center; }
+#screen.fit { width: 1024px; height: 640px; }
+
+/* ---- the inspector ---- */
+#panel-ui { width: 320px; flex: none; background: var(--wb-panel);
+            border-left: 1px solid var(--wb-line); overflow-y: auto;
+            padding: 18px 18px 40px; }
+#panel-ui h2 { font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
+               color: var(--wb-dim); margin: 22px 0 10px; font-weight: 600; }
+#panel-ui h2:first-child { margin-top: 0; }
+.ctl { display: flex; align-items: center; gap: 10px; margin: 7px 0; }
+.ctl label { flex: 1; color: var(--wb-dim); font-size: 12px; }
+.ctl input[type=range] { width: 120px; }
+.ctl input[type=color] { width: 34px; height: 24px; padding: 0; border: 0;
+                         background: none; }
+.ctl output { width: 46px; text-align: right; font-variant-numeric: tabular-nums;
+              font-size: 11px; color: var(--wb-dim); }
+.row2 { display: flex; gap: 8px; margin: 10px 0; }
+.row2 button { flex: 1; }
+button { background: #272b31; color: var(--wb-ink); border: 1px solid var(--wb-line);
+         border-radius: 7px; padding: 7px 10px; font: inherit; cursor: pointer; }
+button:hover { background: #2f343b; }
+button.on { background: #3b6ea5; border-color: #3b6ea5; color: #fff; }
+#css { width: 100%; height: 190px; background: #14161a; color: #cfd6de;
+       border: 1px solid var(--wb-line); border-radius: 8px; padding: 10px;
+       font: 11px/1.5 ui-monospace, monospace; resize: vertical; }
+.hint { color: var(--wb-dim); font-size: 11px; margin: 6px 0 0; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <!-- Everything inside #screen is the mock desktop. It uses the real classes
+       and the real tokens, so it is the shell rather than a picture of it. -->
+  <div id="screen">
+
+    <!-- panel -->
+    <div id="panel" class="glass glass-blur blur-cheap"
+         style="position:absolute;top:0;left:0;right:0;z-index:5">
+      <button class="mark" id="brand" title="Applications"><i></i></button>
+      <div id="tasks" style="display:flex;gap:6px">
+        <button class="task focused"><span class="label">Photos</span><span class="x">×</span></button>
+        <button class="task"><span class="label">Terminal</span><span class="x">×</span></button>
+      </div>
+      <div class="spacer"></div>
+      <div id="metrics" class="dim num">mem 21%</div>
+      <span class="clock num" id="clock">Sat, Aug 15  09:41</span>
+    </div>
+
+    <!-- a window, because a desktop is judged with work on it -->
+    <div class="glass" style="position:absolute;left:96px;top:118px;width:560px;
+         height:380px;z-index:3;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;
+                  border-bottom:1px solid var(--rim-soft)">
+        <span style="font-weight:600">Documents</span>
+        <span class="spacer"></span><span class="faint num">128 items</span>
+      </div>
+      <div style="padding:8px 6px">
+        <!-- rule 26: density is what work looks like -->
+        <div class="wb-row"><span>Contracts</span><span class="faint num">4 Aug</span></div>
+        <div class="wb-row"><span>Invoices</span><span class="faint num">2 Aug</span></div>
+        <div class="wb-row"><span>Photography</span><span class="faint num">28 Jul</span></div>
+        <div class="wb-row"><span>notes.md</span><span class="faint num">12 KB</span></div>
+        <div class="wb-row"><span>quarterly.pdf</span><span class="faint num">2.4 MB</span></div>
+        <div class="wb-row"><span>render.mov</span><span class="faint num">1.1 GB</span></div>
+      </div>
+    </div>
+
+    <!-- widgets: rule 32, they recede -->
+    <div style="position:absolute;right:28px;top:76px;width:250px;
+                display:flex;flex-direction:column;gap:12px;z-index:2">
+      <div class="widget neth-card glass">
+        <h3>Monitor</h3>
+        <div class="stat num">21%<small>mem</small></div>
+        <div class="dim">load 0.34 · up 4h</div>
+      </div>
+      <div class="widget neth-card glass">
+        <h3>News</h3>
+        <div class="empty" style="padding:0">
+          <div class="empty-title">Nothing new</div>
+          <div class="empty-hint">Feeds refresh every half hour.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- launcher: the full-screen surface, rule 5 -->
+    <div id="launcher" class="glass" style="position:absolute;left:50%;top:50%;
+         transform:translate(-50%,-50%);width:620px;z-index:8;padding:14px;
+         display:none">
+      <input class="input" placeholder="Search"
+             style="width:100%;margin-bottom:10px">
+      <div class="grid">
+        <div class="neth-card"><b>Photos</b><div class="dim">Library</div></div>
+        <div class="neth-card"><b>Terminal</b><div class="dim">Shell</div></div>
+        <div class="neth-card"><b>Files</b><div class="dim">Browse</div></div>
+        <div class="neth-card"><b>Settings</b><div class="dim">System</div></div>
+      </div>
+    </div>
+
+    <!-- the ugly screen, rule 27: designs that only survive an empty desktop
+         have not been tested -->
+    <div id="dialog" class="glass" style="position:absolute;left:50%;top:44%;
+         transform:translate(-50%,-50%);width:380px;z-index:9;padding:18px;
+         display:none">
+      <div style="font-weight:600;margin-bottom:4px">Authentication required</div>
+      <div class="dim" style="margin-bottom:12px">Installing updates needs
+        administrator access.</div>
+      <input class="input" type="password" value="········" style="width:100%">
+      <div class="row2" style="margin-top:14px">
+        <button>Cancel</button><button class="on">Authenticate</button>
+      </div>
+    </div>
+
+    <!-- dock -->
+    <div style="position:absolute;left:0;right:0;bottom:0;display:flex;
+                justify-content:center;z-index:6">
+      <div id="dock" class="glass glass-blur blur-cheap">
+        <span class="dock-item"></span><span class="dock-item"></span>
+        <span class="dock-item"></span><span class="dock-item"></span>
+        <span class="dock-item"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<div id="panel-ui">
+  <h2>Theme</h2>
+  <div class="row2">
+    <button id="b-light" class="on">Light</button>
+    <button id="b-dark">Dark</button>
+  </div>
+  <div class="row2">
+    <button data-show="launcher">Launcher</button>
+    <button data-show="dialog">Dialog</button>
+  </div>
+  <div class="row2">
+    <button id="b-wall">Wallpaper</button>
+    <button id="b-size">1024×640</button>
+  </div>
+
+  <h2>Colour</h2>
+  <div class="ctl"><label>Accent</label><input type="color" id="c-accent"></div>
+  <div class="ctl"><label>Ink</label><input type="color" id="c-ink"></div>
+  <p class="hint">Rule 29: the interface carries no colour; the wallpaper does.
+     If the accent is memorable on its own it is wrong.</p>
+
+  <h2>Glass</h2>
+  <div class="ctl"><label>Opacity</label>
+    <input type="range" id="r-glass" min="20" max="100" value="66">
+    <output id="o-glass"></output></div>
+  <div class="ctl"><label>Blur</label>
+    <input type="range" id="r-blur" min="0" max="40" value="16">
+    <output id="o-blur"></output></div>
+  <div class="ctl"><label>Rim</label>
+    <input type="range" id="r-rim" min="0" max="100" value="75">
+    <output id="o-rim"></output></div>
+
+  <h2>Shape</h2>
+  <div class="ctl"><label>Radius</label>
+    <input type="range" id="r-radius" min="0" max="34" value="16">
+    <output id="o-radius"></output></div>
+  <p class="hint">Rule 3: inner radius = outer − padding. Rule 31: Apple's are
+     larger than feels right.</p>
+
+  <h2>Type</h2>
+  <div class="ctl"><label>Size</label>
+    <input type="range" id="r-font" min="11" max="17" value="14">
+    <output id="o-font"></output></div>
+  <div class="ctl"><label>Tracking</label>
+    <input type="range" id="r-track" min="-40" max="20" value="0">
+    <output id="o-track"></output></div>
+
+  <h2>Export</h2>
+  <textarea id="css" spellcheck="false"></textarea>
+  <div class="row2">
+    <button id="b-copy">Copy</button>
+    <button id="b-reset">Reset</button>
+  </div>
+  <p class="hint">Paste into <code>payload/lib/nethos.css</code>, then
+     <code>nethos-update</code> on the machine.</p>
+</div>
+
+<style>
+/* A couple of shapes the shell has but the mock needs standalone. */
+.wb-row { display:flex; align-items:center; justify-content:space-between;
+          padding:5px 10px; border-radius:calc(var(--r) - 10px); }
+.wb-row:hover { background: var(--glass-sunk); }
+.dock-item { width:44px; height:44px; border-radius:calc(var(--r) - 4px);
+             background: var(--glass-dim);
+             box-shadow: inset 0 1px 0 0 var(--rim-soft); }
+</style>
+
+<script>
+const root = document.documentElement;
+const S = root.style;
+const $ = id => document.getElementById(id);
+const changed = {};
+
+function set(name, value) {
+  S.setProperty(name, value);
+  changed[name] = value;
+  dumpCss();
+}
+function dumpCss() {
+  const lines = Object.keys(changed).sort()
+        .map(k => "  " + k + ": " + changed[k] + ";");
+  $("css").value = lines.length ? ":root {\n" + lines.join("\n") + "\n}" : "";
+}
+const readVar = n => getComputedStyle(root).getPropertyValue(n).trim();
+
+/* Colour ------------------------------------------------------------ */
+function hexOf(v) {                       // tolerate rgb() and #abc
+  if (v.startsWith("#") && v.length === 7) return v;
+  const m = v.match(/\d+/g);
+  return m ? "#" + m.slice(0,3).map(x => (+x).toString(16).padStart(2,"0")).join("") : "#000000";
+}
+$("c-accent").value = hexOf(readVar("--accent") || "#3b6ea5");
+$("c-ink").value    = hexOf(readVar("--ink") || "#1c2024");
+$("c-accent").oninput = e => set("--accent", e.target.value);
+$("c-ink").oninput    = e => set("--ink", e.target.value);
+
+/* Glass -------------------------------------------------------------- */
+function glass() {
+  const a = $("r-glass").value / 100;
+  const dark = root.classList.contains("neth-dark");
+  const base = dark ? "28, 32, 40" : "255, 255, 255";
+  set("--glass", `rgba(${base}, ${a})`);
+  set("--glass-strong", `rgba(${base}, ${Math.min(1, a + 0.16).toFixed(2)})`);
+  set("--glass-dim", `rgba(${base}, ${Math.max(0, a - 0.22).toFixed(2)})`);
+  $("o-glass").textContent = Math.round(a * 100) + "%";
+}
+$("r-glass").oninput = glass;
+
+$("r-blur").oninput = e => {
+  const px = e.target.value + "px";
+  document.querySelectorAll(".blur-cheap").forEach(el => {
+    el.style.backdropFilter = el.style.webkitBackdropFilter =
+      e.target.value > 0 ? `blur(${px}) saturate(170%)` : "none";
+  });
+  $("o-blur").textContent = px;
+};
+$("r-rim").oninput = e => {
+  const a = e.target.value / 100;
+  set("--rim", `rgba(255,255,255,${a.toFixed(2)})`);
+  set("--rim-soft", `rgba(255,255,255,${(a * 0.53).toFixed(2)})`);
+  $("o-rim").textContent = Math.round(a * 100) + "%";
+};
+
+/* Shape and type ----------------------------------------------------- */
+$("r-radius").oninput = e => {
+  const r = +e.target.value;
+  set("--r", r + "px");
+  set("--r-sm", Math.max(0, r - 6) + "px");
+  set("--r-lg", (r + 6) + "px");
+  set("--r-xl", (r + 12) + "px");
+  $("o-radius").textContent = r + "px";
+};
+$("r-font").oninput = e => {
+  document.querySelector("#screen").style.fontSize = e.target.value + "px";
+  $("o-font").textContent = e.target.value + "px";
+};
+$("r-track").oninput = e => {
+  const t = (e.target.value / 1000).toFixed(3) + "em";
+  document.querySelector("#screen").style.letterSpacing = t;
+  $("o-track").textContent = t;
+};
+
+/* Theme, views, wallpaper -------------------------------------------- */
+$("b-light").onclick = () => {
+  root.classList.remove("neth-dark"); root.classList.add("neth-light");
+  $("b-light").classList.add("on"); $("b-dark").classList.remove("on"); glass();
+};
+$("b-dark").onclick = () => {
+  root.classList.remove("neth-light"); root.classList.add("neth-dark");
+  $("b-dark").classList.add("on"); $("b-light").classList.remove("on"); glass();
+};
+document.querySelectorAll("[data-show]").forEach(b => {
+  b.onclick = () => {
+    const el = $(b.dataset.show);
+    const on = el.style.display === "none" || !el.style.display;
+    el.style.display = on ? "block" : "none";
+    b.classList.toggle("on", on);
+  };
+});
+
+/* Wallpapers exist to prove rule 29: a neutral interface must be correct on
+   any of them. If one of these breaks the design, the design is tinted. */
+const walls = [
+  "linear-gradient(135deg,#cfd9e8,#e8dfe6 45%,#dfe9e4)",
+  "linear-gradient(140deg,#12151b,#1b2430 55%,#101418)",
+  "linear-gradient(160deg,#f0b48a,#e8748a 50%,#7a5cc0)",
+  "linear-gradient(120deg,#0b3d2e,#0a5f4a 60%,#04211a)",
+];
+let wi = 0;
+const screen = $("screen");
+screen.style.backgroundImage = walls[0];
+$("b-wall").onclick = () => {
+  wi = (wi + 1) % walls.length;
+  screen.style.backgroundImage = walls[wi];
+};
+$("b-size").onclick = () => {
+  screen.classList.toggle("fit");
+  $("b-size").textContent = screen.classList.contains("fit")
+    ? "1280×800" : "1024×640";
+};
+
+/* Export ------------------------------------------------------------- */
+$("b-copy").onclick = () => {
+  $("css").select(); document.execCommand("copy");
+  $("b-copy").textContent = "Copied"; setTimeout(() => $("b-copy").textContent = "Copy", 900);
+};
+$("b-reset").onclick = () => { location.reload(); };
+
+/* A live clock, because a still one hides whether numbers shimmer (rule 11). */
+setInterval(() => {
+  const d = new Date();
+  $("clock").textContent = d.toLocaleDateString(undefined,
+      { weekday: "short", month: "short", day: "numeric" }) + "  " +
+      d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}, 1000);
+
+glass();
+$("o-blur").textContent = "16px";
+$("o-rim").textContent = "75%";
+$("o-radius").textContent = "16px";
+$("o-font").textContent = "14px";
+$("o-track").textContent = "0.000em";
+</script>
+</body>
+</html>

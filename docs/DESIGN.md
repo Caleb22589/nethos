@@ -487,3 +487,32 @@ statement that the system is not straining.
 - One weight, used once per surface, and generous scale.
 - Nothing moves unless the user moved it.
 - The desktop is empty until asked.
+
+---
+
+## The workbench
+
+```bash
+open tools/workbench.html          # macOS
+xdg-open tools/workbench.html      # Linux
+```
+
+A mock desktop in a browser, using **the real stylesheets** — `nethos.css` and
+`style.css` by `<link>`, not copies. Anything that looks right here looks right
+on the machine, and anything that does not is a bug in the system rather than
+in the mock.
+
+Live controls for accent, ink, glass opacity, blur, rim, radius, type size and
+tracking. It shows the panel, dock, widgets, a window with a dense file list,
+the launcher, and a password dialog — the last because a design that has only
+been tested on an empty desktop has not been tested (rule 27).
+
+Four wallpapers, including a very light and a very dark one, because rule 29
+says a neutral interface must be correct on all of them. If a wallpaper breaks
+the design, the design is tinted.
+
+Export gives you the changed tokens as CSS. Paste into
+`payload/lib/nethos.css`, then `nethos-update` on the machine.
+
+The point is the loop: design changes are seconds in a browser rather than a
+three-minute rebuild and a reflash.
