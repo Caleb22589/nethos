@@ -110,6 +110,14 @@ done
 # applications -- Thunar, foot, every dialog npkg puts on screen -- would keep
 # their own default and the system would be two fonts pretending to be one.
 if [ -d "$PAYLOAD/lib/fonts" ]; then
+    # Twice, to two different consumers. This copy is what the @font-face rule
+    # in nethos.css fetches over HTTP -- nethosd serves /lib from here, and the
+    # loop above copies files only, so without this the stylesheet asks for a
+    # font that was installed somewhere it cannot see and gets a 404.
+    install -d "$PREFIX/lib/fonts"
+    install -m 0644 "$PAYLOAD"/lib/fonts/* "$PREFIX/lib/fonts/"
+    # And this copy is the one fontconfig indexes, for applications that are
+    # not a web page.
     install -d /usr/share/fonts/nethos
     install -m 0644 "$PAYLOAD"/lib/fonts/*.ttf /usr/share/fonts/nethos/
     install -m 0644 "$PAYLOAD"/lib/fonts/OFL.txt /usr/share/fonts/nethos/ 2>/dev/null || true
