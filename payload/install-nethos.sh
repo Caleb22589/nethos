@@ -98,7 +98,24 @@ log "Installing the shell, SDK and apps"
 # --------------------------------------------------------------------------
 install -d "$PREFIX/shell" "$PREFIX/lib" "$PREFIX/apps"
 install -m 0644 "$PAYLOAD"/shell/* "$PREFIX/shell/"
-install -m 0644 "$PAYLOAD"/lib/*   "$PREFIX/lib/"
+# Files only. lib/ holds the fonts directory as well now, and `install` on a
+# directory fails -- under set -e that aborts the whole install, and what you
+# see is the shell not updating rather than a font not copying.
+for f in "$PAYLOAD"/lib/*; do
+    [ -f "$f" ] && install -m 0644 "$f" "$PREFIX/lib/"
+done
+
+# The system font, installed where fontconfig looks rather than only where
+# WebKit does. The shell could load it with @font-face alone, but then GTK
+# applications -- Thunar, foot, every dialog npkg puts on screen -- would keep
+# their own default and the system would be two fonts pretending to be one.
+if [ -d "$PAYLOAD/lib/fonts" ]; then
+    install -d /usr/share/fonts/nethos
+    install -m 0644 "$PAYLOAD"/lib/fonts/*.ttf /usr/share/fonts/nethos/
+    install -m 0644 "$PAYLOAD"/lib/fonts/OFL.txt /usr/share/fonts/nethos/ 2>/dev/null || true
+    # Without this the file is on disk and no application can find it by name.
+    command -v fc-cache >/dev/null && fc-cache -f /usr/share/fonts/nethos >/dev/null 2>&1 || true
+fi
 
 # Apps are directories; mirror them wholesale so removed files disappear too.
 rm -rf "$PREFIX/apps"
@@ -141,6 +158,19 @@ install -d -o "$NETH_USER" -g "$NETH_USER" "$NETH_HOME/.local/state/nethos"
 
 ln -sf /etc/sway/config "$NETH_HOME/.config/sway/config"
 chown -h "$NETH_USER:$NETH_USER" "$NETH_HOME/.config/sway/config"
+
+# The same face for GTK applications. Installing the font only puts it on
+# disk; nothing selects it, so Thunar and every dialog would go on rendering
+# in Cantarell next to a shell rendering in Nunito. Both toolkit versions,
+# because the system has GTK3 and GTK4 applications side by side.
+for gtkdir in gtk-3.0 gtk-4.0; do
+    install -d -o "$NETH_USER" -g "$NETH_USER" "$NETH_HOME/.config/$gtkdir"
+    cat > "$NETH_HOME/.config/$gtkdir/settings.ini" <<'GTKINI'
+[Settings]
+gtk-font-name=Nunito 11
+GTKINI
+    chown "$NETH_USER:$NETH_USER" "$NETH_HOME/.config/$gtkdir/settings.ini"
+done
 
 if [ "$FILES_ONLY" -eq 0 ]; then
     log "Autologin and session start"

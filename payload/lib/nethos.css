@@ -19,6 +19,32 @@
  * layered on top only where the engine supports it.
  */
 
+/* The system face. Nunito is not in Debian trixie -- only forky and sid -- so
+   it is vendored under lib/fonts and installed to /usr/share/fonts/nethos,
+   rather than being asked of a package manager that cannot supply it.
+   Declared here as well as installed there because the two paths cover
+   different things: fontconfig is what lets GTK applications use it, and this
+   is what lets a surface render in it before fc-cache has caught up, and on a
+   machine updated with `nethos-update` where no packaging step ran at all.
+   One variable file spans 200-1000, so every weight below is the same
+   download rather than nine. */
+@font-face {
+  font-family: "Nunito";
+  src: url("/lib/fonts/Nunito[wght].ttf") format("truetype-variations");
+  font-weight: 200 1000;
+  font-style: normal;
+  /* Show the fallback immediately and swap when it lands: the alternative is
+     a shell that paints no text at all for the first moments of a session. */
+  font-display: swap;
+}
+@font-face {
+  font-family: "Nunito";
+  src: url("/lib/fonts/Nunito-Italic[wght].ttf") format("truetype-variations");
+  font-weight: 200 1000;
+  font-style: italic;
+  font-display: swap;
+}
+
 :root {
   /* Surfaces are translucent; the compositor blurs what is behind them. */
   /* Thinner than before. At 0.66 the panel reads as a white bar with a blur
@@ -74,7 +100,7 @@
   --fast: 140ms var(--ease);
   --slow: 320ms var(--ease);
 
-  --sans: "Inter", "SF Pro Text", "DejaVu Sans", system-ui, sans-serif;
+  --sans: "Nunito", "Inter", "SF Pro Text", "DejaVu Sans", system-ui, sans-serif;
 
   /* The signature face. Copperplate is an engraver's type: no true lowercase
      (what reads as lowercase is small caps), wide, and defined by the flared

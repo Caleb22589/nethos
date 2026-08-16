@@ -10,7 +10,7 @@ set $term foot
 
 ### appearance -------------------------------------------------------------
 
-font pango:DejaVu Sans 10
+font pango:Nunito 10
 
 # colours match shell/style.css so borders and panel read as one system
 #                       border   bg       text     indicator child_border

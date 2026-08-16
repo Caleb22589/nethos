@@ -419,6 +419,12 @@ class Surface:
               JSON.stringify({type: "hide"})),
           show: () => window.webkit.messageHandlers.nethosHost.postMessage(
               JSON.stringify({type: "show"})),
+          // Force a frame. A surface that has stopped drawing keeps whatever
+          // it last painted on screen, so anything the page removes without
+          // animating stays visible as a ghost. Call this after dismissing
+          // something that was not faded out.
+          repaint: () => window.webkit.messageHandlers.nethosHost.postMessage(
+              JSON.stringify({type: "repaint"})),
           surface: %s,
         };
         // The stylesheet keys its backdrop-filter off this class, so the
@@ -485,6 +491,8 @@ class Surface:
             LayerShell.set_exclusive_zone(self.window, int(msg.get("value", 0)))
         elif kind == "input_rect":
             self._set_input_rect(msg)
+        elif kind == "repaint":
+            self._repaint()
         elif kind == "hide":
             self.window.set_visible(False)
         elif kind == "show":
@@ -564,6 +572,28 @@ class Surface:
             else:
                 self.window.maximize()
 
+    def _repaint(self):
+        """Commit a frame, whatever the page thinks it is doing.
+
+        Both halves of a Wayland surface -- the pixels and the input region --
+        only reach the compositor on a commit, and a commit only happens when
+        something draws. The shell's overlay surface is deliberately never
+        unmapped (an unmapped surface's page is suspended and stops hearing
+        events), so when the control centre or the launcher is dismissed the
+        page just hides a div and releases its input region. If nothing then
+        draws, neither change is ever sent: the compositor goes on showing the
+        last frame *and* enforcing the last input region.
+
+        That is one bug wearing two faces. The visible half is the ghost of a
+        closed window or a dock label left painted on screen. The invisible
+        half is worse and reads as something else entirely -- the full-screen
+        overlay is still there, still solid to the pointer, so clicks aimed at
+        the desktop under it land on nothing and the desktop icons appear
+        dead.
+        """
+        self.window.queue_draw()
+        self.view.queue_draw()
+
     def _set_input_rect(self, msg):
         """Limit clicks to part of the surface.
 
@@ -588,6 +618,11 @@ class Surface:
             reg = cairo.Region(cairo.RectangleInt(
                 region.x, region.y, region.width, region.height))
             surface.set_input_region(reg)
+            # The region is queued, not applied. Draw so it is committed --
+            # and so the pixels the caller is releasing go with it. See
+            # _repaint: an uncommitted release leaves the surface both
+            # visible and clickable after the page has finished with it.
+            self._repaint()
         except Exception as exc:                  # noqa: BLE001
             # Not fatal, but never silent again. Without cairo this raised
             # ImportError, the region was never set, and the dock captured

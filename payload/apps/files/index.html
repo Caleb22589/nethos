@@ -232,7 +232,12 @@
         }
         items.push({ label: "Rename…", run: () => rename(entry) });
         items.push("-");
+        items.push({ label: "Copy", run: () => { clip = { path: entry.path, cut: false }; } });
+        items.push({ label: "Cut", run: () => { clip = { path: entry.path, cut: true }; } });
+        if (clip) items.push({ label: "Paste into folder", run: () => paste(entry.dir ? entry.path : state.path) });
+        items.push("-");
         items.push({ label: "Move to Trash", danger: true, run: () => act("trash", entry.path) });
+        items.push({ label: "Delete permanently…", danger: true, run: () => destroy(entry) });
         ui.menu(items, ev.clientX, ev.clientY);
       });
       list.append(row);
@@ -264,6 +269,26 @@
   async function rename(entry) {
     const name = await ui.ask("Rename to", entry.name);
     if (name && name !== entry.name) act("rename", entry.path, { name });
+  }
+
+  /* One pending copy or cut. Deliberately not the system clipboard: nothing
+     else in NETHOS puts a file on it, and a file manager that loses your cut
+     because you copied some text is worse than one that keeps its own. */
+  let clip = null;
+
+  async function paste(destDir) {
+    if (!clip) return;
+    const r = await act(clip.cut ? "move" : "copy", clip.path, { dest: destDir });
+    // A cut is spent once it lands; a copy can be pasted again.
+    if (!r.error && clip.cut) clip = null;
+  }
+
+  async function destroy(entry) {
+    // Permanent deletion asks, every time, and names the thing. Trash is the
+    // unasked default in the menu above precisely so this one can be blunt.
+    const ok = await ui.confirm(
+      "Delete “" + entry.name + "” permanently? This cannot be undone.");
+    if (ok) act("delete", entry.path, { confirm: true });
   }
 
   async function go(path) {
@@ -321,13 +346,25 @@
   });
   q.addEventListener("input", renderList);
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Backspace" && document.activeElement !== q) {
+    if (document.activeElement === q) return;   // typing in the filter box
+    if (e.key === "Backspace") {
       const up = state.path.replace(/\/[^/]+\/?$/, "") || "/";
-      go(up);
+      return go(up);
     }
+    // Paste needs a key as well as a menu item: pasting into the folder you
+    // are looking at means right-clicking a file you did not want to act on.
+    if ((e.ctrlKey || e.metaKey) && e.key === "v") { e.preventDefault(); return paste(state.path); }
+    if (!state.sel) return;
+    if ((e.ctrlKey || e.metaKey) && e.key === "c") { e.preventDefault(); clip = { path: state.sel.path, cut: false }; }
+    if ((e.ctrlKey || e.metaKey) && e.key === "x") { e.preventDefault(); clip = { path: state.sel.path, cut: true }; }
+    if (e.key === "Delete") { e.preventDefault(); act("trash", state.sel.path); }
   });
 
-  await go("");
+  // Opened with a folder, or opened cold. Double-clicking a folder on the
+  // desktop used to launch Files with no argument at all, so it always landed
+  // in home and the folder you asked for was never opened -- which looked
+  // like the icon had not worked.
+  await go(new URLSearchParams(location.search).get("path") || "");
 })();
 </script>
 </body>

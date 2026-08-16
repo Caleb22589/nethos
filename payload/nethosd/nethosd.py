@@ -335,6 +335,22 @@ def safe_path(raw):
     return None
 
 
+def unique_path(dest):
+    """A free name next to `dest`: report.txt, then report 2.txt, and so on.
+
+    Copy, move and trash all need this, and a file manager that silently
+    overwrites the file already there is one you only trust once. The counter
+    goes before the extension so the result is still openable by its type.
+    """
+    if not os.path.lexists(dest):
+        return dest
+    stem, ext = os.path.splitext(dest)
+    n = 2
+    while os.path.lexists("%s %d%s" % (stem, n, ext)):
+        n += 1
+    return "%s %d%s" % (stem, n, ext)
+
+
 def human_size(n):
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if n < 1024 or unit == "TB":
@@ -1580,7 +1596,7 @@ def load_web_apps():
     return found
 
 
-def launch_web_app(app):
+def launch_web_app(app, query=None):
     """Run a NETHOS app in nethos-view, the same host the shell uses.
 
     These used to start a second Chromium in --app mode: a whole browser, its
@@ -1594,6 +1610,11 @@ def launch_web_app(app):
     normal window that the compositor and the taskbar treat like any other.
     """
     url = "http://%s:%d/apps/%s/%s" % (HOST, PORT, app["id"], app["entry"])
+    # An app can be launched pointed at something -- Files at a folder, so far.
+    # The app reads it from location.search; anything that does not care simply
+    # never looks.
+    if query:
+        url += "?" + urllib.parse.urlencode(query)
     spec = "url=%s,role=window,name=%s,title=%s,width=%d,height=%d,transparent=0" % (
         url, app["id"], app.get("name", app["id"]),
         app.get("width", 900), app.get("height", 650))
@@ -2033,6 +2054,10 @@ MIME = {
     ".xpm": "image/x-xpixmap",
     ".webp": "image/webp",
     ".woff2": "font/woff2",
+    # The system face is a variable TrueType, served from lib/fonts. Without
+    # this it goes out as application/octet-stream, which some engines decline
+    # to parse as a font -- and the failure is silent, just the fallback face.
+    ".ttf": "font/ttf",
 }
 
 
@@ -2475,13 +2500,52 @@ class Handler(BaseHTTPRequestHandler):
                 trash = os.path.join(HOME, ".local/share/Trash/files")
                 try:
                     os.makedirs(trash, exist_ok=True)
-                    base = os.path.basename(path)
-                    dest = os.path.join(trash, base)
-                    n = 2
-                    while os.path.exists(dest):
-                        dest = os.path.join(trash, "%s.%d" % (base, n))
-                        n += 1
+                    dest = unique_path(os.path.join(trash, os.path.basename(path)))
                     shutil.move(path, dest)
+                except OSError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                return self.send_json({"ok": True})
+
+            # Copy and move take a second path, and it has to clear the same
+            # roots as the first -- otherwise "copy" is a way to write
+            # anywhere on the disk through an API that is careful about where
+            # it will *read* from.
+            if what in ("copy", "move"):
+                dest_dir = safe_path(data.get("dest", ""))
+                if dest_dir is None:
+                    return self.send_json({"error": "outside the allowed roots"}, 403)
+                if not os.path.isdir(dest_dir):
+                    return self.send_json({"error": "destination is not a folder"}, 400)
+                # Refuse to move a folder into itself. shutil does not, and
+                # what it does instead is recurse until the disk is full.
+                real_src, real_dst = os.path.realpath(path), os.path.realpath(dest_dir)
+                if os.path.isdir(real_src) and \
+                        (real_dst == real_src or real_dst.startswith(real_src + os.sep)):
+                    return self.send_json({"error": "cannot put a folder inside itself"}, 400)
+                dest = unique_path(os.path.join(dest_dir, os.path.basename(path)))
+                try:
+                    if what == "move":
+                        shutil.move(path, dest)
+                    elif os.path.isdir(path):
+                        shutil.copytree(path, dest, symlinks=True)
+                    else:
+                        shutil.copy2(path, dest)
+                except (OSError, shutil.Error) as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                return self.send_json({"ok": True, "path": dest})
+
+            if what == "delete":
+                # Permanent, and only when asked for by name. Trash is the
+                # default everywhere in the UI; this exists so emptying the
+                # trash is possible at all, and it says so in the payload
+                # rather than being inferred from a flag on "trash".
+                if not data.get("confirm"):
+                    return self.send_json({"error": "delete needs confirm"}, 400)
+                try:
+                    if os.path.isdir(path) and not os.path.islink(path):
+                        shutil.rmtree(path)
+                    else:
+                        os.remove(path)
                 except OSError as exc:
                     return self.send_json({"error": str(exc)}, 400)
                 return self.send_json({"ok": True})
@@ -2547,7 +2611,17 @@ class Handler(BaseHTTPRequestHandler):
             app = find_app(data.get("id", ""))
             if not app:
                 return self.send_json({"error": "no such app"}, 404)
-            ok = launch_web_app(app) if app["source"] == "nethos" \
+            # Optional target. Checked against the same roots as every other
+            # path the daemon takes, so a launch cannot be used to point an app
+            # somewhere /api/files would refuse to list.
+            query = None
+            want = data.get("path", "")
+            if want:
+                target = safe_path(want)
+                if target is None:
+                    return self.send_json({"error": "outside the allowed roots"}, 403)
+                query = {"path": target}
+            ok = launch_web_app(app, query) if app["source"] == "nethos" \
                 else launch_desktop_app(app)
             menu_toggle(force=False)
             return self.send_json({"ok": ok})

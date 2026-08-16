@@ -202,11 +202,32 @@ function initPanel() {
 
 const DOCK_DEFAULTS = ["chromium.desktop", "foot.desktop", "thunar.desktop", "system"];
 
+/* Ask the host for a frame.
+
+   A surface that stops drawing keeps its last frame on screen and its last
+   input region in force, so anything removed without an animation to carry it
+   out stays painted -- and, on the overlay, stays clickable. Cheap enough to
+   call on any dismissal; a queue_draw on a surface that is already drawing
+   costs nothing. */
+function repaint() {
+  if (typeof nethosHost !== "undefined" && nethosHost.repaint) nethosHost.repaint();
+}
+
 function initDock() {
   const dock = document.getElementById("dock");
   const body = document.body;
   let apps = [], pinned = DOCK_DEFAULTS.slice(), running = [];
   let autohide = true;
+
+  /* The label a dock icon shows on hover fades out and then stops the frame
+     clock with the last fading frame still on the compositor -- the name hangs
+     in the air over an icon nobody is pointing at. One frame after the
+     transition finishes clears it. Delegated, so it covers the taskbar
+     entries built further down as well as the pinned icons. */
+  dock.addEventListener("transitionend", (e) => {
+    if (e.propertyName === "opacity" && e.target.classList.contains("dock-tip"))
+      repaint();
+  });
 
   /* Auto-hide is done with the host: when hidden the surface reserves no
      space and only a thin strip at the bottom accepts clicks, so the dock
@@ -488,6 +509,7 @@ function initMenu() {
     if (typeof nethosHost !== "undefined" && !open) {
       nethosHost.inputRect(0, 0, 0, 0);
     }
+    repaint();
     post("/api/contextmenu/choose", { token, index });
   }
 
@@ -513,6 +535,9 @@ function initMenu() {
       window.removeEventListener("pointerdown", ccDismiss, true);
       ccDismiss = null;
     }
+    // Hiding the div is not enough when the surface stays mapped: without a
+    // frame the control centre is still on screen and still taking clicks.
+    repaint();
   }
 
   function bar(pct) {
@@ -771,6 +796,10 @@ function initMenu() {
         nethosHost.show();
       } else {
         nethosHost.inputRect(0, 0, 0, 0);
+        // The launcher is a full-screen panel on a surface that stays mapped.
+        // Closed without a frame it is still drawn and still solid to the
+        // pointer, which is what made the desktop under it stop responding.
+        repaint();
       }
     }
     if (open) {
@@ -840,12 +869,12 @@ function initDesktop() {
         // A folder opens in Files; anything else opens with its own
         // application. Double-click, not single: the desktop is a surface
         // people rest the pointer on.
-        if (entry.dir) post("/api/launch", { id: "files" });
+        if (entry.dir) post("/api/launch", { id: "files", path: entry.path });
         else post("/api/files/open", { path: entry.path });
       });
       onContext(b, () => [
         { label: entry.dir ? "Open in Files" : "Open",
-          run: () => (entry.dir ? post("/api/launch", { id: "files" })
+          run: () => (entry.dir ? post("/api/launch", { id: "files", path: entry.path })
                                : post("/api/files/open", { path: entry.path })) },
         "-",
         { label: "Move to Trash", danger: true,
