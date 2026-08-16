@@ -383,6 +383,17 @@ function initDock() {
   const soon = debounce(refresh, 80);
   onEvent((msg) => { if (msg.type === "windows") soon(); });
 
+  /* When the user changes "Hide the dock" in Settings, the data-autohide
+     attribute is set globally but the dock's own autohide variable and the
+     host input region are not updated — so the dock draws in the right place
+     but the thin hover strip is all that accepts clicks. */
+  onEvent((msg) => {
+    if (msg.type !== "settings" || typeof msg.data.dock_autohide !== "boolean") return;
+    autohide = msg.data.dock_autohide;
+    body.classList.toggle("hidden", autohide);
+    applyHostGeometry();
+  });
+
   loadPrefs().then(refresh);
   window.addEventListener("resize", applyHostGeometry);
   let widgetTick = 0;
@@ -497,6 +508,10 @@ function initMenu() {
     post("/api/control/toggle", { open: false });
     if (typeof nethosHost !== "undefined" && !open) {
       nethosHost.inputRect(0, 0, 0, 0);
+    }
+    if (ccDismiss) {
+      window.removeEventListener("pointerdown", ccDismiss, true);
+      ccDismiss = null;
     }
   }
 
@@ -654,6 +669,32 @@ function initMenu() {
     ccNetworks();
   }
 
+  let ccDismiss = null;
+
+  function ccDismissOn(e) {
+    if (!ccOpen) {
+      // Closed by a path that bypassed ccClose (a toggle message that raced
+      // the click); take the listener down rather than leaving it to fire on
+      // every pointerdown forever.
+      if (ccDismiss) {
+        window.removeEventListener("pointerdown", ccDismiss, true);
+        ccDismiss = null;
+      }
+      return;
+    }
+    if (cc.firstChild && cc.firstChild.contains(e.target)) return;
+    ccClose();
+  }
+
+  function ccEnsureDismiss() {
+    if (ccDismiss) {
+      window.removeEventListener("pointerdown", ccDismiss, true);
+      ccDismiss = null;
+    }
+    ccDismiss = ccDismissOn;
+    window.addEventListener("pointerdown", ccDismiss, true);
+  }
+
   onEvent((msg) => {
     if (msg.type !== "control-centre") return;
     const want = !!(msg.data && msg.data.open);
@@ -667,12 +708,7 @@ function initMenu() {
         nethosHost.show();
       }
       ccRender();
-      setTimeout(() => window.addEventListener("pointerdown", function once(e) {
-        if (!ccOpen) { window.removeEventListener("pointerdown", once, true); return; }
-        if (cc.firstChild && cc.firstChild.contains(e.target)) return;
-        window.removeEventListener("pointerdown", once, true);
-        ccClose();
-      }, true), 0);
+      ccEnsureDismiss();
     } else {
       ccClose();
     }
@@ -740,8 +776,18 @@ function initMenu() {
       // launcher used to await a full /api/apps round trip -- with icons --
       // before appearing, which put the whole fetch between the keypress and
       // the window. Opening is now instant and the list updates in place.
-      if (apps.length) { filter(); search.focus(); load(); }
-      else { load().then(() => search.focus()); }
+      if (apps.length) { filter(); load(); }
+      else { load(); }
+      // Focus the search box. The surface may have just been shown and the
+      // frame clock may not have restarted yet (nethosHost.show() does not
+      // guarantee a drawn frame). WebKit drives input dispatch off its
+      // rendering pipeline, so a surface with no frames cannot accept focus.
+      // Retry after each frame until focus lands.
+      const focusSearch = () => {
+        search.focus();
+        if (document.activeElement !== search) requestAnimationFrame(focusSearch);
+      };
+      requestAnimationFrame(focusSearch);
     }
   }
 
@@ -804,9 +850,14 @@ function initDesktop() {
   }
 
   loadIcons();
-  // Refreshed on a slow timer rather than watched: inotify on the desktop
-  // folder is a watcher, a thread and a wake-up per file change, for a
-  // directory that changes a few times a day.
+  /* Refreshed on a change signal, not a poll. nethosd's watch_files thread
+     publishes a reload event with reason "files-changed" when anything in the
+     served tree changes on disk, and the reload handler below repaints the
+     icons immediately. The slow timer stays as a safety net for a filesystem
+     change that nethosd's watcher never noticed (it polls the tree once a
+     second and only tracks mtime, so a rename that preserves mtime slips
+     through); a couple of seconds of staleness is fine, losing the icon until
+     the next session is not. */
   setInterval(loadIcons, 20000);
   window.addEventListener("nethos-tick", () => {});
 
@@ -842,8 +893,12 @@ function initDesktop() {
     }
   }
 
-  onEvent((msg) => { if (msg.type === "reload") load(); });
-  load();
+  onEvent((msg) => {
+    if (msg.type !== "reload") return;
+    if (msg.data && msg.data.reason === "files-changed") loadIcons();
+    load();
+  });
+  load();   // initial widget load
 }
 
 /* ------------------------------------------------------------ event stream */
