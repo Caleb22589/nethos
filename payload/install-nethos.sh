@@ -124,8 +124,16 @@ cp -R "$PAYLOAD"/apps/. "$PREFIX/apps/"
 chmod -R u=rwX,go=rX "$PREFIX/apps"
 
 install -m 0755 "$PAYLOAD"/nethosd/nethosd.py /usr/bin/nethosd
-for tool in nethos-session nethos-menu-toggle nethos-reload nethos-update nethos-app nethos-install; do
-    install -m 0755 "$PAYLOAD/bin/$tool" "/usr/bin/$tool"
+# Everything in bin/, rather than a list. The list was six of the twelve tools
+# and had quietly gone stale: nethos-view was not on it, so the host that draws
+# every surface in the system could not be updated without rebuilding the
+# image -- a fix to it installed cleanly, reported success, and changed
+# nothing. nethos-snapshot was missing too, which nethos-update calls to make
+# the rollback it promises. A list that has to be edited whenever a file is
+# added is a list that will be wrong again.
+for tool in "$PAYLOAD"/bin/nethos-*; do
+    [ -f "$tool" ] || continue
+    install -m 0755 "$tool" "/usr/bin/$(basename "$tool")"
 done
 
 install -d /etc/sway/config.d
