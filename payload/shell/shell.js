@@ -1087,7 +1087,27 @@ const handlers = new Set();
 //
 // nethos-view holds a single stream outside the browser and calls this. One
 // connection for the whole desktop instead of one per surface.
+// The generation this surface was loaded against. Every event carries one, and
+// the daemon opens its stream with a hello, so this is set on the first
+// message and a later reload event carrying a different one means the files on
+// disk have changed since this page was parsed.
+let hostGeneration = null;
+
 window.nethosEvent = function (msg) {
+  // The reload check has to live here. It was written on the EventSource path
+  // below, which has been dead code since the shell moved to one stream held
+  // by nethos-view -- so no shell surface has ever reloaded itself on a
+  // broadcast. nethos-update installed files, printed that every surface had
+  // reloaded, and left every surface running the code it was parsed with;
+  // only a full shell restart ever picked anything up. Several fixes in a row
+  // were declared not to work while their code sat on disk, unread.
+  if (msg && typeof msg === "object") {
+    if (hostGeneration === null) hostGeneration = msg.generation;
+    else if (msg.type === "reload" && msg.generation !== hostGeneration) {
+      location.reload();
+      return;
+    }
+  }
   handlers.forEach((fn) => { try { fn(msg); } catch (e) { console.error(e); } });
 };
 
