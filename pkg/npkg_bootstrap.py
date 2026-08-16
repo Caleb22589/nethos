@@ -1028,6 +1028,32 @@ def setup_polkit(root: str) -> None:
         fh.write(POLKIT_RULE)
 
 
+def resolve_in_root(root: str, path: str) -> str | None:
+    """Follow a symlink chain the way the booted image will, not the builder.
+
+    An absolute link target inside the image means /usr/... *in the image*,
+    but `os.path.exists` hands it to the builder's own root instead. Both
+    halves of that mistake bite. A link npkg has already resolved correctly
+    looks dangling, because the builder has no wireless-regdb -- that is the
+    FileNotFoundError on /etc/alternatives/regulatory.db, where copy2 followed
+    the "broken" link out of the image and off the end of the builder's disk.
+    And a link that genuinely dangles looks fine whenever the builder happens
+    to carry the same file, which is the silent-default failure this whole
+    function exists to stop.
+
+    Returns the resolved path inside `root`, or None if it dangles there.
+    """
+    for _ in range(40):                       # ELOOP, without hanging
+        if not os.path.islink(path):
+            return path if os.path.exists(path) else None
+        target = os.readlink(path)
+        if os.path.isabs(target):
+            path = os.path.join(root, target.lstrip("/"))
+        else:
+            path = os.path.normpath(os.path.join(os.path.dirname(path), target))
+    return None
+
+
 def fix_alternatives(root: str) -> int:
     """Resolve the symlinks update-alternatives would have made.
 
@@ -1057,7 +1083,7 @@ def fix_alternatives(root: str) -> int:
             target = os.readlink(path)
             if "/etc/alternatives/" not in target:
                 continue
-            if os.path.exists(path):          # already resolves; leave it
+            if resolve_in_root(root, path):   # already resolves; leave it
                 continue
             stem = os.path.basename(target)
             cands = [c for c in os.listdir(base)
@@ -1069,6 +1095,11 @@ def fix_alternatives(root: str) -> int:
                 or next((c for c in cands if c.endswith("-debian")), None) \
                 or sorted(cands)[0]
             real = os.path.join(alt, stem)
+            # npkg may have left its own link here, pointing at an absolute
+            # in-image path. Opening that for writing follows it out of the
+            # image; replace the link rather than writing through it.
+            if os.path.lexists(real):
+                os.remove(real)
             shutil.copy2(os.path.join(base, pick), real)
             os.remove(path)
             os.symlink(os.path.relpath(real, base), path)
