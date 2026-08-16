@@ -156,6 +156,20 @@ install -d -o "$NETH_USER" -g "$NETH_USER" "$NETH_HOME/.local/share/nethos/apps"
 install -d -o "$NETH_USER" -g "$NETH_USER" "$NETH_HOME/.local/state"
 install -d -o "$NETH_USER" -g "$NETH_USER" "$NETH_HOME/.local/state/nethos"
 
+# The XDG user directories. Debian creates these from xdg-user-dirs, which
+# runs from a maintainer script we never execute, so on a fresh install the
+# home directory has nothing in it but dotfiles.
+#
+# Both of the things people report as broken about files come from that. The
+# desktop asks /api/files for ~/Desktop, gets a 404 because there is no such
+# folder, and gives up -- so there are no icons, and "the desktop icons do not
+# work" is really "there are no icons to click". And places() lists only the
+# directories that exist, so the sidebar in Files is empty as well, which
+# reads as a file manager that has not finished being written.
+for d in Desktop Documents Downloads Pictures Music Videos; do
+    install -d -o "$NETH_USER" -g "$NETH_USER" "$NETH_HOME/$d"
+done
+
 ln -sf /etc/sway/config "$NETH_HOME/.config/sway/config"
 chown -h "$NETH_USER:$NETH_USER" "$NETH_HOME/.config/sway/config"
 
