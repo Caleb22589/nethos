@@ -44,10 +44,22 @@ if [ "$DAEMON" -eq 1 ]; then
 fi
 
 if [ "$SHELL_RESTART" -eq 1 ]; then
-    say "Relaunching the panel"
-    swaymsg '[app_id="^chrome-.*panel\.html.*$"] kill' >/dev/null 2>&1 || true
+    # This asked swaymsg to kill a Chromium window, and by the time anyone ran
+    # it the shell was nethos-view under Wayfire. Both halves missed: swaymsg
+    # is not there to answer, the app_id never matched, so nothing was killed
+    # -- and then a second nethos-session was started on top of the first,
+    # which is two panels and two docks rather than a restart.
+    #
+    # nethos-session ends in `exec nethos-view`, so the shell is that one
+    # process and role=panel is only ever on it. Matching that leaves
+    # application windows -- which are also nethos-view -- alone. The bracket
+    # keeps the pattern from matching this script's own command line.
+    say "Relaunching the shell"
+    pkill -f "[n]ethos-view.*role=panel" 2>/dev/null || true
     sleep 1
-    nohup nethos-session >/dev/null 2>&1 &
+    # setsid, so the shell does not die with the SSH session or terminal that
+    # asked for the restart -- which is exactly how this gets run.
+    setsid nohup nethos-session >/dev/null 2>&1 &
     exit 0
 fi
 
