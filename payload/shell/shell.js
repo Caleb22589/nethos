@@ -656,8 +656,11 @@ function initMenu() {
     if (n.active) return;
     let password = "";
     if (n.secure) {
-      password = prompt("Password for “" + n.ssid + "”", "");
-      if (password === null) return;
+      const pw = await ui.ask([
+        { type: "password", label: "Wi-Fi Password", placeholder: "Password for " + n.ssid },
+      ]);
+      if (!pw) return;
+      password = pw;
     }
     const r = await post("/api/control/wifi",
                          { action: "connect", ssid: n.ssid, password });
