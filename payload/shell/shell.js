@@ -727,8 +727,16 @@ function initMenu() {
     if (msg.type !== "control-centre") return;
     const want = !!(msg.data && msg.data.open);
     if (want === ccOpen) return;
-    ccOpen = want;
+    // Do not set ccOpen here. ccClose() starts with `if (!ccOpen) return`, so
+    // assigning it first made the close a no-op: the panel button and the API
+    // both arrive on this path, and neither could shut the control centre.
+    // It stayed mapped and kept updating -- a Wi-Fi scan finished and filled
+    // itself in *after* the close -- while the surface released its input
+    // region on some other path, so it could not be clicked either. On screen
+    // that is indistinguishable from a stale frame, which is what sent three
+    // rounds of this looking at compositor damage and repaint timing.
     if (want) {
+      ccOpen = true;
       cc.hidden = false;
       document.body.classList.add("ctx");
       if (typeof nethosHost !== "undefined") {
