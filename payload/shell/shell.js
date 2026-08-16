@@ -1110,9 +1110,18 @@ function onEvent(handler) {
   stream.onmessage = (ev) => {
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
-    if (msg.type === "reload") {
-      if (generation !== null && msg.generation !== generation) { location.reload(); return; }
-      generation = msg.generation;
+    // Baseline from the first message of any kind -- every event carries the
+    // generation, and the daemon now opens the stream with a "hello" so this
+    // is set the instant we connect. It used to be taken from the first
+    // *reload* message, which meant the reload that mattered was consumed as
+    // the baseline instead of acted on: nethos-update restarts nethosd, the
+    // stream drops, and the page reconnected just in time to swallow it. Every
+    // "every open NETHOS surface has reloaded" for the whole of this session
+    // was untrue, and it is why fix after fix appeared not to work.
+    if (generation === null) generation = msg.generation;
+    else if (msg.type === "reload" && msg.generation !== generation) {
+      location.reload();
+      return;
     }
     handlers.forEach((fn) => { try { fn(msg); } catch (e) { console.error(e); } });
   };

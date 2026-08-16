@@ -2036,6 +2036,11 @@ def status():
                 "used_pct": round(100 * (1 - mem_avail / mem_total)) if mem_total else 0},
         "battery": battery,
         "generation": EVENTS.generation,
+        # How many surfaces are actually listening. Restarting the daemon drops
+        # every stream, and a reload broadcast sent before they are back is
+        # heard by nobody -- so whatever asks for the reload can wait for this
+        # to come back up first rather than guessing at a sleep.
+        "subscribers": len(EVENTS.subscribers),
     }
 
 
@@ -2181,7 +2186,16 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.send_header("Connection", "keep-alive")
             self.end_headers()
-            self.wfile.write(b": nethos event stream\n\n")
+            # A real first event, not just a comment. The client needs the
+            # current generation the moment it connects, because that is its
+            # baseline for deciding whether a later reload means "the files
+            # changed under you". Taking the baseline from the first *reload*
+            # instead was the bug: nethos-update restarts the daemon, every
+            # stream drops and the counter resets, and the reconnected page
+            # then swallowed the very broadcast meant to reload it.
+            self.wfile.write(("data: %s\n\n" % json.dumps(
+                {"type": "hello", "data": {}, "generation": EVENTS.generation}
+            )).encode())
             self.wfile.flush()
             while True:
                 try:

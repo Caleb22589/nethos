@@ -41,6 +41,16 @@ if [ "$DAEMON" -eq 1 ]; then
         curl -sf -o /dev/null "$API/api/status" && break
         sleep 0.1
     done
+    # Answering on the socket is not the same as being listened to. Restarting
+    # the daemon drops every event stream, and EventSource waits a few seconds
+    # before reconnecting -- so a reload broadcast sent the moment the port
+    # opens is heard by nobody, and the surfaces sit there running the code
+    # they were serving before the update. Wait for at least one to come back.
+    for _ in $(seq 1 100); do
+        subs=$(curl -sf "$API/api/status" | tr ',' '\n' | sed -n 's/.*"subscribers": *\([0-9]*\).*/\1/p')
+        [ -n "$subs" ] && [ "$subs" -gt 0 ] 2>/dev/null && break
+        sleep 0.1
+    done
 fi
 
 if [ "$SHELL_RESTART" -eq 1 ]; then
