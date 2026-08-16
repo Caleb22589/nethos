@@ -583,6 +583,13 @@ body[data-view="menu"].ctx #menu { display: none; }
   padding: 62px 14px 0;
   pointer-events: none;
 }
+/* `display` on an id beats the user agent's `[hidden] { display: none }`, so
+   the rule above quietly cancelled cc.hidden and the control centre was never
+   removed from the surface -- only ever hidden along with it, by the surface's
+   own opacity. Open the launcher and that opacity goes to 1 for everything in
+   the surface, so the control centre came back up beside it, looking for all
+   the world like a stale frame that had failed to clear. */
+#cc[hidden] { display: none; }
 .cc-card {
   width: 330px;
   padding: 16px 18px 14px;
