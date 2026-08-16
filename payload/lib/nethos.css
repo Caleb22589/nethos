@@ -741,3 +741,182 @@ html.no-motion .spin { animation-duration: 2s; }
   color: var(--ink-soft);
   white-space: pre-wrap; word-break: break-word;
 }
+
+/* ======================================================= nethos-ui.js dialogs ==
+ *
+ * Styled replacements for prompt(), confirm() and alert() — the browser's own
+ * dialogs are unstylable and use the host theme, which is wrong on every
+ * background. These use the same glass tokens as the rest of the system.
+ */
+
+.ui-overlay {
+  position: fixed; inset: 0; z-index: 9000;
+  display: grid; place-items: center;
+  background: rgba(0, 0, 0, 0.22);
+  animation: ui-fade-in 140ms var(--ease);
+}
+
+.ui-dialog {
+  min-width: 300px; max-width: 400px;
+  padding: 16px;
+  box-shadow: var(--shadow-lg), var(--refract),
+              inset 0 1px 0 0 var(--rim),
+              inset 0 0 0 1px var(--rim-soft),
+              inset 0 -1px 0 0 var(--edge);
+  animation: ui-dialog-in 180ms var(--ease);
+}
+.ui-dialog-sm { min-width: 260px; }
+
+.ui-dialog-body { margin-bottom: 16px; }
+.ui-dialog-body p:only-child { margin: 0; }
+
+.ui-confirm-text {
+  font-size: 14px; line-height: 1.5; color: var(--ink);
+  text-align: center;
+  padding: 8px 0;
+}
+
+.ui-dialog-btns {
+  display: flex; gap: 8px; justify-content: flex-end;
+}
+
+.ui-btn {
+  font: inherit; font-weight: 500; color: var(--ink); cursor: pointer;
+  background: var(--glass-strong);
+  border: 0; border-radius: var(--r-pill);
+  padding: 9px 18px; min-width: 72px;
+  box-shadow: inset 0 1px 0 0 var(--rim), inset 0 0 0 1px var(--rim-soft),
+              var(--shadow-sm);
+  transition: transform var(--fast), box-shadow var(--fast);
+}
+.ui-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 0 var(--rim), var(--shadow);
+}
+.ui-btn:active { transform: translateY(0) scale(0.98); }
+.ui-btn-primary { background: var(--accent); color: #fff; }
+
+/* ------ fields ------------------------------------------------------------ */
+
+.ui-label {
+  display: block;
+  font-size: 12px; color: var(--ink-soft);
+  margin: 0 2px 6px;
+}
+.ui-label:not(:first-child) { margin-top: 12px; }
+
+.ui-input, .ui-select {
+  font: inherit; width: 100%; color: var(--ink);
+  background: var(--glass-sunk);
+  border: 0; border-radius: var(--r-pill);
+  padding: 12px 18px; outline: none;
+  box-shadow: inset 0 0 0 1px var(--rim-soft);
+  transition: box-shadow var(--fast);
+}
+.ui-input:focus, .ui-select:focus {
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+.ui-input::placeholder { color: var(--ink-faint); }
+
+.ui-select {
+  -webkit-appearance: none; appearance: none;
+  cursor: pointer;
+  padding-right: 32px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M1 1l4 4 4-4' fill='none' stroke='%235a6470' stroke-width='1.5' stroke-linecap='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+}
+
+.ui-check-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 0; cursor: pointer;
+  font-size: 14px; color: var(--ink);
+}
+
+.ui-check {
+  width: 18px; height: 18px; flex: none;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* ------ menu -------------------------------------------------------------- */
+
+.ui-menu {
+  position: fixed; z-index: 9500;
+  min-width: 160px; padding: 6px;
+  box-shadow: var(--shadow-lg), var(--refract),
+              inset 0 1px 0 0 var(--rim),
+              inset 0 0 0 1px var(--rim-soft),
+              inset 0 -1px 0 0 var(--edge);
+  animation: ui-appear 120ms var(--ease);
+}
+
+.ui-menu-item {
+  display: block; width: 100%; text-align: left;
+  font: inherit; font-size: 13px; color: var(--ink); cursor: pointer;
+  background: none; border: 0; border-radius: var(--r-sm);
+  padding: 8px 14px;
+  transition: background var(--fast);
+}
+.ui-menu-item:hover { background: var(--glass-sunk); }
+.ui-menu-item:disabled { opacity: 0.35; cursor: not-allowed; }
+.ui-menu-danger { color: var(--danger); }
+.ui-menu-danger:hover { background: rgba(168, 84, 78, 0.14); }
+
+.ui-menu-sep {
+  height: 1px; margin: 4px 10px;
+  background: var(--rim-soft);
+}
+
+/* ------ toasts (these live in nethos.js/os.ui; this is the fallback host) - */
+
+.ui-toasts {
+  position: fixed; right: 18px; bottom: 18px; z-index: 9999;
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
+  pointer-events: none;
+}
+.ui-toast {
+  padding: 11px 17px; border-radius: var(--r-pill);
+  font-size: 13px; font-weight: 500;
+  background: var(--glass-strong); color: var(--ink);
+  box-shadow: inset 0 1px 0 0 var(--rim), var(--shadow);
+  pointer-events: auto;
+  animation: ui-toast-in 260ms var(--ease);
+}
+.ui-toast-good  { color: var(--good); }
+.ui-toast-error,
+.ui-toast-warn  { color: var(--danger); }
+
+/* ------ animations -------------------------------------------------------- */
+
+@keyframes ui-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes ui-dialog-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes ui-appear {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes ui-toast-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.96); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* Override the old .neth-toast styles: ui-toast is the current system. */
+.neth-toasts {
+  position: fixed; right: 18px; bottom: 18px; z-index: 9999;
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
+  pointer-events: none;
+}
+.neth-toast {
+  padding: 11px 17px; border-radius: var(--r-pill);
+  font-size: 13px; font-weight: 500;
+  background: var(--glass-strong); color: var(--ink);
+  box-shadow: inset 0 1px 0 0 var(--rim), var(--shadow);
+  pointer-events: auto;
+  animation: ui-toast-in 260ms var(--ease);
+}

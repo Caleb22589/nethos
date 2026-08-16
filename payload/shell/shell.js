@@ -656,8 +656,11 @@ function initMenu() {
     if (n.active) return;
     let password = "";
     if (n.secure) {
-      password = prompt("Password for “" + n.ssid + "”", "");
-      if (password === null) return;
+      const pw = await ui.ask([
+        { type: "password", label: "Wi-Fi Password", placeholder: "Password for " + n.ssid },
+      ]);
+      if (!pw) return;
+      password = pw;
     }
     const r = await post("/api/control/wifi",
                          { action: "connect", ssid: n.ssid, password });
@@ -804,6 +807,12 @@ function initMenu() {
 function initDesktop() {
   const host = document.getElementById("widgets");
 
+  /* Which widgets are on the desktop, and their sizes. Loaded once from
+     /api/storage/shell.desktop and mutated in place by the right-click menu,
+     so the menu and the desktop always agree without a round trip. */
+  let widgetApps = [];
+  let widgetConfig = null;
+
   /* Desktop icons: whatever is in ~/Desktop.
      Read from the same /api/files the Files app uses, so there is one
      definition of what a folder contains and one place for it to be wrong. */
@@ -864,33 +873,157 @@ function initDesktop() {
 
   // The desktop is the surface most likely to be right-clicked by reflex, and
   // the one where a browser menu looked most obviously wrong.
-  onContext(document.body, () => [
-    { label: "Open terminal", run: () => post("/api/launch", { builtin: "terminal" }) },
-    { label: "Applications", run: () => post("/api/launch", { builtin: "menu-toggle" }) },
-    "-",
-    { label: "Settings", run: () => post("/api/launch", { id: "settings" }) },
-    { label: "Reload desktop", run: () => post("/api/reload", { reason: "context menu" }) },
-  ]);
+  // "Add widget…" appears only while there is a widget not already on the
+  // desktop, so the affordance is never an item that leads nowhere.
+  onContext(document.body, (e) => {
+    const shown = (widgetConfig && widgetConfig.widgets)
+      ? widgetConfig.widgets.map((w) => w.id) : [];
+    const available = widgetApps.filter((a) => !shown.includes(a.id));
+    const items = [
+      { label: "Open terminal", run: () => post("/api/launch", { builtin: "terminal" }) },
+      { label: "Applications", run: () => post("/api/launch", { builtin: "menu-toggle" }) },
+      "-",
+    ];
+    if (available.length) {
+      items.push({
+        label: "Add widget…",
+        // The overlay closes before this runs, so ui.menu can take the screen
+        // back at the point the desktop was actually right-clicked.
+        run: () => ui.menu(
+          available.map((a) => ({
+            label: a.name,
+            run: () => addWidget(a.id),
+          })),
+          e.clientX, e.clientY
+        ),
+      });
+    }
+    items.push(
+      { label: "Settings", run: () => post("/api/launch", { id: "settings" }) },
+      { label: "Reload desktop", run: () => post("/api/reload", { reason: "context menu" }) },
+    );
+    return items;
+  });
 
   /* Widgets are iframes in this one surface rather than one window each, so
-     five widgets cost one web process instead of five. */
+     five widgets cost one web process instead of five.
+     The list of shown widgets lives in /api/storage/shell.desktop as
+     {"widgets":[{id,w,h}]}, the same pattern as the dock's shell.dock. With
+     no stored list (first run, or a wiped profile) every widget-mode app is
+     shown, which is what the desktop did before this existed. */
+  async function saveWidgets() {
+    try {
+      await put("/api/storage/shell.desktop", { data: widgetConfig });
+    } catch { /* the change still shows; it just will not survive */ }
+  }
+
   async function load() {
     let apps = [];
     try { apps = (await get("/api/apps")).apps; } catch { return; }
-    const widgets = apps.filter((a) => a.source === "nethos" && a.mode === "widget");
+    widgetApps = apps.filter((a) => a.source === "nethos" && a.mode === "widget");
 
+    let cfg = null;
+    try { cfg = (await get("/api/storage/shell.desktop")).data; } catch { /* defaults below */ }
+    if (cfg && "widgets" in cfg) {
+      // A stored list is the truth, filtered to what is still installed so a
+      // removed widget cannot linger invisibly in the config.
+      const installed = new Set(widgetApps.map((a) => a.id));
+      widgetConfig = { widgets: (cfg.widgets || []).filter((w) => installed.has(w.id)) };
+    } else {
+      widgetConfig = { widgets: widgetApps.map((a) => ({ id: a.id })) };
+    }
+    render();
+  }
+
+  function render() {
     host.replaceChildren();
-    for (const w of widgets) {
+    for (const entry of widgetConfig.widgets) {
+      const app = widgetApps.find((a) => a.id === entry.id);
+      if (!app) continue;
       const frame = document.createElement("iframe");
-      frame.src = "/apps/" + w.id + "/" + (w.entry || "index.html");
+      frame.src = "/apps/" + app.id + "/" + (app.entry || "index.html");
       frame.style.cssText =
-        "width:" + (w.width || 300) + "px;height:" + (w.height || 190) +
+        "width:" + (entry.w || app.width || 300) + "px;height:" +
+        (entry.h || app.height || 190) +
         "px;border:0;border-radius:var(--r-lg);overflow:hidden;" +
         "box-shadow:inset 0 1px 0 0 var(--rim),inset 0 0 0 1px var(--rim-soft)," +
         "var(--shadow);background:var(--glass);";
       frame.loading = "lazy";
+
+      /* A right-click inside a widget happens in the widget's document, which
+         this surface never sees -- events do not cross a frame boundary. So
+         each widget carries a capture-phase listener that hands the click back
+         here as a ui.menu. Prevented and stopped so the gesture belongs to the
+         widget manager, not to whatever the app would have done with it. */
+      frame.addEventListener("load", () => {
+        try {
+          const doc = frame.contentDocument;
+          if (!doc) return;
+          doc.addEventListener("contextmenu", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const r = frame.getBoundingClientRect();
+            widgetMenu(app.id, r.left + e.clientX, r.top + e.clientY);
+          }, true);
+        } catch (err) { /* cross-origin or not ready; the widget is not right-clickable */ }
+      });
+
       host.append(frame);
     }
+  }
+
+  /* The right-click menu on a widget. Remove and Edit, nothing else -- the
+     desktop is a desk, not a canvas (docs/DESIGN.md 28). */
+  function widgetMenu(id, x, y) {
+    ui.menu([
+      { label: "Edit", run: () => editWidget(id, x, y) },
+      "-",
+      { label: "Remove", run: () => removeWidget(id) },
+    ], x, y);
+  }
+
+  /* The widgets have no page-side settings today: their configuration is JSON
+     files (feeds, symbols) with no UI of their own. What the shell can
+     meaningfully offer instead is a bigger surface to look at one on, and a
+     size. Both are real actions. */
+  function editWidget(id, x, y) {
+    ui.menu([
+      { label: "Open in a window", run: () => post("/api/launch", { id }) },
+      { label: "Resize…", run: () => resizeWidget(id) },
+    ], x, y);
+  }
+
+  async function removeWidget(id) {
+    widgetConfig.widgets = widgetConfig.widgets.filter((w) => w.id !== id);
+    await saveWidgets();
+    // render, not load: the change should survive a failed save in memory the
+    // way the dock's pinned list does, and only a reload reads the disk again.
+    render();
+  }
+
+  async function addWidget(id) {
+    if (widgetConfig.widgets.some((w) => w.id === id)) return;
+    widgetConfig.widgets.push({ id });
+    await saveWidgets();
+    render();
+  }
+
+  async function resizeWidget(id) {
+    const entry = widgetConfig.widgets.find((w) => w.id === id);
+    if (!entry) return;
+    const vals = await ui.ask([
+      { type: "text", label: "Width (px)", value: String(entry.w || 300) },
+      { type: "text", label: "Height (px)", value: String(entry.h || 190) },
+    ]);
+    if (!vals) return;
+    // A floor so a widget cannot be shrunk into a sliver that is all chrome.
+    const w = parseInt(vals["Width (px)"], 10);
+    const h = parseInt(vals["Height (px)"], 10);
+    if (isNaN(w) || isNaN(h) || w < 120 || h < 60) return;
+    entry.w = w;
+    entry.h = h;
+    await saveWidgets();
+    render();
   }
 
   onEvent((msg) => {
@@ -1085,12 +1218,13 @@ onEvent((msg) => {
 });
 
 /* Attach a menu builder to an element. The builder returns the item list, so
-   it is evaluated at click time and can reflect current state. */
+   it is evaluated at click time and can reflect current state. The event is
+   passed to the builder for menus that need the click position. */
 function onContext(node, build) {
   node.addEventListener("contextmenu", (e) => {
     e.preventDefault();
     e.stopPropagation();
-    const items = build();
+    const items = build(e);
     if (items && items.length) contextMenu(e.clientX, e.clientY, items);
   });
 }

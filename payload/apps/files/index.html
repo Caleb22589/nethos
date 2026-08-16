@@ -5,6 +5,7 @@
   <title>Files — NETHOS</title>
   <link rel="stylesheet" href="/lib/nethos.css">
   <script src="/lib/nethos.js"></script>
+  <script src="/lib/nethos-ui.js"></script>
   <style>
     body { padding: 0; }
     .split { display: flex; flex: 1; min-height: 0; }
@@ -223,7 +224,16 @@
       row.addEventListener("dblclick", () => activate(entry));
       row.addEventListener("contextmenu", (ev) => {
         ev.preventDefault();
-        menu(ev, entry);
+        const items = [
+          { label: entry.dir ? "Open" : "Open", run: () => activate(entry) },
+        ];
+        if (entry.kind === "archive") {
+          items.push({ label: "Extract here", run: () => act("extract", entry.path) });
+        }
+        items.push({ label: "Rename…", run: () => rename(entry) });
+        items.push("-");
+        items.push({ label: "Move to Trash", danger: true, run: () => act("trash", entry.path) });
+        ui.menu(items, ev.clientX, ev.clientY);
       });
       list.append(row);
     }
@@ -238,33 +248,7 @@
 
   // The explorer draws its own menu rather than using the shell's: this is a
   // plain window, so nothing here needs the overlay routing the panel does.
-  let openMenu = null;
-  function menu(ev, entry) {
-    if (openMenu) openMenu.remove();
-    const m = el("div", "ctxmenu glass");
-    m.style.position = "fixed";
-    m.style.zIndex = "2000";
-    const add = (label, fn, danger) => {
-      const b = txt("button", "ctxitem" + (danger ? " danger" : ""), label);
-      b.addEventListener("click", () => { m.remove(); openMenu = null; fn(); });
-      m.append(b);
-    };
-    add(entry.dir ? "Open" : "Open", () => activate(entry));
-    if (entry.kind === "archive") add("Extract here", () => act("extract", entry.path));
-    add("Rename…", () => rename(entry));
-    m.append(el("div", "ctxsep"));
-    add("Move to Trash", () => act("trash", entry.path), true);
-    document.body.append(m);
-    const r = m.getBoundingClientRect();
-    m.style.left = Math.min(ev.clientX, window.innerWidth - r.width - 8) + "px";
-    m.style.top = Math.min(ev.clientY, window.innerHeight - r.height - 8) + "px";
-    openMenu = m;
-    setTimeout(() => window.addEventListener("pointerdown", function once(e) {
-      if (m.contains(e.target)) return;
-      m.remove(); openMenu = null;
-      window.removeEventListener("pointerdown", once, true);
-    }, true), 0);
-  }
+  // Using ui.menu() from nethos-ui.js instead.
 
   async function act(what, path, extra) {
     const r = await fetch("/api/files/" + what, {
@@ -277,8 +261,8 @@
     return r;
   }
 
-  function rename(entry) {
-    const name = prompt("New name", entry.name);
+  async function rename(entry) {
+    const name = await ui.ask("Rename to", entry.name);
     if (name && name !== entry.name) act("rename", entry.path, { name });
   }
 
@@ -331,8 +315,8 @@
     e.target.textContent = state.showHidden ? "Hide hidden" : "Show hidden";
     renderList();
   });
-  document.getElementById("newdir").addEventListener("click", () => {
-    const name = prompt("Folder name", "New folder");
+  document.getElementById("newdir").addEventListener("click", async () => {
+    const name = await ui.ask("Folder name", "New folder");
     if (name) act("mkdir", state.path, { name });
   });
   q.addEventListener("input", renderList);
