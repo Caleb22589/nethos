@@ -29,8 +29,14 @@ esac
 # /dev/sda2 -> /dev/sda + 2, /dev/nvme0n1p2 -> /dev/nvme0n1 + 2. The p is only
 # present on devices whose name ends in a digit, which is why this is not a
 # single sed expression.
-part=$(lsblk -no PARTN "$src" 2>/dev/null || true)
-disk=$(lsblk -no PKNAME "$src" 2>/dev/null || true)
+# The partition number comes from sysfs, not from lsblk. `lsblk -no PARTN`
+# drops the heading but keeps the column padding, so it answers " 2" with a
+# leading space -- and growpart rejects that with "partition-number must be a
+# number", having been handed an argument that looks numeric in every log line
+# you will read while trying to work out why. sysfs holds it unadorned, and
+# the start sector is already read from there a few lines below.
+part=$(cat "/sys/class/block/$(basename "$src")/partition" 2>/dev/null || true)
+disk=$(lsblk -no PKNAME "$src" 2>/dev/null | tr -d "[:space:]" || true)
 if [ -z "$part" ] || [ -z "$disk" ]; then
     say "cannot work out the disk and partition for $src; leaving it alone"
     exit 0
