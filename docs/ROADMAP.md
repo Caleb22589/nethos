@@ -99,8 +99,10 @@ separate tool, and npkg already resolves capabilities well enough to back it.
 - [x] App store, including drivers. Backed by npkg: search, install and
       remove, with live output while it works. Drivers are a category rather
       than a separate tool, because they are just packages.
-- [ ] File explorer.
-- [ ] Archive extractor.
+- [x] File explorer. Places, breadcrumbs, rename, trash, and copy/move/delete
+      with an internal clipboard; opens at a folder when launched with one.
+- [x] Archive extractor, as a verb on the file rather than an application:
+      "Extract here" on an archive, with progress on the same event bus.
 - [ ] Spotify viewer and similar helpers.
 
 - [x] Shared chrome: `.app-shell`, `.app-toolbar`, `.app-search`, `.row`,
@@ -171,3 +173,73 @@ separate tool, and npkg already resolves capabilities well enough to back it.
       is what is left to attack.
 - [ ] Memory again, after the above: the shell is no longer the largest
       consumer, so the next measurement should come before the next change.
+
+
+## 6. Requested 2026-08-18, reconciled against the tree
+
+The list as given was about forty items. Roughly a dozen of them are already
+built and were reported missing because they did not work -- which this
+project keeps producing and which is worth stating as a rule: on a desktop
+with no terminal, *absent* and *broken* are the same picture. Four separate
+faults behind one report of "ghosting" in a single session, none of them the
+thing that was reported.
+
+### Already built (verify before rebuilding)
+
+Snapshots and rollback, the updater, desktop icons, wallpapers, the loading
+splash, the control centre (Wi-Fi, brightness, battery), onboarding, the App
+Store including drivers, the online installer's interface, window chrome for
+NETHOS and foreign windows, the file explorer and the extractor, and the shell
+memory work (1.69GB -> 392MB).
+
+### Blocked on one thing, and it is not new
+
+**npkg triggers.** Already section 1's largest correctness gap, and the list
+above is downstream of it more than of any missing feature. The count is now
+six: the `netdev` group, `regulatory.db`, `/etc/nsswitch.conf`, the `polkitd`
+user, the missing XDG user directories (no ~/Desktop, so the desktop had no
+icons and Files had no sidebar), and a build that died outright in
+fix_alternatives. Every one presented as something else -- broken wifi, broken
+DNS, dead power buttons, a broken file manager, a broken build. Nothing else
+on this list buys as much as making maintainer scripts run, or emulating the
+handful of triggers that matter.
+
+### New, in rough order of leverage
+
+- [ ] **A declarative system manifest.** One file listing every package and
+      setting, so a machine can be handed over or rebuilt from it. Cheap here
+      because npkg already resolves from a set, and it makes the offline
+      installer and the "hand off the system" ask the same feature.
+- [ ] **Troubleshooter with an AI mode.** Section 3c already wants a
+      troubleshooter that can restart the shell and read diagnostics without a
+      terminal. NETHBot is the natural engine: a local model, on-device, that
+      already drives a shell with a human-in-the-loop pause on anything that
+      asks for a password. Offline recovery and the kernel-panic assistant are
+      the same tool reached from a different place, and the second one needs
+      A/B partitions (docs/ABUPDATE.md) before it has anywhere to boot from.
+- [ ] **Window bars on the terminal.** Already section 3b; foot has a `csd`
+      setting and this is a configuration change, not a project.
+- [ ] **Right-click and dock buttons.** Reported not working. Section 0 records
+      this as resolved in c8fba66, so either it regressed or the report is of
+      something adjacent. Testable directly now: injected pointer events plus
+      the daemon's request log is what found the launcher/control-centre bug,
+      and it is the only method here that exercises the button rather than the
+      API behind it.
+- [ ] **More settings, more customisation.** Already section 2; the
+      schema-driven form makes each one cheap.
+- [ ] **Applications in their own repositories**, fetched at build time rather
+      than shipped in the payload. The npk format already exists for this.
+- [ ] Music player with album art; camera with face detection; a WebKit
+      browser; game mode; VPN setup; printing; phone and device integration
+      (AirPods, AirDrop-style transfer). All real, none blocking, and each one
+      is an application rather than a change to the system.
+- [ ] Kernel and scheduling work -- CachyOS or Ubuntu Studio kernels, a swap
+      manager, VRAM as swap, CPU scheduling. Worth measuring before building:
+      section 5 has ~14s of boot time NETHOS actually owns, and the last
+      memory win came from one process change rather than a scheduler.
+
+### Not started, and honest about why
+
+- [ ] **ARM.** `build-image.sh` targets arm64 and `build-arm.sh` exists, so
+      this is not from zero -- but nothing has booted on real ARM hardware and
+      no claim should be made until it has.
