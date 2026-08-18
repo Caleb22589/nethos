@@ -243,3 +243,47 @@ handful of triggers that matter.
 - [ ] **ARM.** `build-image.sh` targets arm64 and `build-arm.sh` exists, so
       this is not from zero -- but nothing has booted on real ARM hardware and
       no claim should be made until it has.
+
+## 7. The assistant, and repair when the desktop is not there
+
+Built, 2026-08-18:
+
+- [x] **Troubleshooter**, closing 3c. Reload the surfaces, restart the daemon,
+      restart the shell, and the diagnostics `nethos-doctor` collects --
+      without a terminal, which is the point. Both restarts go through
+      `nethos-reload`; the endpoint's own version used
+      `pkill -f 'nethos-view url='`, which matches application windows too.
+- [x] **Ask on the panel.** A field you type into on the bar. It speaks to
+      NETHBot over the WebSocket its backend already exposes, from the page --
+      the daemon is not in the path, so an optional assistant cannot become a
+      dependency of the thing that draws the desktop.
+- [x] NETHBot behind a button that reports what it found rather than doing
+      nothing when pressed. Searched in ~/.local/share/nethbot, /usr/share/
+      nethbot and ~/nethbot.
+
+Still to do, in dependency order:
+
+- [ ] **Port NETHBot to Linux.** Its screen-control paths are macOS-bound
+      (pyautogui, Quartz) but lazily imported, so the FastAPI backend should
+      start on Linux untouched and the shell-command and chat paths -- the
+      ones a troubleshooter needs -- should work. Unverified: nothing has run
+      it there yet. Its own README already names NethOS as roadmap.
+- [ ] **A local model, so it works with no network.** The hybrid design already
+      assumes a small local model runs the loop and the cloud is a fallback;
+      an offline install needs the fallback to be absent rather than broken.
+- [ ] **Repair when the desktop does not come up.** The assistant is only
+      useful here if it can run when the thing it is repairing cannot. That
+      means somewhere else to boot from, which is the A/B partition scheme in
+      docs/ABUPDATE.md -- so this is blocked on that, not on the assistant.
+      Snapshots deliberately do not cover it: they restore NETHOS files, and
+      the case here is a kernel or an initramfs that will not start.
+- [ ] **A GRUB entry that boots to it.** Once there are two partitions, a
+      failed boot should offer the repair side rather than a console. Also the
+      natural home for a failed or interrupted update, which is the one
+      failure mode where the machine knows something went wrong and currently
+      has nothing to say about it.
+- [ ] **Watch rather than wait.** Notice a fault, ask in the background whether
+      it is significant, and only then say something. Every UI bug in this
+      project was found by a person noticing, describing it wrongly through no
+      fault of their own, and someone else measuring -- four of them in one
+      session were not the thing reported.
