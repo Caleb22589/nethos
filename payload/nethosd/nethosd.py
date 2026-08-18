@@ -1046,9 +1046,12 @@ def backend():
     return "sway"
 
 
-def spawn(argv):
+def spawn(argv, cwd=None):
     """Start a detached process. nethosd runs inside the session, so the child
     inherits WAYLAND_DISPLAY and friends.
+
+    cwd is for children that must run from their own directory -- NETHBot is
+    imported as `backend.main:app`, which only resolves from its checkout.
 
     Popen succeeding only means the binary existed. A program that starts and
     dies a tenth of a second later looked exactly like one that launched, which
@@ -1066,7 +1069,7 @@ def spawn(argv):
         out = subprocess.DEVNULL
     try:
         proc = subprocess.Popen(
-            argv, start_new_session=True,
+            argv, start_new_session=True, cwd=cwd,
             stdin=subprocess.DEVNULL, stdout=out, stderr=out,
         )
     except OSError as exc:
@@ -1804,6 +1807,67 @@ def menu_toggle(force=None):
     return want
 
 
+
+# --------------------------------------------------------------------------
+# NETHBot — the local assistant, when it is installed
+# --------------------------------------------------------------------------
+# Kept at arm's length on purpose. NETHBot is its own project with its own
+# dependencies, and a desktop that will not start because an optional assistant
+# is missing would be a bad trade. Everything here answers "is it there?"
+# before it answers anything else, and the interface says so rather than
+# offering a button that does nothing.
+
+NETHBOT_PORT = 8000
+NETHBOT_DIRS = [
+    os.path.expanduser("~/.local/share/nethbot"),
+    "/usr/share/nethbot",
+    os.path.expanduser("~/nethbot"),
+]
+
+
+def nethbot_dir():
+    """Where NETHBot is installed, or None. Identified by its entrypoint."""
+    for base in NETHBOT_DIRS:
+        if os.path.isfile(os.path.join(base, "backend", "main.py")):
+            return base
+    return None
+
+
+def nethbot_running():
+    """Whether something is already answering on its port."""
+    import socket
+    sock = socket.socket()
+    sock.settimeout(0.3)
+    try:
+        return sock.connect_ex(("127.0.0.1", NETHBOT_PORT)) == 0
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def nethbot_start():
+    """Bring it up if it is installed and not already running."""
+    base = nethbot_dir()
+    if not base:
+        return False, "not installed"
+    if nethbot_running():
+        return True, "already running"
+    # Its own interpreter if it has a virtualenv, ours if not -- NETHBot wants
+    # fastapi and uvicorn, which are not in the desktop set and should not be.
+    venv = os.path.join(base, ".venv", "bin", "python3")
+    python = venv if os.path.isfile(venv) else sys.executable
+    ok = spawn([python, "-m", "uvicorn", "backend.main:app",
+                "--host", "127.0.0.1", "--port", str(NETHBOT_PORT)], cwd=base)
+    if not ok:
+        return False, "could not start"
+    for _ in range(60):                       # up to six seconds
+        if nethbot_running():
+            return True, "started"
+        time.sleep(0.1)
+    return False, "started but not answering on %d" % NETHBOT_PORT
+
+
 # --------------------------------------------------------------------------
 # system tray (StatusNotifierItem)
 # --------------------------------------------------------------------------
@@ -2301,6 +2365,13 @@ class Handler(BaseHTTPRequestHandler):
                         "log": PKG_JOB["log"][-40:]},
             })
 
+        if route == "/api/nethbot":
+            base = nethbot_dir()
+            return self.send_json({"installed": bool(base), "path": base or "",
+                                   "running": nethbot_running(),
+                                   "port": NETHBOT_PORT,
+                                   "searched": NETHBOT_DIRS})
+
         if route == "/api/diagnostics":
             # What a person would otherwise have to open a terminal and read
             # four files to learn.
@@ -2654,6 +2725,33 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/tray/activate":
             ok = tray_activate(str(data.get("id", "")), bool(data.get("secondary")))
             return self.send_json({"ok": ok})
+
+        if route == "/api/nethbot/open":
+            ok, detail = nethbot_start()
+            if not ok:
+                return self.send_json({"error": detail}, 404 if detail == "not installed" else 500)
+            # Its own window, in our own host, so it wears the same chrome as
+            # everything else rather than opening a browser.
+            spawn(["nethos-view",
+                   "url=http://127.0.0.1:%d/,role=window,name=nethbot,"
+                   "title=NETHBot,width=900,height=680,transparent=0" % NETHBOT_PORT])
+            return self.send_json({"ok": True, "detail": detail})
+
+        if route == "/api/troubleshoot":
+            # The three things a person would otherwise need a terminal for,
+            # which is the whole point: every interface fault in this project
+            # so far has been invisible from the desktop it broke.
+            action = str(data.get("action", ""))
+            if action == "reload":
+                return self.send_json({"ok": True,
+                                       "generation": EVENTS.bump("troubleshooter")})
+            if action == "restart-daemon":
+                spawn(["nethos-reload", "--daemon"])
+                return self.send_json({"ok": True})
+            if action == "restart-shell":
+                spawn(["nethos-reload", "--shell"])
+                return self.send_json({"ok": True})
+            return self.send_json({"error": "unknown action"}, 400)
 
         if route == "/api/reload":
             return self.send_json({"ok": True,

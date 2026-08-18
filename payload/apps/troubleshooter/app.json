@@ -1,0 +1,12 @@
+{
+  "id": "troubleshooter",
+  "name": "Troubleshooter",
+  "description": "Restart and diagnose the interface — and ask NETHBot when it is not obvious",
+  "icon": "TS",
+  "version": "1.0.0",
+  "categories": ["NETHOS", "System"],
+  "entry": "index.html",
+  "permissions": ["system"],
+  "mode": "window",
+  "window": { "width": 880, "height": 660 }
+}

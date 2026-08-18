@@ -1,0 +1,146 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Troubleshooter</title>
+<link rel="stylesheet" href="/lib/nethos.css">
+<script src="/lib/nethos.js" defer></script>
+<script src="/lib/nethos-ui.js" defer></script>
+
+<body class="app-shell">
+<header class="app-toolbar">
+  <h1>Troubleshooter</h1>
+  <span class="chip" id="daemon-chip">checking…</span>
+</header>
+
+<main id="main">
+  <!-- Recovery first. Someone opens this because something is wrong, and the
+       thing they need is at the top rather than below a wall of diagnostics. -->
+  <section>
+    <h2>Restart</h2>
+    <p class="dim">Least disruptive first. Each one keeps your windows.</p>
+    <div class="row" id="act-reload">
+      <div class="grow">
+        <b>Reload the interface</b>
+        <div class="dim">Re-reads the shell's pages. Fixes a surface that has stopped updating.</div>
+      </div>
+      <button class="btn" data-action="reload">Reload</button>
+    </div>
+    <div class="row" id="act-daemon">
+      <div class="grow">
+        <b>Restart the daemon</b>
+        <div class="dim">nethosd serves every app and carries the event stream.</div>
+      </div>
+      <button class="btn" data-action="restart-daemon">Restart</button>
+    </div>
+    <div class="row" id="act-shell">
+      <div class="grow">
+        <b>Restart the shell</b>
+        <div class="dim">Panel, dock, launcher and desktop. Takes a couple of seconds.</div>
+      </div>
+      <button class="btn" data-action="restart-shell">Restart</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>NETHBot</h2>
+    <!-- Honest about absence. NETHBot is a separate project with its own
+         dependencies; a button that silently does nothing would be worse than
+         one that says why it cannot. -->
+    <div class="row">
+      <div class="grow">
+        <b>Ask the assistant</b>
+        <div class="dim" id="bot-detail">looking for it…</div>
+      </div>
+      <button class="btn btn-primary" id="bot-open" disabled>Open NETHBot</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Diagnostics</h2>
+    <div class="row">
+      <div class="grow">
+        <b>Surfaces</b>
+        <div class="dim" id="surfaces">—</div>
+      </div>
+      <button class="btn" id="refresh">Refresh</button>
+    </div>
+    <pre class="stream" id="log">—</pre>
+  </section>
+</main>
+
+<script>
+(async () => {
+  const api = (p, b) => fetch(p, b ? {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(b),
+  } : undefined).then((r) => r.json()).catch(() => ({ error: "unreachable" }));
+
+  /* Restart buttons.
+
+     Deliberately confirm before the two that interrupt: this window is itself
+     drawn by the things it is restarting, so pressing the wrong one is how you
+     lose whatever you were reading. Reload is safe and does not ask. */
+  for (const b of document.querySelectorAll("[data-action]")) {
+    b.addEventListener("click", async () => {
+      const action = b.dataset.action;
+      if (action !== "reload") {
+        const what = action === "restart-shell" ? "the shell" : "the daemon";
+        if (!(await ui.confirm("Restart " + what + " now?"))) return;
+      }
+      const was = b.textContent;
+      b.disabled = true; b.textContent = "Working…";
+      const r = await api("/api/troubleshoot", { action });
+      b.textContent = r.error ? "Failed" : "Done";
+      if (r.error) nethos.system.notify("Troubleshooter: " + r.error, "warn");
+      setTimeout(() => { b.textContent = was; b.disabled = false; }, 2000);
+    });
+  }
+
+  const botBtn = document.getElementById("bot-open");
+  const botDetail = document.getElementById("bot-detail");
+
+  async function refreshBot() {
+    const s = await api("/api/nethbot");
+    if (s.error || !s.installed) {
+      botDetail.textContent =
+        "Not installed. Put NETHBot in ~/.local/share/nethbot and it appears here.";
+      botBtn.disabled = true;
+      return;
+    }
+    botDetail.textContent = s.running
+      ? "Running on port " + s.port + " — " + s.path
+      : "Installed at " + s.path + ". Opening it will start it.";
+    botBtn.disabled = false;
+  }
+
+  botBtn.addEventListener("click", async () => {
+    botBtn.disabled = true;
+    const was = botBtn.textContent;
+    botBtn.textContent = "Starting…";
+    const r = await api("/api/nethbot/open", {});
+    if (r.error) nethos.system.notify("NETHBot: " + r.error, "warn");
+    botBtn.textContent = was;
+    refreshBot();
+  });
+
+  async function refreshDiag() {
+    const d = await api("/api/diagnostics");
+    const chip = document.getElementById("daemon-chip");
+    if (d.error) { chip.textContent = "daemon unreachable"; chip.className = "chip warn"; return; }
+    chip.textContent = "daemon up"; chip.className = "chip on";
+    const s = d.surfaces || {};
+    const names = Object.keys(s);
+    document.getElementById("surfaces").textContent = names.length
+      ? names.map((n) => n + " " + s[n] + "s ago").join(" · ")
+      : "no surface has reported in";
+    // nethosd rstrips each line, so they need rejoining or the log arrives as
+    // one unbroken paragraph.
+    document.getElementById("log").textContent = (d.log || []).join("\n") || "nothing logged";
+  }
+
+  document.getElementById("refresh").addEventListener("click", refreshDiag);
+  await refreshBot();
+  await refreshDiag();
+  setInterval(refreshDiag, 10000);
+})();
+</script>
+</body>
