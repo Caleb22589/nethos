@@ -259,9 +259,16 @@ function initDock() {
      under the cursor 700ms after appearing. It read as a dock that never
      opened at all, because by the time you looked it was gone. */
   let overDock = false;
+  // A stationary pointer cannot be distinguished from one that left without
+  // saying so -- the surface's input region shrinks and no event follows. So
+  // the flag holds the dock open, and this caps how long it can: long enough
+  // to read the labels and reach for an icon, short enough that a dock left
+  // open by a missed event closes on its own.
+  let lastMove = 0;
 
   const hideSoon = debounce(() => {
-    if (autohide && !overDock) { body.classList.add("hidden"); applyHostGeometry(); }
+    const held = overDock && Date.now() - lastMove < 5000;
+    if (autohide && !held) { body.classList.add("hidden"); applyHostGeometry(); }
   }, 700);
 
   /* Hover cannot end on its own here.
@@ -293,12 +300,17 @@ function initDock() {
   // pointerenter/leave rather than the motion handler: these fire on arrival
   // and departure, which is exactly the question being asked, and they still
   // fire when the pointer is not moving.
-  dock.addEventListener("pointerenter", () => { overDock = true; });
+  // Not pointerenter: it fires when a pointer event re-tests what is under the
+  // cursor, and a cursor that has stopped produces no events at all -- so on a
+  // reveal caused by the last motion in a movement, it never arrived and the
+  // dock hid anyway. The motion handler below already knows where the pointer
+  // is; the last position it saw is the answer.
   dock.addEventListener("pointerleave", () => { overDock = false; hideSoon(); });
 
   document.addEventListener("mousemove", (e) => {
     if (!autohide) return;
-    if (e.clientY > window.innerHeight - 24) reveal();
+    lastMove = Date.now();
+    if (e.clientY > window.innerHeight - 24) { overDock = true; reveal(); }
     // Above the strip but still inside the surface: the pointer has left the
     // dock without a pointerleave, so clear the flag or it would stay open.
     else if (!body.classList.contains("hidden")) { overDock = false; hideSoon(); }
