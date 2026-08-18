@@ -2658,18 +2658,25 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/troubleshoot":
             action = data.get("action", "")
             if action == "reload":
-                EVENTS.publish("reload", {"reason": "troubleshooter"})
-                return self.send_json({"ok": True, "did": "reloaded surfaces"})
+                # bump, not publish. A reload message carries the generation
+                # the surfaces compare against, and publish leaves it where it
+                # was -- so every client saw its own baseline come back and
+                # concluded nothing had changed. The button reported success
+                # and reloaded nothing, which is the same failure the shell's
+                # own live reload had.
+                return self.send_json({"ok": True, "did": "reloaded surfaces",
+                                       "generation": EVENTS.bump("troubleshooter")})
             if action == "restart-shell":
-                # The surfaces, not the compositor: losing the compositor
-                # takes every open application with it.
-                spawn(["sh", "-c",
-                       "pkill -f 'nethos-view url=' ; sleep 2 ; "
-                       "setsid nethos-session >/dev/null 2>&1 &"])
+                # nethos-reload owns this. The pattern here was
+                # `pkill -f 'nethos-view url='`, which matches every window as
+                # well as the shell -- application windows are nethos-view too
+                # -- so the comment above it was exactly wrong: it took the
+                # applications with it. nethos-reload matches role=panel, which
+                # only the shell has.
+                spawn(["nethos-reload", "--shell"])
                 return self.send_json({"ok": True, "did": "restarting shell"})
             if action == "restart-daemon":
-                spawn(["sh", "-c",
-                       "sleep 1 ; systemctl --user restart nethosd"])
+                spawn(["nethos-reload", "--daemon"])
                 return self.send_json({"ok": True, "did": "restarting nethosd"})
             return self.send_json({"error": "unknown action"}, 400)
 
@@ -2736,22 +2743,6 @@ class Handler(BaseHTTPRequestHandler):
                    "url=http://127.0.0.1:%d/,role=window,name=nethbot,"
                    "title=NETHBot,width=900,height=680,transparent=0" % NETHBOT_PORT])
             return self.send_json({"ok": True, "detail": detail})
-
-        if route == "/api/troubleshoot":
-            # The three things a person would otherwise need a terminal for,
-            # which is the whole point: every interface fault in this project
-            # so far has been invisible from the desktop it broke.
-            action = str(data.get("action", ""))
-            if action == "reload":
-                return self.send_json({"ok": True,
-                                       "generation": EVENTS.bump("troubleshooter")})
-            if action == "restart-daemon":
-                spawn(["nethos-reload", "--daemon"])
-                return self.send_json({"ok": True})
-            if action == "restart-shell":
-                spawn(["nethos-reload", "--shell"])
-                return self.send_json({"ok": True})
-            return self.send_json({"error": "unknown action"}, 400)
 
         if route == "/api/reload":
             return self.send_json({"ok": True,
