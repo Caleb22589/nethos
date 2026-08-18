@@ -1013,6 +1013,57 @@ polkit.addRule(function(action, subject) {
 """
 
 
+def apply_systemd_declarations(root: str) -> tuple[int, int]:
+    """Create the users and directories the installed packages asked for.
+
+    Every mystery bug in this project has the same shape: a package unpacks
+    perfectly, something a maintainer script would have created is missing, and
+    the symptom appears somewhere else entirely. The fix so far has been to add
+    the missing thing to a list here -- netdev after the wifi stopped working,
+    polkitd after the power buttons died. That list is only ever as complete as
+    the last bug.
+
+    But the packages already say what they need. Debian ships those
+    declarations as sysusers.d and tmpfiles.d files, and systemd can apply them
+    to a directory tree rather than to the running system, which is exactly the
+    offline case we are in. So instead of maintaining the list, read what the
+    packages installed and act on it.
+
+    This does not replace setup_users: that one owns the human account and the
+    groups a desktop session needs on any distribution. It covers the system
+    users and the runtime directories that arrive with whatever was installed,
+    which is the part nobody can enumerate in advance.
+    """
+    users = dirs = 0
+    for tool, args, label in (
+            ("systemd-sysusers", [], "sysusers"),
+            ("systemd-tmpfiles", ["--create"], "tmpfiles")):
+        path = shutil.which(tool)
+        if not path:
+            # Not fatal. The builder is Debian and has both, but a bootstrap
+            # from something else should degrade rather than stop.
+            say(f"  {label}: {tool} not on the builder; skipped")
+            continue
+        try:
+            proc = subprocess.run([path] + args + ["--root=" + root],
+                                  capture_output=True, text=True, timeout=180)
+        except (OSError, subprocess.SubprocessError) as exc:
+            say(f"  {label}: {exc}")
+            continue
+        # Both tools exit non-zero on partial failure -- a tmpfiles line for a
+        # filesystem we do not have, say -- while still applying the rest.
+        # Report it and carry on rather than failing the build over a line
+        # that was never going to apply.
+        if proc.returncode != 0:
+            first = (proc.stderr or "").strip().split("\n")[0][:160]
+            say(f"  {label}: exit {proc.returncode}{': ' + first if first else ''}")
+        if label == "sysusers":
+            users = 1
+        else:
+            dirs = 1
+    return users, dirs
+
+
 def setup_polkit(root: str) -> None:
     """The rule that makes the power buttons work, and the directory for it.
 
@@ -1314,6 +1365,10 @@ def bootstrap(root: str, sets: list[str], arch: str, username: str,
     setup_sudo(root)
     setup_network(root)
     setup_polkit(root)
+    # After the accounts above, so a package's own sysusers declaration can add
+    # to them, and before alternatives so anything owned by a system user it
+    # creates already exists.
+    apply_systemd_declarations(root)
     fixed = fix_alternatives(root)
     if fixed:
         say(f"  resolved {fixed} dangling alternatives link(s)")
