@@ -251,8 +251,17 @@ function initDock() {
     }
   }
 
+  /* True while the pointer is actually on the dock.
+
+     The hide is on a timer that only pointer *motion* restarts, so a pointer
+     resting on the dock -- which is what a pointer does once it has arrived
+     somewhere -- generated nothing to restart it, and the dock hid itself
+     under the cursor 700ms after appearing. It read as a dock that never
+     opened at all, because by the time you looked it was gone. */
+  let overDock = false;
+
   const hideSoon = debounce(() => {
-    if (autohide) { body.classList.add("hidden"); applyHostGeometry(); }
+    if (autohide && !overDock) { body.classList.add("hidden"); applyHostGeometry(); }
   }, 700);
 
   /* Hover cannot end on its own here.
@@ -275,15 +284,26 @@ function initDock() {
   function reveal() {
     body.classList.remove("hidden");
     applyHostGeometry();
+    // Still scheduled, so a pointer that crosses the strip and carries on
+    // somewhere else does not leave the dock out. It is the check inside
+    // hideSoon that keeps it up while the pointer is genuinely on it.
     hideSoon();
   }
+
+  // pointerenter/leave rather than the motion handler: these fire on arrival
+  // and departure, which is exactly the question being asked, and they still
+  // fire when the pointer is not moving.
+  dock.addEventListener("pointerenter", () => { overDock = true; });
+  dock.addEventListener("pointerleave", () => { overDock = false; hideSoon(); });
 
   document.addEventListener("mousemove", (e) => {
     if (!autohide) return;
     if (e.clientY > window.innerHeight - 24) reveal();
-    else if (!body.classList.contains("hidden")) hideSoon();
+    // Above the strip but still inside the surface: the pointer has left the
+    // dock without a pointerleave, so clear the flag or it would stay open.
+    else if (!body.classList.contains("hidden")) { overDock = false; hideSoon(); }
   });
-  document.addEventListener("mouseleave", hideSoon);
+  document.addEventListener("mouseleave", () => { overDock = false; hideSoon(); });
 
   async function loadPrefs() {
     try {
