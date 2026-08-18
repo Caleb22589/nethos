@@ -1857,8 +1857,27 @@ def nethbot_start():
     # fastapi and uvicorn, which are not in the desktop set and should not be.
     venv = os.path.join(base, ".venv", "bin", "python3")
     python = venv if os.path.isfile(venv) else sys.executable
-    ok = spawn([python, "-m", "uvicorn", "backend.main:app",
-                "--host", "127.0.0.1", "--port", str(NETHBOT_PORT)], cwd=base)
+    argv = [python, "-m", "uvicorn", "backend.main:app",
+            "--host", "127.0.0.1", "--port", str(NETHBOT_PORT)]
+
+    # In its own unit, not as a child of this one. A plain spawn puts it in
+    # nethosd's cgroup, and systemd kills the whole cgroup when the unit
+    # restarts -- so the assistant died every time the daemon was restarted,
+    # including from the Troubleshooter button whose entire purpose is to
+    # restart things when something is wrong. An assistant that cannot outlive
+    # the component you are asking it about is not much of one.
+    if shutil.which("systemd-run"):
+        ok = spawn(["systemd-run", "--user", "--collect",
+                    "--unit=nethbot", "--working-directory=" + base] + argv)
+        if ok:
+            for _ in range(60):
+                if nethbot_running():
+                    return True, "started"
+                time.sleep(0.1)
+            # Fall through to the plain spawn rather than reporting success:
+            # systemd-run returns as soon as the unit is queued, so a unit that
+            # failed to start looks identical to one that did.
+    ok = spawn(argv, cwd=base)
     if not ok:
         return False, "could not start"
     for _ in range(60):                       # up to six seconds
