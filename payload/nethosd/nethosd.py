@@ -36,6 +36,7 @@ import shlex
 import socket
 import struct
 import shutil
+import sys
 import subprocess
 import threading
 import time
@@ -1835,7 +1836,6 @@ def nethbot_dir():
 
 def nethbot_running():
     """Whether something is already answering on its port."""
-    import socket
     sock = socket.socket()
     sock.settimeout(0.3)
     try:
