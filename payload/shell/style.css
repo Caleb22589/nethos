@@ -712,3 +712,62 @@ html.no-motion .cc-card { animation: none; }
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   overflow: hidden; word-break: break-word;
 }
+
+/* ============================================== the assistant bar ======= */
+/* Anchored under the panel and centred, the way a command palette is: this is
+   reached by keyboard as much as by the button, and centred is where the eye
+   already is after pressing something on the bar. */
+.ask {
+  all: unset;
+  padding: 4px 12px;
+  border-radius: var(--r-pill);
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  cursor: default;
+  transition: background var(--fast), color var(--fast);
+}
+.ask:hover { background: var(--glass-sunk); color: var(--ink); }
+
+#askbar {
+  position: fixed; inset: 0;
+  display: flex; flex-direction: column; align-items: center;
+  padding: 62px 14px 0;
+  pointer-events: none;
+}
+/* Same reason as #cc: `display` on an id outranks [hidden], so without this
+   the bar is only ever hidden by the surface's own opacity -- and the
+   launcher turns that opacity on for everything in the surface. */
+#askbar[hidden] { display: none; }
+
+.ask-input, .ask-log {
+  width: min(620px, 92vw);
+  pointer-events: auto;
+  background: var(--cc-fill, rgba(252, 253, 255, 0.95));
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  backdrop-filter: blur(30px) saturate(180%);
+  box-shadow: var(--refract), inset 0 1px 0 0 var(--rim),
+              inset 0 0 0 1px var(--rim-soft), var(--shadow-lg);
+}
+.ask-input {
+  all: unset;
+  box-sizing: border-box;
+  padding: 14px 18px;
+  border-radius: var(--r-lg);
+  font-family: var(--sans);
+  font-size: 15px;
+  color: var(--ink);
+}
+.ask-log:empty { display: none; }
+.ask-log {
+  margin-top: 8px;
+  padding: 12px 18px;
+  border-radius: var(--r-lg);
+  max-height: 42vh;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+.ask-line + .ask-line { margin-top: 6px; }
+.ask-line.you { color: var(--ink); }
+.ask-line.warn { color: var(--danger, #b3261e); }

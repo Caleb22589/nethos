@@ -164,7 +164,15 @@ function initPanel() {
   // right-hand side of a menu bar is on macOS. It was previously inert, which
   // meant the battery and the clock were the only things on screen that
   // looked like controls and were not.
+  /* The assistant, reachable from the bar rather than from an application.
+     Placed before the status cluster so the right-hand end reads outwards:
+     ask, then what the machine is doing, then the clock. */
+  const ask = el("button", "ask", "Ask");
+  ask.title = "Ask NETHBot";
+  ask.addEventListener("click", () => post("/api/nethbot/ask", { open: true }));
+
   const statusEl = document.getElementById("status");
+  if (statusEl && statusEl.parentNode) statusEl.parentNode.insertBefore(ask, statusEl);
   if (statusEl) {
     statusEl.style.cursor = "default";
     statusEl.addEventListener("click", () => post("/api/control/toggle", {}));
@@ -754,6 +762,95 @@ function initMenu() {
     ccDismiss = ccDismissOn;
     window.addEventListener("pointerdown", ccDismiss, true);
   }
+
+  /* ---- the assistant bar -------------------------------------------------
+     Lives here rather than in the panel because it needs a text field, and the
+     panel cannot reliably take clicks outside its exclusive zone.
+
+     It speaks to NETHBot directly over a WebSocket. That is deliberate: the
+     daemon would otherwise need a WebSocket client and NETHBot's protocol,
+     both of which the page already has for free -- and it keeps an optional
+     assistant from becoming a dependency of the thing that draws the desktop. */
+  const NETHBOT_WS = "ws://127.0.0.1:8000/ws";
+  let askOpen = false, askSock = null;
+  const askEl = document.createElement("div");
+  askEl.id = "askbar";
+  askEl.hidden = true;
+  document.body.append(askEl);
+
+  const askInput = el("input", "ask-input");
+  askInput.type = "text";
+  askInput.placeholder = "Ask NETHBot…";
+  const askLog = el("div", "ask-log");
+  askEl.append(askInput, askLog);
+
+  function askSay(text, cls) {
+    const line = el("div", "ask-line" + (cls ? " " + cls : ""), text);
+    askLog.append(line);
+    askLog.scrollTop = askLog.scrollHeight;
+  }
+
+  function askClose() {
+    if (!askOpen) return;
+    askOpen = false;
+    askEl.hidden = true;
+    document.body.classList.remove("ctx");
+    if (askSock) { try { askSock.close(); } catch (e) { /* already gone */ } askSock = null; }
+    if (typeof nethosHost !== "undefined" && !open) nethosHost.inputRect(0, 0, 0, 0);
+    repaint();
+  }
+
+  function askConnect() {
+    // Fails closed and says so. NETHBot is optional and frequently absent, and
+    // a box that swallows what you typed is worse than one that tells you.
+    let sock;
+    try { sock = new WebSocket(NETHBOT_WS); }
+    catch (e) { askSay("NETHBot is not running. Open it from the Troubleshooter.", "warn"); return null; }
+    sock.addEventListener("message", (ev) => {
+      let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+      if (m.type === "hello" || m.type === "replay_start" || m.type === "replay_end") return;
+      const text = m.message || m.text || m.summary || "";
+      if (text) askSay(text);
+    });
+    sock.addEventListener("error", () =>
+      askSay("Could not reach NETHBot on port 8000.", "warn"));
+    return sock;
+  }
+
+  askInput.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") return askClose();
+    if (e.key !== "Enter") return;
+    const text = askInput.value.trim();
+    if (!text) return;
+    askInput.value = "";
+    askSay("> " + text, "you");
+    if (!askSock || askSock.readyState > 1) askSock = askConnect();
+    if (!askSock) return;
+    const send = () => askSock.send(JSON.stringify(
+      { type: "user_request", payload: { text } }));
+    if (askSock.readyState === 1) send();
+    else askSock.addEventListener("open", send, { once: true });
+  });
+
+  onEvent((msg) => {
+    if (msg.type !== "nethbot-ask") return;
+    const want = !!(msg.data && msg.data.open);
+    if (want === askOpen) return;
+    if (!want) return askClose();
+    askOpen = true;
+    askEl.hidden = false;
+    document.body.classList.add("ctx");
+    if (typeof nethosHost !== "undefined") {
+      nethosHost.inputRect(0, 0, window.innerWidth, window.innerHeight);
+      nethosHost.show();
+    }
+    if (!askSock) askSock = askConnect();
+    const focus = () => {
+      askInput.focus();
+      if (document.activeElement !== askInput) requestAnimationFrame(focus);
+    };
+    requestAnimationFrame(focus);
+  });
 
   onEvent((msg) => {
     if (msg.type !== "control-centre") return;

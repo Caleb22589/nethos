@@ -2733,6 +2733,14 @@ class Handler(BaseHTTPRequestHandler):
             ok = tray_activate(str(data.get("id", "")), bool(data.get("secondary")))
             return self.send_json({"ok": ok})
 
+        if route == "/api/nethbot/ask":
+            # Only a broadcast. The ask bar lives in the overlay surface, for
+            # the same reason menus and the control centre do: the panel does
+            # not reliably take clicks outside its exclusive zone, and this
+            # one needs a text field.
+            EVENTS.publish("nethbot-ask", {"open": bool(data.get("open", True))})
+            return self.send_json({"ok": True})
+
         if route == "/api/nethbot/open":
             ok, detail = nethbot_start()
             if not ok:
