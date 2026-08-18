@@ -739,15 +739,10 @@ html.no-motion .cc-card { animation: none; }
    launcher turns that opacity on for everything in the surface. */
 #askbar[hidden] { display: none; }
 
-.ask-input, .ask-log {
-  width: min(620px, 92vw);
-  pointer-events: auto;
-  background: var(--cc-fill, rgba(252, 253, 255, 0.95));
-  -webkit-backdrop-filter: blur(30px) saturate(180%);
-  backdrop-filter: blur(30px) saturate(180%);
-  box-shadow: var(--refract), inset 0 1px 0 0 var(--rim),
-              inset 0 0 0 1px var(--rim-soft), var(--shadow-lg);
-}
+/* `all: unset` has to come first and in the same rule as what follows it.
+   It was in a later rule than the shared surface below, so it reset the
+   background it had just been given and the field rendered as floating text
+   with no pane under it, while the log beside it looked correct. */
 .ask-input {
   all: unset;
   box-sizing: border-box;
@@ -756,6 +751,15 @@ html.no-motion .cc-card { animation: none; }
   font-family: var(--sans);
   font-size: 15px;
   color: var(--ink);
+}
+.ask-input, .ask-log {
+  width: min(620px, 92vw);
+  pointer-events: auto;
+  background: var(--cc-fill, rgba(252, 253, 255, 0.95));
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  backdrop-filter: blur(30px) saturate(180%);
+  box-shadow: var(--refract), inset 0 1px 0 0 var(--rim),
+              inset 0 0 0 1px var(--rim-soft), var(--shadow-lg);
 }
 .ask-log:empty { display: none; }
 .ask-log {
