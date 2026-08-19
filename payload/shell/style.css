@@ -775,3 +775,5 @@ html.no-motion .cc-card { animation: none; }
 .ask-line + .ask-line { margin-top: 6px; }
 .ask-line.you { color: var(--ink); }
 .ask-line.warn { color: var(--danger, #b3261e); }
+.ask-line.step { color: var(--ink-faint); }
+.ask-line.term { font-family: var(--mono); font-size: 12px; color: var(--ink); }

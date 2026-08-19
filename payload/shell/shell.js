@@ -808,9 +808,29 @@ function initMenu() {
     catch (e) { askSay("NETHBot is not running. Open it from the Troubleshooter.", "warn"); return null; }
     sock.addEventListener("message", (ev) => {
       let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
-      if (m.type === "hello" || m.type === "replay_start" || m.type === "replay_end") return;
-      const text = m.message || m.text || m.summary || "";
-      if (text) askSay(text);
+      // NETHBot's shape is {type, payload:{...}}, and what is worth showing
+      // differs per type. Guessing at message/text/summary rendered nothing at
+      // all: the reply arrives as payload.said on an agent_response.
+      const p = m.payload || {};
+      switch (m.type) {
+        case "agent_response":
+          if (p.said) askSay(p.said, p.is_error ? "warn" : "");
+          break;
+        case "plan":
+          if (Array.isArray(p.steps) && p.steps.length)
+            askSay("Plan: " + p.steps.join(" · "), "step");
+          break;
+        case "log":
+          // The narration, minus the parts the other cases already show.
+          if (p.kind === "action" && p.text) askSay(p.text, "step");
+          break;
+        case "term":
+          // What the command actually printed, which is usually the answer.
+          if (p.kind === "line" && p.text) askSay(p.text, "term");
+          break;
+        default:
+          break;                      // state, heartbeat, hello, replay_*
+      }
     });
     sock.addEventListener("error", () =>
       askSay("Could not reach NETHBot on port 8000.", "warn"));
