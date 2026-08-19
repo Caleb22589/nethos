@@ -150,6 +150,13 @@ install -m 0644 "$PAYLOAD"/sway/config /etc/sway/config
 install -d /etc/nethos
 install -m 0644 "$PAYLOAD"/hypr/hyprland.conf /etc/nethos/hyprland.conf
 
+# Where the assistant thinks. Never overwritten: this is the one file the user
+# edits to move between the local model and a cloud endpoint, and an update
+# that reset it would put a 10GB model back on a machine they had moved off it.
+if [ ! -f /etc/nethos/assistant.conf ]; then
+    install -m 0644 "$PAYLOAD"/assistant/assistant.conf /etc/nethos/assistant.conf
+fi
+
 install -d /etc/systemd/user
 install -m 0644 "$PAYLOAD"/systemd/nethosd.service /etc/systemd/user/nethosd.service
 

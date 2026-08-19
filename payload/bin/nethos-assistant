@@ -1,0 +1,306 @@
+#!/usr/bin/env python3
+"""Choose where the assistant thinks, and translate for it.
+
+NETHBot hardcodes http://localhost:11434 and Ollama's dialect in four places
+(llm, loop_llm, vision, computer_use). Rather than patch all four -- and keep
+patching them every time NETHBot is updated, since it is a separate project --
+this answers on that port and in that dialect, and forwards to whatever the
+configuration says.
+
+    backend=local    pass straight through to Ollama
+    backend=cloud    translate to an OpenAI-compatible API
+
+So NETHBot never knows which is in use, and switching is one word in
+/etc/nethos/assistant.conf. On a 16GB machine that word is worth a lot: the
+local model resident is ~10GB of 14GB usable, with no swap configured, which
+leaves the desktop about a gigabyte.
+
+    nethos-assistant status
+    nethos-assistant use cloud|local
+    nethos-assistant models          free models the cloud endpoint offers
+    nethos-assistant serve           run the shim (systemd does this)
+    nethos-assistant apply           hand the port to the configured backend
+"""
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+CONF = os.environ.get("NETHOS_ASSISTANT_CONF", "/etc/nethos/assistant.conf")
+
+
+def load(path=CONF):
+    """key=value, # comments. Deliberately not ini or yaml: it is read by a
+    shell script as well, and one syntax that both agree on is worth more than
+    sections nobody needs."""
+    conf = {}
+    try:
+        with open(os.path.expanduser(path)) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                conf[key.strip()] = value.strip()
+    except OSError:
+        pass
+    return conf
+
+
+def read_key(conf):
+    path = os.path.expanduser(conf.get("cloud_key_file", ""))
+    try:
+        with open(path) as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def post_json(url, payload, headers=None, timeout=180):
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers={"Content-Type": "application/json",
+                                          **(headers or {})})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode())
+
+
+# --------------------------------------------------------------------------
+# translation
+# --------------------------------------------------------------------------
+def to_openai(payload, conf, generate=False):
+    """Ollama's request shape -> OpenAI's.
+
+    /api/generate carries a bare prompt and optional base64 images; /api/chat
+    carries messages. Both become chat completions, because that is the only
+    shape every provider implements.
+    """
+    if generate:
+        content = payload.get("prompt", "")
+        images = payload.get("images") or []
+        if images:
+            # Vision, in the shape OpenAI settled on. Providers that cannot do
+            # images will refuse, and the error is reported rather than hidden.
+            parts = [{"type": "text", "text": content}]
+            for b64 in images:
+                parts.append({"type": "image_url",
+                              "image_url": {"url": "data:image/png;base64," + b64}})
+            messages = [{"role": "user", "content": parts}]
+        else:
+            messages = [{"role": "user", "content": content}]
+    else:
+        messages = payload.get("messages", [])
+
+    out = {"model": conf.get("cloud_model", ""), "messages": messages,
+           "stream": False}
+    # Ollama's `format: json` is OpenAI's response_format. computer_use relies
+    # on this to get parseable output, so dropping it silently would look like
+    # the model had simply stopped following instructions.
+    if payload.get("format") == "json":
+        out["response_format"] = {"type": "json_object"}
+    return out
+
+
+def from_openai(data, generate=False):
+    """OpenAI's response -> the shape NETHBot expects to unpack."""
+    try:
+        content = data["choices"][0]["message"]["content"] or ""
+    except (KeyError, IndexError, TypeError):
+        content = ""
+    if generate:
+        return {"response": content, "done": True}
+    return {"message": {"role": "assistant", "content": content}, "done": True}
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):      # quiet; systemd has the journal
+        pass
+
+    def _send(self, obj, code=200):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        # `ollama list` and anything checking liveness.
+        if self.path.startswith("/api/tags"):
+            conf = load()
+            name = (conf.get("cloud_model") if conf.get("backend") == "cloud"
+                    else conf.get("local_model", ""))
+            return self._send({"models": [{"name": name, "model": name}]})
+        return self._send({"error": "not found"}, 404)
+
+    def do_POST(self):
+        generate = self.path.startswith("/api/generate")
+        if not (generate or self.path.startswith("/api/chat")):
+            return self._send({"error": "not found"}, 404)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except (ValueError, TypeError):
+            return self._send({"error": "bad request"}, 400)
+
+        conf = load()
+        if conf.get("backend", "local") != "cloud":
+            # Straight through. The shim only exists for the other case, and
+            # standing between NETHBot and Ollama for no reason would only add
+            # a place for things to go wrong.
+            url = conf.get("local_url", "http://127.0.0.1:11434").rstrip("/") + self.path
+            try:
+                return self._send(post_json(url, payload))
+            except urllib.error.URLError as exc:
+                return self._send({"error": "local model unreachable: %s" % exc}, 502)
+
+        key = read_key(conf)
+        if not key:
+            # Said plainly, because this arrives as the assistant's answer and
+            # "cloud mode is on but there is no key" is the actual problem.
+            return self._send(from_openai(
+                {"choices": [{"message": {"content":
+                 "Cloud mode is on but no API key was found at %s. Create that "
+                 "file with your key in it, or run: nethos-assistant use local"
+                 % conf.get("cloud_key_file", "?")}}]}, generate))
+
+        url = conf.get("cloud_base_url", "").rstrip("/") + "/chat/completions"
+        try:
+            data = post_json(url, to_openai(payload, conf, generate),
+                             {"Authorization": "Bearer " + key})
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode()[:300]
+            return self._send(from_openai(
+                {"choices": [{"message": {"content":
+                 "The cloud model returned %s: %s" % (exc.code, detail)}}]}, generate))
+        except urllib.error.URLError as exc:
+            return self._send(from_openai(
+                {"choices": [{"message": {"content":
+                 "Could not reach %s: %s" % (url, exc)}}]}, generate))
+        return self._send(from_openai(data, generate))
+
+
+def serve():
+    conf = load()
+    listen = conf.get("listen", "127.0.0.1:11434")
+    host, _, port = listen.partition(":")
+    # Ollama and the shim want the same port, because the point of the shim is
+    # to be found where NETHBot already looks. Only one of them can have it, so
+    # in local mode the shim stands aside entirely rather than proxying to the
+    # address it is itself bound to, which is a loop that presents as a hang.
+    if conf.get("backend", "local") != "cloud":
+        if conf.get("local_url", "").rstrip("/").endswith(listen):
+            print("backend=local: Ollama owns %s; not starting the shim" % listen,
+                  file=sys.stderr)
+            return
+    ThreadingHTTPServer((host, int(port or 11434)), Handler).serve_forever()
+
+
+def apply_backend():
+    """Give the port to whichever backend is configured, and take it from the
+    other. Two units, one port, and the wrong one running is a silence rather
+    than an error -- so this is a command rather than something to remember."""
+    import subprocess
+    conf = load()
+    cloud = conf.get("backend", "local") == "cloud"
+    stop, start = ("ollama", "nethos-assistant") if cloud else ("nethos-assistant", "ollama")
+    subprocess.run(["systemctl", "--user", "stop", stop],
+                   capture_output=True, check=False)
+    if cloud:
+        argv = ["systemd-run", "--user", "--collect", "--unit=nethos-assistant",
+                "/usr/bin/nethos-assistant", "serve"]
+    else:
+        argv = ["systemd-run", "--user", "--collect", "--unit=ollama",
+                "/usr/local/bin/ollama", "serve"]
+    proc = subprocess.run(argv, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        print("could not start %s: %s" % (start, (proc.stderr or "").strip()[:200]))
+        return 1
+    print("backend=%s -- %s is now serving %s"
+          % (conf.get("backend"), start, conf.get("listen")))
+    return 0
+
+
+def models():
+    """What the endpoint offers for nothing. No key needed to ask."""
+    conf = load()
+    url = conf.get("cloud_base_url", "").rstrip("/") + "/models"
+    try:
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+    except (urllib.error.URLError, ValueError) as exc:
+        print("could not list models: %s" % exc)
+        return 1
+    free = [m for m in data.get("data", []) if str(m.get("id", "")).endswith(":free")]
+    if not free:
+        print("no models advertised as free at %s" % url)
+        return 0
+    print("free models at %s:\n" % conf.get("cloud_base_url"))
+    for m in sorted(free, key=lambda x: -int(x.get("context_length") or 0)):
+        print("  %-52s context %s" % (m["id"], m.get("context_length") or "?"))
+    print("\nSet one as cloud_model in %s" % CONF)
+    return 0
+
+
+def status():
+    conf = load()
+    backend = conf.get("backend", "local")
+    print("backend      %s" % backend)
+    if backend == "cloud":
+        print("endpoint     %s" % conf.get("cloud_base_url"))
+        print("model        %s" % conf.get("cloud_model"))
+        have = "present" if read_key(conf) else "MISSING"
+        print("key          %s (%s)" % (conf.get("cloud_key_file"), have))
+    else:
+        print("model        %s" % conf.get("local_model"))
+        print("ollama       %s" % conf.get("local_url"))
+    print("listening    %s" % conf.get("listen"))
+    return 0
+
+
+def use(which):
+    if which not in ("local", "cloud"):
+        print("usage: nethos-assistant use local|cloud")
+        return 2
+    path = os.path.expanduser(CONF)
+    try:
+        with open(path) as fh:
+            lines = fh.readlines()
+    except OSError as exc:
+        print("cannot read %s: %s" % (path, exc))
+        return 1
+    out, done = [], False
+    for line in lines:
+        if line.strip().startswith("backend=") and not done:
+            out.append("backend=%s\n" % which)
+            done = True
+        else:
+            out.append(line)
+    if not done:
+        out.append("backend=%s\n" % which)
+    try:
+        with open(path, "w") as fh:
+            fh.writelines(out)
+    except OSError as exc:
+        print("cannot write %s (try sudo): %s" % (path, exc))
+        return 1
+    print("backend=%s" % which)
+    return apply_backend()
+
+
+if __name__ == "__main__":
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
+    if cmd == "serve":
+        serve()
+    elif cmd == "models":
+        sys.exit(models())
+    elif cmd == "use":
+        sys.exit(use(sys.argv[2] if len(sys.argv) > 2 else ""))
+    elif cmd in ("apply", "restart"):
+        sys.exit(apply_backend())
+    else:
+        sys.exit(status())
