@@ -540,6 +540,30 @@ class Surface:
                 self.window.present()
             except Exception:                 # noqa: BLE001
                 pass
+            # And keep drawing for a moment.
+            #
+            # A surface keeps its last buffer while unmapped and presents it
+            # again on map, so what appears first is whatever was on screen
+            # when it went away -- the launcher, when the control centre is
+            # what is being opened. The frame that replaces it does not damage
+            # the output on its own (the whole ghost problem), so a single
+            # queue_draw here loses the race and the stale frame stays until
+            # something unrelated forces a repaint.
+            #
+            # Drawing repeatedly for a few hundred milliseconds gives the page
+            # several chances to commit and the compositor several reasons to
+            # repaint. Cheap, bounded, and it stops on its own.
+            self._wake_frames = 12
+
+            def _wake():
+                if self._wake_frames <= 0:
+                    return False
+                self._wake_frames -= 1
+                self.window.queue_draw()
+                self.view.queue_draw()
+                return True
+
+            GLib.timeout_add(25, _wake)
 
     # The three buttons, in the order a hand expects them: close outermost.
     # Symbols are drawn as labels and hidden until the group is hovered, which
