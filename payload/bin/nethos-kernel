@@ -5,6 +5,7 @@
 #   nethos-kernel current                  what each slot boots
 #   nethos-kernel install <package>        into the idle slot, then switch
 #   nethos-kernel build [options]          build a kernel from source
+#   nethos-kernel repack [--out DIR]       repackage a built tree, stripped
 #   nethos-kernel install-tar <file>       install a built kernel into the idle slot
 #   nethos-kernel rt                       reboot into the real-time kernel
 #   nethos-kernel rt --stay                ...and keep using it until told not to
@@ -289,7 +290,20 @@ cmd_build() {
         say "  WARNING: no nethos.config found; building with the base config only"
     fi
 
-    scripts/config --disable DEBUG_INFO --disable DEBUG_INFO_BTF --enable DEBUG_INFO_NONE
+    # Debug info is a choice, and you cannot leave it by disabling DEBUG_INFO.
+    #
+    # CONFIG_DEBUG_INFO is not directly settable in modern kernels -- it is
+    # selected by whichever member of the DEBUG_INFO_DWARF choice is on. Writing
+    # "# CONFIG_DEBUG_INFO is not set" and enabling NONE alongside a DWARF5 that
+    # is still set leaves two members of one choice enabled, and olddefconfig
+    # resolves that back to DWARF. The config looked right and the modules came
+    # out carrying full symbol tables: a 2.5 GB tarball where 300 MB was
+    # expected, which then would not fit in the image at all.
+    scripts/config --disable DEBUG_INFO_DWARF4 --disable DEBUG_INFO_DWARF5 \
+                   --disable DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT \
+                   --disable DEBUG_INFO_COMPRESSED_ZLIB \
+                   --disable DEBUG_INFO_BTF --disable GDB_SCRIPTS \
+                   --enable DEBUG_INFO_NONE
     scripts/config --disable MODULE_SIG --disable MODULE_SIG_ALL
     scripts/config --set-str SYSTEM_TRUSTED_KEYS "" --set-str SYSTEM_REVOCATION_KEYS ""
     scripts/config --disable HZ_250 --disable HZ_300 --enable HZ_1000 --set-val HZ 1000
@@ -302,6 +316,12 @@ cmd_build() {
         export KCFLAGS="-march=$march -mtune=$march"
     fi
     make olddefconfig >/dev/null 2>&1
+
+    # Check it actually took, before spending an hour finding out it did not.
+    if grep -q '^CONFIG_DEBUG_INFO=y' .config; then
+        say "  WARNING: debug info is still on. Modules will be several"
+        say "           gigabytes and may not fit in the image."
+    fi
 
     echo
     printf '  %-22s %s\n' "version"   "$version"
@@ -378,11 +398,48 @@ cmd_install_tar() {
     say "Slot $idle runs $kver. Reboot to try it; three failures and you are back here."
 }
 
+# Repackage a tree that is already built, without recompiling it.
+#
+# Exists because a kernel can take an hour to compile and the thing that went
+# wrong -- symbols left in the modules -- is fixed at install time, not at
+# compile time. make targz-pkg reuses every object already built, so this turns
+# a 2.5 GB tarball into a usable one in a couple of minutes.
+cmd_repack() {
+    local jobs="" out="$PWD" src=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --jobs) jobs="${2:?}"; shift 2 ;;
+            --out)  out="${2:?}"; shift 2 ;;
+            --tree) src="${2:?}"; shift 2 ;;
+            *) die "unknown repack option: $1" ;;
+        esac
+    done
+    jobs="${jobs:-$(nproc)}"
+    if [ -z "$src" ]; then
+        [ -f Makefile ] && [ -d kernel ] && src="$PWD"
+        [ -z "$src" ] && src=$(ls -1td "$HOME"/kernel/linux-* 2>/dev/null | head -1)
+    fi
+    [ -n "$src" ] && [ -d "$src" ] || die "no kernel tree found -- pass --tree DIR"
+    cd "$src" || die "cannot enter $src"
+    [ -f .config ] || die "$src has no .config -- it was never configured"
+    say "Repacking $src (stripped, no recompile)"
+    rm -f linux-*.tar.gz
+    make -j"$jobs" targz-pkg INSTALL_MOD_STRIP=1 >/dev/null || die "packaging failed"
+    local tarball
+    tarball=$(ls -1t linux-*.tar.gz 2>/dev/null | head -1)
+    [ -n "$tarball" ] || die "no tarball produced"
+    if [ "$out" != "$PWD" ]; then
+        mkdir -p "$out"; mv "$tarball" "$out/"; tarball="$out/$tarball"
+    fi
+    say "Built: $tarball  ($(du -h "$tarball" | cut -f1))"
+}
+
 case "${1:-list}" in
     list)    cmd_list ;;
     current) cmd_current ;;
     install) shift; cmd_install "${1:-}" ;;
     build)   shift; cmd_build "$@" ;;
+    repack)  shift; cmd_repack "$@" ;;
     install-tar) shift; cmd_install_tar "${1:-}" ;;
     rt)      shift; cmd_boot_kernel rt "${1:-}" ;;
     normal)  shift; cmd_boot_kernel normal "${1:-}" ;;
