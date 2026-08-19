@@ -221,6 +221,29 @@ function repaint() {
   if (typeof nethosHost !== "undefined" && nethosHost.repaint) nethosHost.repaint();
 }
 
+/* Unmap the overlay when nothing on it is open.
+
+   A surface that merely becomes transparent does not damage the region it was
+   occupying: the compositor holds a clean buffer -- a screenshot proves it --
+   and simply never repaints the output there. What was on screen stays on
+   screen until something else commits and forces a repaint, which on this
+   desktop is the widget refresh, twenty seconds later. That is the ghost,
+   exactly, and it is why every fix to the pages themselves did nothing: the
+   pages were already right.
+
+   Unmapping damages. It is the one signal the compositor cannot ignore, and
+   it is what the dock already relies on by moving rather than fading.
+
+   The reason this was avoided is real -- an unmapped surface has its page
+   suspended and stops hearing events -- but nethos-view wakes a surface with
+   queue_draw before delivering to it, so the message that reopens this one
+   arrives. show() is always called before anything is displayed. */
+function overlayMapped(on) {
+  if (typeof nethosHost === "undefined") return;
+  if (on) { if (nethosHost.show) nethosHost.show(); }
+  else if (nethosHost.hide) nethosHost.hide();
+}
+
 /* Take or release the keyboard.
 
    Layer surfaces are ON_DEMAND, which gives the keyboard to a surface when it
@@ -591,6 +614,7 @@ function initMenu() {
     // frame the control centre is still on screen and still taking clicks.
     if (!open && !askOpen) keyboard(false);
     repaint();
+    if (!open && !askOpen && !ctxOpen) overlayMapped(false);
   }
 
   function bar(pct) {
@@ -839,6 +863,7 @@ function initMenu() {
     askEl.hidden = true;
     document.body.classList.remove("ctx");
     keyboard(false);
+    if (!open && !ccOpen && !ctxOpen) overlayMapped(false);
     if (askDismiss) {
       window.removeEventListener("pointerdown", askDismiss, true);
       askDismiss = null;
@@ -1004,10 +1029,12 @@ function initMenu() {
       } else {
         keyboard(false);
         nethosHost.inputRect(0, 0, 0, 0);
-        // The launcher is a full-screen panel on a surface that stays mapped.
-        // Closed without a frame it is still drawn and still solid to the
-        // pointer, which is what made the desktop under it stop responding.
         repaint();
+        // Releasing the input region stops it taking clicks; only unmapping
+        // stops it being on screen. A surface that just goes transparent does
+        // not damage what it was covering, so the launcher stayed painted
+        // until something else forced a repaint twenty seconds later.
+        if (!ccOpen && !askOpen && !ctxOpen) overlayMapped(false);
       }
     }
     if (open) {
