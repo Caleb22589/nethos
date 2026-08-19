@@ -153,7 +153,21 @@ mkdir -p "$BUILD"
 
 if [ ! -f "$BUILDER" ]; then
     say "Downloading the Debian amd64 builder (~460 MB, once)"
-    curl -fL --retry 3 -o "$BUILDER" "$BUILDER_URL"
+    # Download beside it, then move. curl -o writes in place, so a stopped
+    # download leaves a truncated qcow2 that looks cached -- and every later
+    # run boots it and fails with "failure reading sector N from hd0", which
+    # names neither the download nor the file. Interrupting a 460MB fetch is
+    # normal; being unable to build afterwards should not be.
+    curl -fL --retry 3 -o "$BUILDER.part" "$BUILDER_URL" || {
+        rm -f "$BUILDER.part"
+        die "could not download the builder image"
+    }
+    # A qcow2 qemu-img cannot read is not a qcow2 worth keeping.
+    if ! qemu-img info "$BUILDER.part" >/dev/null 2>&1; then
+        rm -f "$BUILDER.part"
+        die "the downloaded builder image is not a readable qcow2 -- try again"
+    fi
+    mv "$BUILDER.part" "$BUILDER"
 fi
 
 say "Creating the target disk ($DISK_SIZE)"
@@ -161,6 +175,14 @@ rm -f "$DISK"
 qemu-img create -f qcow2 "$DISK" "$DISK_SIZE" >/dev/null
 
 rm -f "$BUILDER_WORK"
+# Verify the cached builder every time, not only when it is downloaded: it may
+# have been truncated by an earlier interrupted run, or by a full disk.
+if ! qemu-img info "$BUILDER" >/dev/null 2>&1; then
+    die "the cached builder image is damaged:
+  $BUILDER
+Delete it and run this again -- it will be downloaded afresh."
+fi
+
 qemu-img create -f qcow2 -F qcow2 -b "$BUILDER" "$BUILDER_WORK" >/dev/null
 qemu-img resize "$BUILDER_WORK" 16G >/dev/null
 
