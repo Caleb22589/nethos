@@ -148,8 +148,6 @@ if command -v nethos-snapshot >/dev/null 2>&1; then
     SNAP_ID="$(sudo nethos-snapshot create "pre-update" | tail -1 || true)"
     [ -n "${SNAP_ID:-}" ] && say "  roll back with: sudo nethos-snapshot restore $SNAP_ID"
 fi
-
-say "Installing system files (sudo)"
 if [ "$USE_SLOT" = 1 ]; then
     # Copy first, then update the copy. The order matters: updating the
     # running system and then copying it would put the new system in both
@@ -191,6 +189,7 @@ if [ "$USE_SLOT" = 1 ]; then
     exit 0
 fi
 
+say "Installing system files (sudo)"
 if ! sudo "$SRC/payload/install-nethos.sh" "${INSTALL_ARGS[@]}"; then
     warn "the update failed part way through"
     if [ -n "${SNAP_ID:-}" ]; then
