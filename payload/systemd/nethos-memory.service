@@ -1,0 +1,19 @@
+[Unit]
+Description=NETHOS memory tiers (compressed swap)
+Documentation=man:zramctl(8)
+# Before anything that might need the memory. swap.target rather than
+# multi-user, so the tier exists before the session starts filling it.
+DefaultDependencies=no
+After=local-fs.target
+Before=swap.target sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Size and algorithm come from the tool's own defaults -- half of RAM, zstd --
+# so the unit does not become a second place to configure the same thing.
+ExecStart=/usr/bin/nethos-memory zram on
+ExecStop=/usr/bin/nethos-memory zram off
+
+[Install]
+WantedBy=sysinit.target

@@ -160,6 +160,16 @@ fi
 install -d /etc/systemd/user
 install -m 0644 "$PAYLOAD"/systemd/nethosd.service /etc/systemd/user/nethosd.service
 
+# Compressed swap, as a system unit rather than a user one: it has to exist
+# before a session does. The machine shipped with no swap at all, which makes
+# an OOM kill the first symptom of running short rather than a slowdown.
+if [ -f "$PAYLOAD"/systemd/nethos-memory.service ]; then
+    install -m 0644 "$PAYLOAD"/systemd/nethos-memory.service \
+        /etc/systemd/system/nethos-memory.service
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable nethos-memory.service >/dev/null 2>&1 || true
+fi
+
 # --------------------------------------------------------------------------
 log "User configuration"
 # --------------------------------------------------------------------------
