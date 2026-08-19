@@ -59,12 +59,32 @@ kver_for() {   # slot letter -> kernel version, falling back to the newest
 KVER_A=$(kver_for A)
 KVER_B=$(kver_for B)
 
+# A real-time kernel, if one is installed. Same system, same root, same home
+# -- only the kernel differs, so this is a boot-time choice rather than a
+# second installation. Keeping it out of the default is the point: PREEMPT_RT
+# buys worst-case latency (measured here: 21us under full load against 3159us
+# for the stock kernel) and costs a few percent of throughput, which is a good
+# trade while recording and a bad one the rest of the time.
+KVER_RT=$(ls -1 /boot/vmlinuz-*rt* 2>/dev/null | sort -V | tail -1)
+[ -n "$KVER_RT" ] && { KVER_RT=$(basename "$KVER_RT"); KVER_RT=${KVER_RT#vmlinuz-}; }
+
 cat <<EOF
 # --- NETHOS A/B ---------------------------------------------------------
 # One entry as far as anyone is concerned. Which slot it boots is an
 # implementation detail of updating, not a choice to put in front of somebody
 # turning their computer on -- so both entries carry the same name and the
 # menu stays hidden. Hold SHIFT to see it when something has gone wrong.
+# grub-reboot writes next_entry for exactly one boot. It has to be handled
+# here because this file sets `default` later, and would otherwise overrule
+# the choice somebody just made. Cleared as it is read, so the boot after this
+# one is normal again -- which is what makes "boot the RT kernel once" safe.
+if [ -n "\$next_entry" ]; then
+    set default="\$next_entry"
+    set next_entry=
+    save_env next_entry
+    set timeout=0
+else
+
 if [ -z "\$nethos_slot" ]; then set nethos_slot=A; fi
 if [ -z "\$nethos_try" ];  then set nethos_try=0; fi
 
@@ -80,6 +100,7 @@ if [ "\$nethos_try" = "2" ]; then set nethos_try=1; save_env nethos_try; fi
 if [ "\$nethos_try" = "1" ]; then set nethos_try=0; save_env nethos_try; fi
 
 if [ "\$nethos_slot" = "B" ]; then set default=nethos-b; else set default=nethos-a; fi
+fi
 set timeout_style=hidden
 set timeout=0
 
@@ -103,5 +124,31 @@ EOF
 [ -e "/boot/initrd.img-$KVER_B" ] && echo "    initrd /initrd.img-$KVER_B"
 cat <<'EOF'
 }
+EOF
+
+# One extra entry per slot when a real-time kernel is present. Same root, same
+# everything; only the kernel and initramfs differ.
+if [ -n "$KVER_RT" ]; then
+cat <<EOF
+
+menuentry 'NETHOS (real-time kernel)' --id nethos-a-rt {
+    search --no-floppy --label --set=root NETHOSEFI
+    linux  /vmlinuz-$KVER_RT root=LABEL=NETHOS_A rw quiet loglevel=3 $NETHOS_CMDLINE
+EOF
+[ -e "/boot/initrd.img-$KVER_RT" ] && echo "    initrd /initrd.img-$KVER_RT"
+cat <<EOF
+}
+
+menuentry 'NETHOS (real-time kernel)' --id nethos-b-rt {
+    search --no-floppy --label --set=root NETHOSEFI
+    linux  /vmlinuz-$KVER_RT root=LABEL=NETHOS_B rw quiet loglevel=3 $NETHOS_CMDLINE
+EOF
+[ -e "/boot/initrd.img-$KVER_RT" ] && echo "    initrd /initrd.img-$KVER_RT"
+cat <<'EOF'
+}
+EOF
+fi
+
+cat <<'EOF'
 # --- end NETHOS A/B -----------------------------------------------------
 EOF

@@ -4,6 +4,9 @@
 #   nethos-kernel list                     kernels this machine could run
 #   nethos-kernel current                  what each slot boots
 #   nethos-kernel install <package>        into the idle slot, then switch
+#   nethos-kernel rt                       reboot into the real-time kernel
+#   nethos-kernel rt --stay                ...and keep using it until told not to
+#   nethos-kernel normal                   back to the stock kernel
 #
 # A kernel is the update that cannot be done in place and the one most likely
 # to leave a machine that will not boot, which is the entire reason for the
@@ -119,10 +122,47 @@ cmd_install() {
     say "Slot $idle runs $kver. Reboot to try it; three failures and you are back here."
 }
 
+# One boot on the real-time kernel, then back to normal by itself.
+#
+# grub-reboot writes an entry that GRUB uses once and clears, so this cannot
+# leave the machine on a kernel somebody forgot they chose -- which matters
+# because RT costs throughput every day and earns it only while recording.
+# --stay makes it the default instead, for a session that will run for weeks.
+cmd_boot_kernel() {
+    local which="$1" stay="${2:-}" slot entry
+    [ "$(id -u)" -eq 0 ] || die "needs root"
+    slot=$(cat /etc/nethos/slot 2>/dev/null || echo A)
+    slot=$(echo "$slot" | tr 'A-Z' 'a-z')
+
+    if [ "$which" = rt ]; then
+        entry="nethos-${slot}-rt"
+        grep -q "id=\?'\?${entry}" /boot/grub/grub.cfg 2>/dev/null || \
+            die "no real-time entry -- install one first:
+  nethos-kernel install linux-image-\$(uname -r | sed 's/-amd64/-rt-amd64/')"
+    else
+        entry="nethos-${slot}"
+    fi
+
+    if [ "$stay" = "--stay" ]; then
+        grub-editenv /boot/grub/grubenv set nethos_kernel="$which"
+        grub-set-default "$entry"
+        say "Default is now $entry. 'nethos-kernel normal' undoes it."
+    else
+        grub-reboot "$entry" || die "grub-reboot failed"
+        say "Next boot only: $entry. The boot after that is normal again."
+    fi
+
+    printf 'Reboot now? [y/N] '
+    read -r reply
+    case "$reply" in [yY]*) systemctl reboot ;; *) say "Rebooting later is fine; the choice is saved." ;; esac
+}
+
 case "${1:-list}" in
     list)    cmd_list ;;
     current) cmd_current ;;
     install) shift; cmd_install "${1:-}" ;;
+    rt)      shift; cmd_boot_kernel rt "${1:-}" ;;
+    normal)  shift; cmd_boot_kernel normal "${1:-}" ;;
     -h|--help) sed -n '2,15p' "$0" | sed 's/^# \?//' ;;
     *) die "unknown command: $1" ;;
 esac
