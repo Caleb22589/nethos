@@ -166,6 +166,13 @@ install -m 0644 "$PAYLOAD"/hypr/hyprland.conf /etc/nethos/hyprland.conf
 systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service >/dev/null 2>&1 || true
 systemctl --global enable pipewire.service >/dev/null 2>&1 || true
 
+# Kernel parameters. Never overwritten: this is a file people edit, and an
+# update that reset it would silently undo a machine-specific fix.
+if [ -f "$PAYLOAD/nethos/cmdline" ] && [ ! -f /etc/nethos/cmdline ]; then
+    install -d /etc/nethos
+    install -m 0644 "$PAYLOAD"/nethos/cmdline /etc/nethos/cmdline
+fi
+
 # A/B: the bootloader entries and the counter, installed only where the disk
 # actually has two slots. On a single-slot install these would generate menu
 # entries for a partition that does not exist.

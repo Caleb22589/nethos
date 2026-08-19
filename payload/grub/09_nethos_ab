@@ -20,6 +20,23 @@ set -e
 
 . /usr/share/grub/grub-mkconfig_lib 2>/dev/null || true
 
+# Extra kernel parameters, in a file rather than in this script, so changing
+# them does not mean editing a generator -- and so a machine can differ from
+# the default without carrying a patch.
+#
+# preempt=full is the default because it is free here: CONFIG_PREEMPT_DYNAMIC
+# is set, so the preemption model is chosen at boot rather than compiled in,
+# and full is what a "lowlatency" kernel gives you. Debian boots
+# PREEMPT_VOLUNTARY, which is tuned for throughput on servers.
+#
+# What is NOT here, because it cannot be: CONFIG_HZ. Debian builds 250, the
+# tuned distributions build 1000, and that is compile-time. Same for the
+# scheduler patch sets. Those need a kernel built, which is what the idle slot
+# is for.
+CMDLINE_FILE=/etc/nethos/cmdline
+NETHOS_CMDLINE="preempt=full"
+[ -r "$CMDLINE_FILE" ] && NETHOS_CMDLINE=$(grep -v '^#' "$CMDLINE_FILE" | tr '\n' ' ')
+
 KERNEL=$(ls -1 /boot/vmlinuz-* 2>/dev/null | sort -V | tail -1)
 INITRD=$(ls -1 /boot/initrd.img-* 2>/dev/null | sort -V | tail -1)
 [ -n "$KERNEL" ] || exit 0
@@ -57,7 +74,7 @@ menuentry 'NETHOS' --id nethos-a {
     # kernel will mount. Searching for the slot here looked for a kernel
     # inside it and found nothing.
     search --no-floppy --label --set=root NETHOSEFI
-    linux  $KERNEL root=LABEL=NETHOS_A rw quiet loglevel=3
+    linux  $KERNEL root=LABEL=NETHOS_A rw quiet loglevel=3 $NETHOS_CMDLINE
 EOF
 [ -n "$INITRD" ] && echo "    initrd $INITRD"
 cat <<EOF
@@ -65,7 +82,7 @@ cat <<EOF
 
 menuentry 'NETHOS' --id nethos-b {
     search --no-floppy --label --set=root NETHOSEFI
-    linux  $KERNEL root=LABEL=NETHOS_B rw quiet loglevel=3
+    linux  $KERNEL root=LABEL=NETHOS_B rw quiet loglevel=3 $NETHOS_CMDLINE
 EOF
 [ -n "$INITRD" ] && echo "    initrd $INITRD"
 cat <<'EOF'

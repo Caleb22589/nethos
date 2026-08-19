@@ -1,0 +1,8 @@
+# Kernel parameters NETHOS adds, one per line. Applied to both slots.
+#
+# preempt=full — the preemption model, chosen at boot because the Debian
+# kernel is built with CONFIG_PREEMPT_DYNAMIC. Debian defaults to
+# PREEMPT_VOLUNTARY, which favours throughput; full favours latency, and is
+# what the "lowlatency" and studio kernels are mostly doing. Costs a little
+# throughput on a build, gains responsiveness everywhere a person is watching.
+preempt=full
