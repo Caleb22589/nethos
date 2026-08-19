@@ -425,6 +425,10 @@ class Surface:
           // something that was not faded out.
           repaint: () => window.webkit.messageHandlers.nethosHost.postMessage(
               JSON.stringify({type: "repaint"})),
+          // Take or release the keyboard. Only while something on this
+          // surface actually wants typing into it -- see the handler.
+          keyboard: (on) => window.webkit.messageHandlers.nethosHost.postMessage(
+              JSON.stringify({type: "keyboard", on: !!on})),
           surface: %s,
         };
         // The stylesheet keys its backdrop-filter off this class, so the
@@ -491,6 +495,27 @@ class Surface:
             LayerShell.set_exclusive_zone(self.window, int(msg.get("value", 0)))
         elif kind == "input_rect":
             self._set_input_rect(msg)
+        elif kind == "keyboard" and HAVE_LAYER_SHELL and self.role != "window":
+            # ON_DEMAND means the compositor hands over the keyboard when the
+            # surface is *clicked*, which is right for a panel and wrong for
+            # anything with a text field: the launcher opened focused on its
+            # search box and typing went to whatever was behind it, so the box
+            # had to be clicked before it would take a character.
+            #
+            # EXCLUSIVE only while something is open. This surface is never
+            # unmapped -- an unmapped page stops receiving events -- so
+            # leaving it exclusive would hold the keyboard away from every
+            # application for the whole session.
+            on = bool(msg.get("on"))
+            LayerShell.set_keyboard_mode(
+                self.window,
+                LayerShell.KeyboardMode.EXCLUSIVE if on
+                else LayerShell.KeyboardMode.ON_DEMAND)
+            if on:
+                try:
+                    self.window.present()
+                except Exception:             # noqa: BLE001
+                    pass
         elif kind == "repaint":
             self._repaint()
         elif kind == "hide":

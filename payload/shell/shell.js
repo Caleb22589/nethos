@@ -221,6 +221,18 @@ function repaint() {
   if (typeof nethosHost !== "undefined" && nethosHost.repaint) nethosHost.repaint();
 }
 
+/* Take or release the keyboard.
+
+   Layer surfaces are ON_DEMAND, which gives the keyboard to a surface when it
+   is *clicked*. Right for a panel; wrong for anything holding a text field,
+   which is why the launcher opened with its search box focused and typing went
+   somewhere else until the box was clicked. Only while open: this surface is
+   never unmapped, so holding the keyboard would take it from applications for
+   the rest of the session. */
+function keyboard(on) {
+  if (typeof nethosHost !== "undefined" && nethosHost.keyboard) nethosHost.keyboard(on);
+}
+
 function initDock() {
   const dock = document.getElementById("dock");
   const body = document.body;
@@ -577,6 +589,7 @@ function initMenu() {
     }
     // Hiding the div is not enough when the surface stays mapped: without a
     // frame the control centre is still on screen and still taking clicks.
+    if (!open && !askOpen) keyboard(false);
     repaint();
   }
 
@@ -795,6 +808,7 @@ function initMenu() {
     askOpen = false;
     askEl.hidden = true;
     document.body.classList.remove("ctx");
+    keyboard(false);
     if (askSock) { try { askSock.close(); } catch (e) { /* already gone */ } askSock = null; }
     if (typeof nethosHost !== "undefined" && !open) nethosHost.inputRect(0, 0, 0, 0);
     repaint();
@@ -864,6 +878,7 @@ function initMenu() {
       nethosHost.inputRect(0, 0, window.innerWidth, window.innerHeight);
       nethosHost.show();
     }
+    keyboard(true);
     if (!askSock) askSock = askConnect();
     const focus = () => {
       askInput.focus();
@@ -951,7 +966,9 @@ function initMenu() {
         // nothing so the idle surface could not intercept clicks.
         nethosHost.inputRect(0, 0, window.innerWidth, window.innerHeight);
         nethosHost.show();
+        keyboard(true);
       } else {
+        keyboard(false);
         nethosHost.inputRect(0, 0, 0, 0);
         // The launcher is a full-screen panel on a surface that stays mapped.
         // Closed without a frame it is still drawn and still solid to the
