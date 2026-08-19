@@ -21,7 +21,7 @@
 #
 # Options:
 #   --clean          start from an empty disk
-#   --size 12G       disk size (default 6G; ~2.5G is used)
+#   --size 16G       disk size (default 10G; a build with a custom kernel needs it)
 #   --user NAME      the account to create (default neth)
 #   --sets "a b"     package sets. Default is everything for real hardware:
 #                    "base system kernel desktop firmware browser".
@@ -44,7 +44,7 @@ CACHE="$BUILD/nethos-pkgcache-x86.qcow2"
 SEED="$BUILD/seed-x86.iso"
 BUILDER_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
 
-DISK_SIZE="6G"
+DISK_SIZE="10G"
 USERNAME="neth"
 SETS="base system kernel desktop firmware browser"
 CLEAN=0
@@ -595,14 +595,51 @@ MODS
 # initramfs below must be built for the kernel that will actually boot.
 if [ -f /root/custom-kernel.tar.gz ]; then
     echo "--- unpacking the supplied kernel ---"
-    tar xf /root/custom-kernel.tar.gz -C /
+
+    # Make room before unpacking, not after it fails.
+    #
+    # Two complete kernels do not fit. A distro module tree is several hundred
+    # megabytes and the image is sized for one, so unpacking a second on top of
+    # the packaged one fills the root filesystem partway through and leaves a
+    # shredded /lib/modules behind a thousand lines of tar errors. The packaged
+    # kernel is not worth keeping for the space either: stripped of its modules
+    # it cannot mount the root filesystem, so it is not a fallback, and the A/B
+    # slots are the real safety net.
+    echo "    removing the packaged kernel $KVER to make room"
+    rm -rf "/lib/modules/$KVER" "/boot/initrd.img-$KVER" "/boot/vmlinuz-$KVER" \
+           "/boot/config-$KVER" "/boot/System.map-$KVER"
+
+    # Refuse to start an unpack that cannot finish. Compressed module trees
+    # expand by roughly three; anything less than that free is a build that
+    # fails an hour in rather than here, with a message that says so.
+    tar_kb=$(( $(stat -c%s /root/custom-kernel.tar.gz) / 1024 ))
+    free_kb=$(df -Pk / | awk 'NR==2 {print $4}')
+    need_kb=$(( tar_kb * 3 ))
+    echo "    tarball ${tar_kb}K, needs about ${need_kb}K, ${free_kb}K free"
+    if [ "$free_kb" -lt "$need_kb" ]; then
+        echo "FATAL: not enough room in the image for this kernel."
+        echo "  free: ${free_kb}K   needed: about ${need_kb}K"
+        echo "  Build a larger disk:  ./scripts/build-x86.sh --size 16G"
+        exit 1
+    fi
+
+    tar xf /root/custom-kernel.tar.gz -C / || {
+        echo "FATAL: the kernel tarball did not unpack."
+        echo "  $(df -Ph / | awk 'NR==2 {print $4" free of "$2}')"
+        exit 1
+    }
     NEWKVER=$(ls -1 /lib/modules | sort -V | tail -1)
     if [ -n "$NEWKVER" ] && [ -e "/boot/vmlinuz-$NEWKVER" ]; then
         KVER="$NEWKVER"
         echo "    booting $KVER instead of the packaged kernel"
         depmod -a "$KVER"
     else
-        echo "    tarball had no usable kernel; keeping $KVER"
+        echo "FATAL: the tarball unpacked but produced no bootable kernel."
+        echo "  /lib/modules holds: $(ls -1 /lib/modules 2>/dev/null | tr '\n' ' ')"
+        echo "  /boot holds:        $(ls -1 /boot/vmlinuz-* 2>/dev/null | tr '\n' ' ')"
+        echo "  The packaged kernel was removed to make room, so there is"
+        echo "  nothing to fall back to. Check the tarball is a targz-pkg."
+        exit 1
     fi
 fi
 

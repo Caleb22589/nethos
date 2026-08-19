@@ -314,7 +314,10 @@ cmd_build() {
     say "Building (this is the long part)"
     make -j"$jobs" bzImage modules || die "the build failed"
     say "Packaging"
-    make -j"$jobs" targz-pkg >/dev/null || die "packaging failed"
+    # INSTALL_MOD_STRIP because the modules go into a disk image that has to
+    # fit on a USB stick. Symbol tables in a shipped module tree cost hundreds
+    # of megabytes and buy nothing unless you are debugging the kernel itself.
+    make -j"$jobs" targz-pkg INSTALL_MOD_STRIP=1 >/dev/null || die "packaging failed"
 
     local tarball
     tarball=$(ls -1t linux-*.tar.gz 2>/dev/null | head -1)

@@ -57,7 +57,7 @@ command -v qemu-img >/dev/null || die "qemu-img not found"
 #
 # build-x86.sh can stop before it ever boots the builder -- a missing kernel
 # tarball, no network, a full disk -- and it leaves behind the empty qcow2 it
-# created at the start. Converting that produces a 6G image that flashes
+# created at the start. Converting that produces a full-size image that flashes
 # perfectly and boots to nothing, which is a worse failure than an error here
 # because it is only discovered at the machine it was meant for.
 #
@@ -81,7 +81,7 @@ qemu-img convert -p -O raw "$SRC" "$IMG"
 
 # Shrink to what is actually used, then let it grow again on first boot.
 #
-# The image is a 6G disk holding about 2G, and dd does not care that the rest
+# The image is a 10G disk holding about 2G, and dd does not care that the rest
 # is zeroes -- it writes every byte. Telling the user to "rebuild smaller" was
 # useless advice, because the disk was already the smaller size; the space is
 # free space *inside* the filesystem, which only a filesystem resize can
@@ -89,7 +89,7 @@ qemu-img convert -p -O raw "$SRC" "$IMG"
 #
 # So: shrink the root filesystem to its minimum, shrink the partition to match,
 # truncate the file, and move the GPT backup header to the new end. The stick
-# then gets ~2G written instead of 6G, and nethos-growroot expands the
+# then gets ~2G written instead of 10G, and nethos-growroot expands the
 # filesystem to fill the disk on first boot -- so nothing is lost.
 #
 # Needs root and loop devices, so it only runs on Linux. Everywhere else the
