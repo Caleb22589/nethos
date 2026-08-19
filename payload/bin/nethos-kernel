@@ -199,7 +199,14 @@ cmd_build() {
     fi
 
     say "Installing build dependencies"
-    if command -v apt-get >/dev/null 2>&1; then
+    if command -v pacman >/dev/null 2>&1; then
+        # Arch and CachyOS: base-devel carries gcc/make/flex/bison/bc, and the
+        # kernel needs openssl, elfutils and pahole on top. --needed so this is
+        # a no-op on a machine that already builds kernels, which a CachyOS box
+        # very likely does.
+        sudo pacman -S --needed --noconfirm base-devel bc openssl elfutils \
+            pahole cpio zstd kmod curl >/dev/null || die "pacman could not install the toolchain"
+    elif command -v apt-get >/dev/null 2>&1; then
         sudo apt-get install -y build-essential flex bison bc libssl-dev libelf-dev \
             dwarves cpio zstd kmod curl >/dev/null || die "apt could not install the toolchain"
     elif command -v npkg >/dev/null 2>&1; then
@@ -240,7 +247,12 @@ cmd_build() {
         cp "$cfg" .config
     elif [ -r "/boot/config-$(uname -r)" ]; then
         cp "/boot/config-$(uname -r)" .config
+    elif [ -r /proc/config.gz ]; then
+        # Arch and CachyOS ship the running config here rather than in /boot.
+        zcat /proc/config.gz > .config
     else
+        say "  no config to start from; using defconfig"
+        say "  for a kernel to run elsewhere, pass --config with that machine's config"
         make defconfig >/dev/null
     fi
     make olddefconfig >/dev/null 2>&1
