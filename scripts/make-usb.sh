@@ -53,6 +53,28 @@ Build it first:  $BUILDER"
 
 command -v qemu-img >/dev/null || die "qemu-img not found"
 
+# Refuse a disk that was never built.
+#
+# build-x86.sh can stop before it ever boots the builder -- a missing kernel
+# tarball, no network, a full disk -- and it leaves behind the empty qcow2 it
+# created at the start. Converting that produces a 6G image that flashes
+# perfectly and boots to nothing, which is a worse failure than an error here
+# because it is only discovered at the machine it was meant for.
+#
+# A built image has a GPT with a NETHOS root in it. An empty one has neither.
+if command -v qemu-img >/dev/null 2>&1; then
+    if ! qemu-img convert -O raw "$SRC" /dev/stdout 2>/dev/null | head -c 1048576 | \
+         grep -qa "NETHOS"; then
+        die "$(basename "$SRC") does not contain a built system.
+
+  It exists, but the builder never finished writing to it -- check the output
+  of build-x86.sh for where it stopped. Flashing this would give you a stick
+  that boots to nothing.
+
+  Re-run:  ./scripts/build-x86.sh"
+    fi
+fi
+
 say "Converting $(basename "$SRC") to a raw disk image"
 rm -f "$IMG"
 qemu-img convert -p -O raw "$SRC" "$IMG"
