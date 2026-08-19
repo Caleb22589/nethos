@@ -207,6 +207,26 @@ if [ "$CONFIRM" -eq 1 ]; then
 fi
 
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# Everything this needs, checked before anything is touched.
+#
+# This ran wipefs and then died on a missing sgdisk, which left a disk with no
+# partition table and no new one -- the single worst outcome available, and it
+# happened on the first real use. A tool that destroys before it checks is
+# only safe by luck. Nothing below this point is reversible, so nothing above
+# it is allowed to be optional.
+# --------------------------------------------------------------------------
+missing=""
+for tool in sgdisk partprobe mkfs.ext4 mkfs.fat rsync blkid chroot \
+            grub-install grub-mkconfig lsblk wipefs; do
+    command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+done
+if [ -n "$missing" ]; then
+    die "missing required tools:$missing
+  Install them first. On NETHOS:  sudo npkg fetch gdisk dosfstools rsync grub-efi-amd64
+  Nothing has been changed."
+fi
+
 say "Partitioning $TARGET"
 # --------------------------------------------------------------------------
 wipefs -a "$TARGET"
@@ -279,7 +299,19 @@ mkdir -p "$MNT"/{dev,proc,sys,tmp,run,mnt,media}
 chmod 1777 "$MNT/tmp"
 
 say "Generating fstab"
-genfstab -U "$MNT" > "$MNT/etc/fstab"
+# genfstab is an Arch tool and this is a Debian system; it was never here.
+# UUIDs rather than device names, because /dev/sda is whatever the firmware
+# enumerated first and that changes when a USB stick is plugged in.
+{
+    echo "# Written by nethos-install"
+    printf 'UUID=%s  /      ext4  defaults,noatime  0 1\n' "$(blkid -s UUID -o value "$P2")"
+    if [ "$LAYOUT" = ab ] || [ "$FIRMWARE" = UEFI ]; then
+        printf 'UUID=%s  /boot  vfat  defaults,umask=0077  0 2\n' "$(blkid -s UUID -o value "$P1")"
+    fi
+    if [ "$LAYOUT" = ab ]; then
+        printf 'UUID=%s  /home  ext4  defaults,noatime  0 2\n' "$(blkid -s UUID -o value "$P4")"
+    fi
+} > "$MNT/etc/fstab"
 
 if [ "$LAYOUT" = ab ]; then
     # Which slot this system is, recorded inside the system itself. An update
@@ -332,7 +364,11 @@ BINARIES=()
 FILES=()
 HOOKS=(base udev autodetect microcode modconf kms keyboard keymap consolefont block filesystems fsck)
 MKI
-mkinitcpio -P
+if command -v update-initramfs >/dev/null 2>&1; then
+    update-initramfs -u -k all
+elif command -v mkinitcpio >/dev/null 2>&1; then
+    mkinitcpio -P
+fi
 
 systemctl enable systemd-networkd systemd-resolved 2>/dev/null || true
 systemctl enable NetworkManager 2>/dev/null || true
@@ -355,12 +391,23 @@ date -u +'%Y-%m-%dT%H:%M:%SZ' > /etc/nethos-release
 POST
 
 chmod +x "$MNT/root/nethos-post-install.sh"
-arch-chroot "$MNT" /root/nethos-post-install.sh
+# arch-chroot is the same Arch tool; this is what it does that plain chroot
+# does not. resolv.conf too, or anything in the post-install that resolves a
+# name fails inside a system that has no /etc/resolv.conf yet.
+for d in /dev /dev/pts /proc /sys /run; do
+    mkdir -p "$MNT$d"
+    mount --rbind "$d" "$MNT$d"
+    mount --make-rslave "$MNT$d" 2>/dev/null || true
+done
+[ -e /etc/resolv.conf ] && cp -L /etc/resolv.conf "$MNT/etc/resolv.conf" 2>/dev/null || true
+chroot "$MNT" /root/nethos-post-install.sh
 rm -f "$MNT/root/nethos-post-install.sh"
 
 say "Unmounting"
 sync
-umount -R "$MNT"
+# -R and lazy: the rbinds above make this a tree, and a stray reference to
+# anything under it leaves the new root mounted and the disk busy.
+umount -R "$MNT" 2>/dev/null || umount -Rl "$MNT" 2>/dev/null || true
 
 say "NETHOS is installed on $TARGET."
 cat <<EOF
