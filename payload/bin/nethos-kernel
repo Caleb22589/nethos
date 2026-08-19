@@ -4,6 +4,8 @@
 #   nethos-kernel list                     kernels this machine could run
 #   nethos-kernel current                  what each slot boots
 #   nethos-kernel install <package>        into the idle slot, then switch
+#   nethos-kernel build [options]          build a kernel from source
+#   nethos-kernel install-tar <file>       install a built kernel into the idle slot
 #   nethos-kernel rt                       reboot into the real-time kernel
 #   nethos-kernel rt --stay                ...and keep using it until told not to
 #   nethos-kernel normal                   back to the stock kernel
@@ -20,9 +22,13 @@ KERNELS=/boot/nethos-kernels.conf
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
-command -v npkg      >/dev/null 2>&1 || die "npkg is not installed"
-command -v nethos-ab >/dev/null 2>&1 || die "nethos-ab is not installed"
-[ -f /etc/nethos/slots.conf ] || die "no A/B layout -- see nethos-install --layout ab"
+# Checked per command, not here: `build` runs on any Linux machine -- the
+# point of it is to use a faster one -- and requiring NETHOS's own layout
+# would rule that out.
+need_ab() {
+    command -v nethos-ab >/dev/null 2>&1 || die "nethos-ab is not installed"
+    [ -f /etc/nethos/slots.conf ] || die "no A/B layout -- see nethos-install --layout ab"
+}
 
 cmd_list() {
     echo "Standard and real-time kernels in the archive:"
@@ -52,6 +58,7 @@ cmd_current() {
 }
 
 cmd_install() {
+    need_ab
     local pkg="$1"
     [ "$(id -u)" -eq 0 ] || die "needs root"
     [ -n "$pkg" ] || die "which package? try: nethos-kernel list"
@@ -129,6 +136,7 @@ cmd_install() {
 # because RT costs throughput every day and earns it only while recording.
 # --stay makes it the default instead, for a session that will run for weeks.
 cmd_boot_kernel() {
+    need_ab
     local which="$1" stay="${2:-}" slot entry
     [ "$(id -u)" -eq 0 ] || die "needs root"
     slot=$(cat /etc/nethos/slot 2>/dev/null || echo A)
@@ -157,10 +165,178 @@ cmd_boot_kernel() {
     case "$reply" in [yY]*) systemctl reboot ;; *) say "Rebooting later is fine; the choice is saved." ;; esac
 }
 
+
+# --------------------------------------------------------------------------
+# Building one
+# --------------------------------------------------------------------------
+cmd_build() {
+    local version=7.2 bore=1 march="" cfg="" jobs="" out="$PWD"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --version)  version="${2:?}"; shift 2 ;;
+            --no-bore)  bore=0; shift ;;
+            --march)    march="${2:?}"; shift 2 ;;
+            --config)   cfg="${2:?}"; shift 2 ;;
+            --jobs)     jobs="${2:?}"; shift 2 ;;
+            --out)      out="${2:?}"; shift 2 ;;
+            *) die "unknown build option: $1" ;;
+        esac
+    done
+    jobs="${jobs:-$(nproc)}"
+    local series="v${version%%.*}.x"
+    local src="$HOME/kernel"
+
+    # Which CPU the kernel is *for*, which is not always the one building it.
+    #
+    # X86_NATIVE_CPU compiles for the machine doing the build. Build on a 5950X
+    # for a 5500U and the kernel uses Zen 3 instructions the laptop cannot
+    # execute: it will not boot, and the slot will catch it, but pointlessly.
+    # So the target is named rather than assumed whenever they might differ.
+    if [ -z "$march" ]; then
+        march=native
+        say "No --march given; building for this machine (native)."
+        say "Building for a different CPU? --march znver2 (Zen 2), znver3, x86-64-v3 ..."
+    fi
+
+    say "Installing build dependencies"
+    if command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get install -y build-essential flex bison bc libssl-dev libelf-dev \
+            dwarves cpio zstd kmod curl >/dev/null || die "apt could not install the toolchain"
+    elif command -v npkg >/dev/null 2>&1; then
+        sudo npkg fetch build-essential flex bison bc libssl-dev libelf-dev \
+            dwarves cpio zstd kmod >/dev/null || die "npkg could not install the toolchain"
+    else
+        say "  no apt or npkg; assuming the toolchain is present"
+    fi
+    for t in gcc make flex bison bc; do
+        command -v "$t" >/dev/null || die "$t is missing and could not be installed"
+    done
+
+    mkdir -p "$src"; cd "$src"
+    if [ ! -d "linux-$version" ]; then
+        say "Fetching linux $version"
+        [ -f "linux-$version.tar.xz" ] || \
+            curl -fL --progress-bar -o "linux-$version.tar.xz" \
+                "https://cdn.kernel.org/pub/linux/kernel/$series/linux-$version.tar.xz" \
+            || die "could not download linux $version"
+        tar xf "linux-$version.tar.xz"
+    fi
+    cd "linux-$version"
+
+    if [ "$bore" = 1 ] && ! grep -q SCHED_BORE kernel/sched/core.c 2>/dev/null; then
+        say "Applying BORE"
+        # The standalone patch, not the -cachy one: that variant expects the
+        # rest of CachyOS's tree and fails six of its twenty-two hunks here.
+        curl -fL -o ../bore-$version.patch \
+            "https://raw.githubusercontent.com/CachyOS/kernel-patches/master/${version}/sched/0001-bore.patch" \
+            2>/dev/null || die "no BORE patch published for $version yet -- try --no-bore"
+        patch -p1 --dry-run < ../bore-$version.patch >/dev/null 2>&1 \
+            || die "the BORE patch does not apply to $version cleanly"
+        patch -p1 < ../bore-$version.patch >/dev/null
+    fi
+
+    say "Configuring"
+    if [ -n "$cfg" ]; then
+        cp "$cfg" .config
+    elif [ -r "/boot/config-$(uname -r)" ]; then
+        cp "/boot/config-$(uname -r)" .config
+    else
+        make defconfig >/dev/null
+    fi
+    make olddefconfig >/dev/null 2>&1
+
+    scripts/config --disable DEBUG_INFO --disable DEBUG_INFO_BTF --enable DEBUG_INFO_NONE
+    scripts/config --disable MODULE_SIG --disable MODULE_SIG_ALL
+    scripts/config --set-str SYSTEM_TRUSTED_KEYS "" --set-str SYSTEM_REVOCATION_KEYS ""
+    scripts/config --disable HZ_250 --disable HZ_300 --enable HZ_1000 --set-val HZ 1000
+    scripts/config --enable TCP_CONG_BBR
+    [ "$bore" = 1 ] && scripts/config --enable SCHED_BORE
+    if [ "$march" = native ]; then
+        scripts/config --enable X86_NATIVE_CPU
+    else
+        scripts/config --disable X86_NATIVE_CPU
+        export KCFLAGS="-march=$march -mtune=$march"
+    fi
+    make olddefconfig >/dev/null 2>&1
+
+    echo
+    printf '  %-22s %s\n' "version"   "$version"
+    printf '  %-22s %s\n' "BORE"      "$([ "$bore" = 1 ] && grep -q '^CONFIG_SCHED_BORE=y' .config && echo yes || echo no)"
+    printf '  %-22s %s\n' "tick"      "$(grep -E '^CONFIG_HZ=' .config | cut -d= -f2)"
+    printf '  %-22s %s\n' "target CPU" "$march"
+    printf '  %-22s %s\n' "jobs"      "$jobs"
+    echo
+
+    say "Building (this is the long part)"
+    make -j"$jobs" bzImage modules || die "the build failed"
+    say "Packaging"
+    make -j"$jobs" targz-pkg >/dev/null || die "packaging failed"
+
+    local tarball
+    tarball=$(ls -1t linux-*.tar.gz 2>/dev/null | head -1)
+    [ -n "$tarball" ] || die "no tarball produced"
+    [ "$out" != "$PWD" ] && { mkdir -p "$out"; mv "$tarball" "$out/"; tarball="$out/$tarball"; }
+    say "Built: $tarball"
+    echo
+    echo "  Install it here:        sudo nethos-kernel install-tar $tarball"
+    echo "  Or copy to the target:  scp $tarball neth@HOST:/tmp/"
+    echo "                          ssh neth@HOST sudo nethos-kernel install-tar /tmp/$(basename "$tarball")"
+}
+
+# --------------------------------------------------------------------------
+cmd_install_tar() {
+    need_ab
+    local tar="$1"
+    [ "$(id -u)" -eq 0 ] || die "needs root"
+    [ -f "$tar" ] || die "no such file: $tar"
+
+    local idle dev mnt kver
+    idle=$( [ "$(cat /etc/nethos/slot 2>/dev/null)" = A ] && echo B || echo A )
+    dev=$(sed -n "s/^slot_$(echo "$idle" | tr 'A-Z' 'a-z')=//p" /etc/nethos/slots.conf)
+    case "$dev" in LABEL=*) dev="/dev/disk/by-label/${dev#LABEL=}" ;; esac
+
+    say "Making slot $idle match this system first"
+    nethos-ab sync >/dev/null || die "could not fill slot $idle"
+
+    mnt=$(mktemp -d)
+    mount "$dev" "$mnt" || die "cannot mount slot $idle"
+    # /boot is the shared ESP: the kernel has to land there for GRUB to read
+    # it, which is why this is a bind rather than the slot's own directory.
+    mount --bind /boot "$mnt/boot"
+    for d in /dev /dev/pts /proc /sys /run; do
+        mkdir -p "$mnt$d"; mount --rbind "$d" "$mnt$d"; mount --make-rslave "$mnt$d" 2>/dev/null || true
+    done
+    cleanup() { umount -R "$mnt" 2>/dev/null || umount -Rl "$mnt" 2>/dev/null || true; rmdir "$mnt" 2>/dev/null || true; }
+    trap cleanup EXIT
+
+    say "Unpacking into slot $idle"
+    tar xf "$tar" -C "$mnt" || die "could not unpack"
+    kver=$(chroot "$mnt" sh -c 'ls -1 /lib/modules | sort -V | tail -1')
+    [ -n "$kver" ] || die "no modules found after unpacking"
+
+    say "Module map and initramfs for $kver"
+    chroot "$mnt" depmod -a "$kver" || die "depmod failed"
+    chroot "$mnt" update-initramfs -c -k "$kver" || die "initramfs failed"
+    [ -e "$mnt/boot/vmlinuz-$kver" ] || die "no /boot/vmlinuz-$kver -- the tarball may not contain one"
+
+    # Pin it to this slot only. Without this both slots take the newest kernel
+    # on the shared ESP, and the first one that fails takes the fallback too.
+    touch "$KERNELS"; sed -i "/^$idle=/d" "$KERNELS"; echo "$idle=$kver" >> "$KERNELS"
+    local here; here=$(cat /etc/nethos/slot 2>/dev/null || echo A)
+    grep -q "^$here=" "$KERNELS" || echo "$here=$(uname -r)" >> "$KERNELS"
+
+    cleanup; trap - EXIT
+    grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1 || true
+    nethos-ab switch
+    say "Slot $idle runs $kver. Reboot to try it; three failures and you are back here."
+}
+
 case "${1:-list}" in
     list)    cmd_list ;;
     current) cmd_current ;;
     install) shift; cmd_install "${1:-}" ;;
+    build)   shift; cmd_build "$@" ;;
+    install-tar) shift; cmd_install_tar "${1:-}" ;;
     rt)      shift; cmd_boot_kernel rt "${1:-}" ;;
     normal)  shift; cmd_boot_kernel normal "${1:-}" ;;
     -h|--help) sed -n '2,15p' "$0" | sed 's/^# \?//' ;;
