@@ -185,6 +185,13 @@ if [ -f /etc/nethos/slots.conf ] && grep -q '^layout=ab' /etc/nethos/slots.conf 
     command -v grub-mkconfig >/dev/null 2>&1 && grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1 || true
 fi
 
+# The kernel fragment, so a machine can rebuild its own kernel without the
+# repository checked out.
+if [ -d "$PAYLOAD/kernel" ]; then
+    install -d "$PREFIX/kernel"
+    install -m 0644 "$PAYLOAD"/kernel/*.config "$PREFIX/kernel/"
+fi
+
 install -d /etc/xdg/xdg-desktop-portal
 for d in sway Wayfire wlroots; do
     install -m 0644 "$PAYLOAD"/xdg/portals.conf \

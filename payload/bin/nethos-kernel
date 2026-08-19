@@ -243,19 +243,51 @@ cmd_build() {
     fi
 
     say "Configuring"
+    # A base config, then NETHOS's own requirements on top.
+    #
+    # The base only has to be a reasonable starting point -- defconfig is one.
+    # What must be true of the result is in the repository, as a fragment,
+    # because it belongs to the system rather than to whichever machine
+    # happened to be reachable. Requiring a config fetched from another
+    # computer meant a kernel could not be built while a laptop was asleep,
+    # which is not a real dependency.
     if [ -n "$cfg" ]; then
+        [ -r "$cfg" ] || die "--config $cfg cannot be read"
         cp "$cfg" .config
+        say "  base: $cfg"
     elif [ -r "/boot/config-$(uname -r)" ]; then
         cp "/boot/config-$(uname -r)" .config
+        say "  base: this machine's running config"
     elif [ -r /proc/config.gz ]; then
-        # Arch and CachyOS ship the running config here rather than in /boot.
-        zcat /proc/config.gz > .config
+        zcat /proc/config.gz > .config          # Arch and CachyOS keep it here
+        say "  base: /proc/config.gz"
     else
-        say "  no config to start from; using defconfig"
-        say "  for a kernel to run elsewhere, pass --config with that machine's config"
         make defconfig >/dev/null
+        say "  base: defconfig"
     fi
     make olddefconfig >/dev/null 2>&1
+
+    # NETHOS's fragment, wherever this was run from.
+    frag=""
+    for c in /usr/share/nethos/kernel/nethos.config \
+             "$(dirname "$0")/../kernel/nethos.config" \
+             "$(dirname "$0")/../../payload/kernel/nethos.config" \
+             ./payload/kernel/nethos.config; do
+        [ -r "$c" ] && { frag="$c"; break; }
+    done
+    if [ -n "$frag" ]; then
+        say "  applying $frag"
+        while IFS= read -r line; do
+            case "$line" in
+                CONFIG_*=y) scripts/config --enable "${line%%=*}" ;;
+                CONFIG_*=m) scripts/config --module "${line%%=*}" ;;
+                CONFIG_*=*) scripts/config --set-val "${line%%=*}" "${line#*=}" ;;
+            esac
+        done < "$frag"
+        make olddefconfig >/dev/null 2>&1
+    else
+        say "  WARNING: no nethos.config found; building with the base config only"
+    fi
 
     scripts/config --disable DEBUG_INFO --disable DEBUG_INFO_BTF --enable DEBUG_INFO_NONE
     scripts/config --disable MODULE_SIG --disable MODULE_SIG_ALL
