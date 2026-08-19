@@ -803,12 +803,46 @@ function initMenu() {
     askLog.scrollTop = askLog.scrollHeight;
   }
 
+  /* Click away and Escape.
+
+     Both were missing in different ways. Escape was bound to the input, so it
+     only worked while the input still had focus -- click once anywhere else
+     and the key went nowhere. And there was no outside-click handler at all,
+     which the control centre has had all along. The result was a panel with
+     no way out except the button that opened it. */
+  let askDismiss = null;
+
+  function askEnsureDismiss() {
+    if (askDismiss) window.removeEventListener("pointerdown", askDismiss, true);
+    askDismiss = (e) => {
+      if (!askOpen) {
+        window.removeEventListener("pointerdown", askDismiss, true);
+        askDismiss = null;
+        return;
+      }
+      // Inside the field or the transcript is not "away".
+      if (askInput.contains(e.target) || askLog.contains(e.target)) return;
+      askClose();
+    };
+    window.addEventListener("pointerdown", askDismiss, true);
+  }
+
+  // On the surface, not the input: a key pressed after clicking the transcript
+  // never reached a handler bound to the field.
+  window.addEventListener("keydown", (e) => {
+    if (askOpen && e.key === "Escape") { e.preventDefault(); askClose(); }
+  }, true);
+
   function askClose() {
     if (!askOpen) return;
     askOpen = false;
     askEl.hidden = true;
     document.body.classList.remove("ctx");
     keyboard(false);
+    if (askDismiss) {
+      window.removeEventListener("pointerdown", askDismiss, true);
+      askDismiss = null;
+    }
     if (askSock) { try { askSock.close(); } catch (e) { /* already gone */ } askSock = null; }
     if (typeof nethosHost !== "undefined" && !open) nethosHost.inputRect(0, 0, 0, 0);
     repaint();
@@ -852,8 +886,7 @@ function initMenu() {
   }
 
   askInput.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") return askClose();
-    if (e.key !== "Enter") return;
+    if (e.key !== "Enter") return;      // Escape is handled on the surface
     const text = askInput.value.trim();
     if (!text) return;
     askInput.value = "";
@@ -879,6 +912,7 @@ function initMenu() {
       nethosHost.show();
     }
     keyboard(true);
+    askEnsureDismiss();
     if (!askSock) askSock = askConnect();
     const focus = () => {
       askInput.focus();
