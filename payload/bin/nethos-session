@@ -164,6 +164,21 @@ true
 if [ "${NETHOS_GPU_COMPOSITING:-auto}" = "0" ]; then
     export WEBKIT_DISABLE_COMPOSITING_MODE=1
 elif [ "${NETHOS_GPU_COMPOSITING:-auto}" = "1" ] || ls /dev/dri/renderD* >/dev/null 2>&1; then
+    # Take it back, do not merely decline to set it.
+    #
+    # This branch could only ever add the variable, so it lost every time
+    # something earlier had already exported it -- and .bash_profile does,
+    # before the compositor starts, which means the compositor and every child
+    # inherited it. The detection here ran, decided correctly, and changed
+    # nothing.
+    #
+    # That is the ghost, in full: with compositing off WebKit repaints only
+    # the damaged rectangle and assumes an opaque backdrop, so on a
+    # transparent layer surface nothing clears what was there before. It is
+    # why restarting the shell over SSH always fixed it -- that environment
+    # never had the variable -- and why every fix inside the pages did
+    # nothing, because the pages were never the problem.
+    unset WEBKIT_DISABLE_COMPOSITING_MODE
     NETHOS_GPU=1; export NETHOS_GPU
 else
     export WEBKIT_DISABLE_COMPOSITING_MODE=1
