@@ -45,6 +45,7 @@ SEED="$BUILD/seed-x86.iso"
 BUILDER_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
 
 DISK_SIZE="10G"
+DISK_SIZE_SET=0
 USERNAME="neth"
 SETS="base system kernel desktop firmware browser"
 CLEAN=0
@@ -52,7 +53,7 @@ CLEAN=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --clean) CLEAN=1; shift ;;
-        --size) DISK_SIZE="${2:?}"; shift 2 ;;
+        --size) DISK_SIZE="${2:?}"; DISK_SIZE_SET=1; shift 2 ;;
         --user) USERNAME="${2:?}"; shift 2 ;;
         --sets) SETS="${2:?}"; shift 2 ;;
         -h|--help) sed -n '2,26p' "$0" | sed 's/^# \?//'; exit 0 ;;
@@ -168,6 +169,21 @@ if [ ! -f "$BUILDER" ]; then
         die "the downloaded builder image is not a readable qcow2 -- try again"
     fi
     mv "$BUILDER.part" "$BUILDER"
+fi
+
+# A supplied kernel needs far more room than the modules themselves take.
+#
+# mkinitramfs decompresses every .ko.zst into a staging directory before it
+# packs them, so a mainline tree built from a distro config -- four thousand
+# modules against Debian's eight hundred -- needs several gigabytes that exist
+# nowhere in the finished image. That space is transient, and make-usb.sh
+# shrinks the filesystem before flashing, so a larger disk costs nothing on the
+# stick. This has to be decided before the disk is created, not when the
+# tarball is staged further down.
+if [ -n "${NETHOS_KERNEL_TARBALL:-}" ] && [ "$DISK_SIZE_SET" = 0 ]; then
+    DISK_SIZE="20G"
+    say "A kernel tarball was supplied; using a ${DISK_SIZE} disk for the"
+    say "initramfs staging area (override with --size)."
 fi
 
 say "Creating the target disk ($DISK_SIZE)"
@@ -644,9 +660,21 @@ if [ -f /root/custom-kernel.tar.gz ]; then
 fi
 
 echo "--- initramfs ---"
+echo "    $(df -Ph / | awk 'NR==2 {print $4" free, "$5" used"}'), $(find /lib/modules/"$KVER" -name '*.ko*' 2>/dev/null | wc -l) modules"
 update-initramfs -c -k "$KVER" || {
     echo "update-initramfs failed; falling back to a bare initramfs"
-    mkinitramfs -o "/boot/initrd.img-$KVER" "$KVER"
+    mkinitramfs -o "/boot/initrd.img-$KVER" "$KVER" || {
+        echo "FATAL: the initramfs could not be built."
+        echo "  $(df -Ph / | awk 'NR==2 {print $4" free of "$2}')"
+        echo
+        echo "  If that says the disk is full: mkinitramfs decompresses every"
+        echo "  module into a staging directory before packing it, so MODULES=most"
+        echo "  over a large module tree needs several gigabytes that the finished"
+        echo "  image never contains. Build a bigger disk -- the space is"
+        echo "  transient and make-usb.sh shrinks the image before flashing:"
+        echo "      ./scripts/build-x86.sh --size 32G"
+        exit 1
+    }
 }
 ls -la /boot/ | head
 
