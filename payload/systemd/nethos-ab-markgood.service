@@ -1,0 +1,18 @@
+[Unit]
+Description=Tell the bootloader this slot came up
+Documentation=man:nethos-ab(1)
+# Late: the point is to prove userland reached a working state, so anything
+# earlier would mark a system good that had not yet failed.
+After=multi-user.target
+Wants=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/nethos-ab mark-good
+# Never block a boot. If this cannot run, the counter stays where it is and
+# the bootloader falls back, which is the safe direction.
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target

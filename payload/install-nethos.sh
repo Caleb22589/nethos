@@ -166,6 +166,18 @@ install -m 0644 "$PAYLOAD"/hypr/hyprland.conf /etc/nethos/hyprland.conf
 systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service >/dev/null 2>&1 || true
 systemctl --global enable pipewire.service >/dev/null 2>&1 || true
 
+# A/B: the bootloader entries and the counter, installed only where the disk
+# actually has two slots. On a single-slot install these would generate menu
+# entries for a partition that does not exist.
+if [ -f /etc/nethos/slots.conf ] && grep -q '^layout=ab' /etc/nethos/slots.conf 2>/dev/null; then
+    install -m 0755 "$PAYLOAD"/grub/09_nethos_ab /etc/grub.d/09_nethos_ab
+    install -m 0644 "$PAYLOAD"/systemd/nethos-ab-markgood.service \
+        /etc/systemd/system/nethos-ab-markgood.service
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable nethos-ab-markgood.service >/dev/null 2>&1 || true
+    command -v grub-mkconfig >/dev/null 2>&1 && grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1 || true
+fi
+
 install -d /etc/xdg/xdg-desktop-portal
 for d in sway Wayfire wlroots; do
     install -m 0644 "$PAYLOAD"/xdg/portals.conf \

@@ -1,0 +1,63 @@
+#!/bin/sh
+# GRUB entries for both slots, and the counter that makes switching safe.
+#
+# Generated into grub.cfg by grub-mkconfig. The logic below runs *in GRUB*,
+# not here: this script only emits it.
+#
+# nethos_slot      which slot to boot
+# nethos_try       attempts remaining before giving up on it
+# nethos_last_good the slot that was working before the switch
+#
+# Every attempt decrements the counter and saves it before booting, so a
+# system that hangs or panics still spends an attempt. Only a system that
+# reaches its own userland runs `nethos-ab mark-good`, which zeroes the
+# counter. Three failures and GRUB boots the last good slot instead.
+#
+# Without the decrement-before-boot this is worse than nothing: a bootloader
+# that flips slots but never counts will ping-pong between two broken systems
+# forever, which is the failure docs/ABUPDATE.md warns about.
+set -e
+
+. /usr/share/grub/grub-mkconfig_lib 2>/dev/null || true
+
+KERNEL=$(ls -1 /boot/vmlinuz-* 2>/dev/null | sort -V | tail -1)
+INITRD=$(ls -1 /boot/initrd.img-* 2>/dev/null | sort -V | tail -1)
+[ -n "$KERNEL" ] || exit 0
+KERNEL=/$(basename "$KERNEL")
+[ -n "$INITRD" ] && INITRD=/$(basename "$INITRD")
+
+cat <<EOF
+# --- NETHOS A/B ---------------------------------------------------------
+if [ -z "\$nethos_slot" ]; then set nethos_slot=A; fi
+if [ -z "\$nethos_try" ];  then set nethos_try=0; fi
+
+# Out of attempts: the slot we were trying never marked itself good.
+if [ "\$nethos_try" = "0" -a -n "\$nethos_last_good" ]; then
+    set nethos_slot="\$nethos_last_good"
+fi
+
+# Spend an attempt before booting, not after. A system that never gets far
+# enough to run anything must still be counted as having been tried.
+if [ "\$nethos_try" = "3" ]; then set nethos_try=2; save_env nethos_try; fi
+if [ "\$nethos_try" = "2" ]; then set nethos_try=1; save_env nethos_try; fi
+if [ "\$nethos_try" = "1" ]; then set nethos_try=0; save_env nethos_try; fi
+
+if [ "\$nethos_slot" = "B" ]; then set default="NETHOS (slot B)"; else set default="NETHOS (slot A)"; fi
+
+menuentry 'NETHOS (slot A)' --id nethos-a {
+    search --no-floppy --label --set=root NETHOS_A
+    linux  $KERNEL root=LABEL=NETHOS_A rw quiet loglevel=3
+EOF
+[ -n "$INITRD" ] && echo "    initrd $INITRD"
+cat <<EOF
+}
+
+menuentry 'NETHOS (slot B)' --id nethos-b {
+    search --no-floppy --label --set=root NETHOS_B
+    linux  $KERNEL root=LABEL=NETHOS_B rw quiet loglevel=3
+EOF
+[ -n "$INITRD" ] && echo "    initrd $INITRD"
+cat <<'EOF'
+}
+# --- end NETHOS A/B -----------------------------------------------------
+EOF

@@ -1,0 +1,182 @@
+#!/bin/bash
+# Two systems on one disk, one of them running.
+#
+#   nethos-ab status          which slot is live, what is in the other
+#   nethos-ab sync            build the idle slot from the running one
+#   nethos-ab switch          boot the idle slot next time, with a counter
+#   nethos-ab rollback        point back at the slot that works
+#   nethos-ab mark-good       this boot worked (systemd calls this)
+#
+# The point is that an update never touches the running system. It fills the
+# slot you are not using, flips the bootloader, and if that system does not
+# come up the counter runs out and the bootloader goes back. A bad update
+# costs a reboot rather than a reflash.
+#
+# /home and machine state live on their own partition and are never inside a
+# slot, so nothing here can lose them.
+set -euo pipefail
+
+CONF=/etc/nethos/slots.conf
+SLOT_FILE=/etc/nethos/slot
+GRUBENV=/boot/grub/grubenv
+TRIES=3
+
+say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
+die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+[ -f "$CONF" ] || die "$CONF is missing -- this system was not installed with an A/B layout.
+  nethos-install --layout ab lays the disk out; it cannot be added afterwards
+  without shrinking a mounted filesystem, which ext4 does not do."
+
+# shellcheck disable=SC1090
+layout=$(sed -n 's/^layout=//p' "$CONF")
+[ "$layout" = ab ] || die "layout is '$layout', not ab"
+
+slot_dev() {    # A|B -> device
+    local spec
+    spec=$(sed -n "s/^slot_$(echo "$1" | tr 'A-Z' 'a-z')=//p" "$CONF")
+    case "$spec" in
+        LABEL=*) echo "/dev/disk/by-label/${spec#LABEL=}" ;;
+        UUID=*)  echo "/dev/disk/by-uuid/${spec#UUID=}" ;;
+        *)       echo "$spec" ;;
+    esac
+}
+
+active_slot() { cat "$SLOT_FILE" 2>/dev/null || echo A; }
+other_slot()  { [ "$(active_slot)" = A ] && echo B || echo A; }
+
+grubenv_get() { grub-editenv "$GRUBENV" list 2>/dev/null | sed -n "s/^$1=//p"; }
+
+# --------------------------------------------------------------------------
+cmd_status() {
+    local a b act oth
+    act=$(active_slot); oth=$(other_slot)
+    a=$(slot_dev A); b=$(slot_dev B)
+    echo "active slot   $act   ($(findmnt -no SOURCE / 2>/dev/null))"
+    echo "idle slot     $oth   ($(slot_dev "$oth"))"
+    echo
+    for s in A B; do
+        local dev size used mark
+        dev=$(slot_dev "$s")
+        if [ -b "$(readlink -f "$dev" 2>/dev/null || echo "$dev")" ]; then
+            size=$(lsblk -no SIZE "$(readlink -f "$dev")" 2>/dev/null | head -1)
+            if [ "$s" = "$act" ]; then
+                used=$(df -h / | awk 'NR==2{print $3}')
+                mark="running"
+            else
+                # Read the idle slot without disturbing it.
+                local tmp; tmp=$(mktemp -d)
+                if mount -o ro "$dev" "$tmp" 2>/dev/null; then
+                    used=$(df -h "$tmp" | awk 'NR==2{print $3}')
+                    mark=$(cat "$tmp/etc/nethos-release" 2>/dev/null || echo "empty")
+                    [ -f "$tmp/.nethos-slot-incomplete" ] && mark="INCOMPLETE -- half written, do not boot"
+                    umount "$tmp" 2>/dev/null || true
+                else
+                    used="-"; mark="unreadable"
+                fi
+                rmdir "$tmp" 2>/dev/null || true
+            fi
+            printf "  slot %s  %-6s used %-7s %s\n" "$s" "$size" "$used" "$mark"
+        else
+            printf "  slot %s  missing (%s)\n" "$s" "$dev"
+        fi
+    done
+    echo
+    echo "boot counter  nethos_try=$(grubenv_get nethos_try || echo unset)  nethos_slot=$(grubenv_get nethos_slot || echo unset)"
+}
+
+# --------------------------------------------------------------------------
+cmd_sync() {
+    [ "$(id -u)" -eq 0 ] || die "needs root"
+    local oth dev mnt
+    oth=$(other_slot); dev=$(slot_dev "$oth")
+    [ -b "$(readlink -f "$dev")" ] || die "slot $oth is not a block device: $dev"
+
+    mnt=$(mktemp -d)
+    say "Filling slot $oth from the running system"
+    mount "$dev" "$mnt" || die "cannot mount $dev"
+    # A flag that outlives an interruption. A half-written slot must be
+    # detectable, or the bootloader will happily boot one.
+    : > "$mnt/.nethos-slot-incomplete"
+
+    # Everything except what is not part of a system: the pseudo filesystems,
+    # and /home and /boot, which are their own partitions and shared.
+    rsync -aHAX --delete --info=progress2 \
+        --exclude=/dev/ --exclude=/proc/ --exclude=/sys/ --exclude=/tmp/ \
+        --exclude=/run/ --exclude=/mnt/ --exclude=/media/ --exclude=/lost+found \
+        --exclude=/home/ --exclude=/boot/ \
+        --exclude=/.nethos-slot-incomplete \
+        / "$mnt/"
+
+    mkdir -p "$mnt"/{dev,proc,sys,tmp,run,mnt,media,home,boot}
+    chmod 1777 "$mnt/tmp"
+
+    # The copy has to know which slot it is, or it will fill itself next time.
+    echo "$oth" > "$mnt/etc/nethos/slot"
+
+    # And it has to mount its own root, not the one it was copied from.
+    local uuid
+    uuid=$(blkid -s UUID -o value "$(readlink -f "$dev")")
+    sed -i "s|^UUID=[^ ]*  */  |UUID=$uuid  /  |" "$mnt/etc/fstab" 2>/dev/null || true
+    if ! grep -qE "^UUID=$uuid[[:space:]]+/[[:space:]]" "$mnt/etc/fstab"; then
+        say "  rewriting fstab root entry by hand"
+        awk -v u="$uuid" '$2=="/"{print "UUID=" u "  /      ext4  defaults,noatime  0 1"; next} {print}' \
+            "$mnt/etc/fstab" > "$mnt/etc/fstab.new" && mv "$mnt/etc/fstab.new" "$mnt/etc/fstab"
+    fi
+
+    rm -f "$mnt/.nethos-slot-incomplete"
+    sync
+    umount "$mnt"; rmdir "$mnt"
+    say "Slot $oth is a complete system. 'nethos-ab switch' boots it next time."
+}
+
+# --------------------------------------------------------------------------
+cmd_switch() {
+    [ "$(id -u)" -eq 0 ] || die "needs root"
+    local oth dev mnt
+    oth=$(other_slot); dev=$(slot_dev "$oth")
+    mnt=$(mktemp -d)
+    mount -o ro "$dev" "$mnt" 2>/dev/null || die "slot $oth will not mount"
+    if [ -f "$mnt/.nethos-slot-incomplete" ] || [ ! -x "$mnt/sbin/init" ] && [ ! -L "$mnt/sbin/init" ]; then
+        umount "$mnt"; rmdir "$mnt"
+        die "slot $oth is not a complete system -- run 'nethos-ab sync' first"
+    fi
+    umount "$mnt"; rmdir "$mnt"
+
+    # The counter is the whole safety net: the bootloader decrements it on
+    # every attempt, and only a system that comes up far enough to run
+    # mark-good clears it. Three attempts, then back to what worked.
+    grub-editenv "$GRUBENV" set nethos_slot="$oth"
+    grub-editenv "$GRUBENV" set nethos_try="$TRIES"
+    grub-editenv "$GRUBENV" set nethos_last_good="$(active_slot)"
+    say "Next boot: slot $oth ($TRIES attempts, then back to $(active_slot))"
+}
+
+cmd_rollback() {
+    [ "$(id -u)" -eq 0 ] || die "needs root"
+    local good
+    good=$(grubenv_get nethos_last_good || echo "$(other_slot)")
+    grub-editenv "$GRUBENV" set nethos_slot="$good"
+    grub-editenv "$GRUBENV" unset nethos_try 2>/dev/null || \
+        grub-editenv "$GRUBENV" set nethos_try=0
+    say "Next boot: slot $good"
+}
+
+cmd_mark_good() {
+    [ "$(id -u)" -eq 0 ] || die "needs root"
+    # Reached only by a system that got as far as starting services, which is
+    # the definition of "this boot worked" that matters here.
+    grub-editenv "$GRUBENV" set nethos_try=0
+    grub-editenv "$GRUBENV" set nethos_last_good="$(active_slot)"
+    grub-editenv "$GRUBENV" set nethos_slot="$(active_slot)"
+}
+
+case "${1:-status}" in
+    status)     cmd_status ;;
+    sync)       cmd_sync ;;
+    switch)     cmd_switch ;;
+    rollback)   cmd_rollback ;;
+    mark-good)  cmd_mark_good ;;
+    -h|--help)  sed -n '2,16p' "$0" | sed 's/^# \?//' ;;
+    *)          die "unknown command: $1" ;;
+esac
