@@ -97,7 +97,18 @@ SETS = {
     ],
     "kernel": [
         # {arch} is substituted for the Debian architecture being built.
-        "linux-image-{arch}",
+        #
+        # Which kernel, by name, so an image can be built on a different one
+        # without editing this list. NETHOS_KERNEL_PACKAGE overrides it:
+        #
+        #   NETHOS_KERNEL_PACKAGE=linux-image-rt-amd64  ./scripts/build-x86.sh
+        #
+        # Debian's stable kernel is the default because an image has to boot
+        # on hardware nobody has tested it against, and that is the one with
+        # the most eyes on it. A mainline or custom kernel is installed after
+        # first boot, into the idle slot, where it costs a reboot rather than
+        # a reflash if it does not come up -- see nethos-kernel.
+        os.environ.get("NETHOS_KERNEL_PACKAGE", "linux-image-{arch}"),
         # Debian's arm64 kernel has virtio as modules, so the root device is
         # unreachable without an initramfs to load them first.
         "initramfs-tools", "busybox", "zstd",
