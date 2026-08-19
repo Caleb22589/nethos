@@ -1,0 +1,318 @@
+#!/usr/bin/env python3
+"""Memory tiers: compressed RAM, disk, and VRAM where it is real.
+
+This machine shipped with no swap at all. With 16GB and a 10GB model that is
+not "a bit tight" -- it is an OOM kill as the first symptom, with no warning
+and nothing in the journal that points at the cause.
+
+Three tiers, fastest first:
+
+  zram   compressed swap inside RAM. No device, no I/O, ~3:1 with zstd, so a
+         gigabyte of pages costs about 350MB. This is the one that matters and
+         it works on every machine.
+  disk   a swapfile. Slower by orders of magnitude, but it is the tier that
+         survives running out of the first one.
+  vram   swap on the graphics card's own memory. Only on a discrete card with
+         dedicated memory -- see vram_kind() for why it is refused elsewhere.
+
+    nethos-memory status
+    nethos-memory zram on [--size 8G] [--algo zstd] | zram off
+    nethos-memory swapfile on [--size 4G] | swapfile off
+    nethos-memory vram                 what this machine could do
+"""
+import argparse
+import os
+import re
+import subprocess
+import sys
+
+SYSFS_ZRAM = "/sys/block/zram0"
+
+
+def sh(argv, check=False):
+    return subprocess.run(argv, capture_output=True, text=True, check=check)
+
+
+def human(n):
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return "%.1f %s" % (n, unit)
+        n /= 1024.0
+
+
+def meminfo():
+    info = {}
+    try:
+        with open("/proc/meminfo") as fh:
+            for line in fh:
+                key, _, rest = line.partition(":")
+                info[key] = int(rest.strip().split()[0]) * 1024
+    except OSError:
+        pass
+    return info
+
+
+def total_ram():
+    return meminfo().get("MemTotal", 0)
+
+
+# --------------------------------------------------------------------------
+# VRAM
+# --------------------------------------------------------------------------
+def vram_kind():
+    """(kind, bytes, note) -- discrete, integrated, or none.
+
+    The distinction is the whole point. On an APU -- Ryzen with Radeon
+    graphics, Intel with Iris -- the "VRAM" is carved out of the same DIMMs the
+    kernel is already allocating from, so swapping to it moves pages from RAM
+    to RAM, pays compression and transfer for the privilege, and *reduces*
+    usable memory by the size of the carve-out. It is strictly worse than
+    doing nothing, which is why this refuses rather than offering it.
+
+    On a discrete card the memory is genuinely separate and genuinely spare
+    when nothing is rendering, and using it is a real win.
+    """
+    out = sh(["lspci", "-nn"]).stdout
+    lines = [l for l in out.splitlines()
+             if re.search(r"(VGA compatible|3D controller|Display controller)", l, re.I)]
+    if not lines:
+        return "none", 0, "no graphics controller found"
+
+    # Dedicated memory is reported per-card by the driver. amdgpu and nvidia
+    # both expose a total; its absence on an APU is itself the answer.
+    for path in ("/sys/class/drm/card0/device/mem_info_vram_total",
+                 "/sys/class/drm/card1/device/mem_info_vram_total"):
+        try:
+            with open(path) as fh:
+                size = int(fh.read().strip())
+        except (OSError, ValueError):
+            continue
+        # An APU reports a carve-out here too, so size alone cannot decide it.
+        # The driver says whether the card has its own memory.
+        card = os.path.dirname(path)
+        try:
+            with open(os.path.join(card, "mem_info_vram_vendor")) as fh:
+                vendor = fh.read().strip()
+        except OSError:
+            vendor = ""
+        integrated = _looks_integrated(lines)
+        kind = "integrated" if integrated else "discrete"
+        note = vendor or lines[0].split(":", 2)[-1].strip()
+        return kind, size, note
+
+    if sh(["sh", "-c", "command -v nvidia-smi"]).returncode == 0:
+        res = sh(["nvidia-smi", "--query-gpu=memory.total", "--units=MiB",
+                  "--format=csv,noheader,nounits"])
+        if res.returncode == 0 and res.stdout.strip().isdigit():
+            return "discrete", int(res.stdout.strip()) * 1024 * 1024, "nvidia"
+
+    return ("integrated" if _looks_integrated(lines) else "discrete"), 0, lines[0]
+
+
+def _looks_integrated(lines):
+    """APUs and mobile integrated parts, by the names they actually report."""
+    blob = " ".join(lines).lower()
+    hints = ("lucienne", "renoir", "cezanne", "barcelo", "rembrandt", "phoenix",
+             "raphael", "vangogh", "picasso", "raven", "granite ridge",
+             "uhd graphics", "iris", "hd graphics", "arc.*igpu", "radeon vega",
+             "integrated")
+    return any(re.search(h, blob) for h in hints)
+
+
+def cmd_vram(_args):
+    kind, size, note = vram_kind()
+    print("graphics     %s" % note)
+    print("kind         %s" % kind)
+    if size:
+        print("memory       %s" % human(size))
+    if kind == "discrete":
+        print("\nThis card has its own memory, so a swap tier on it is worth having.")
+        print("It needs a block device over VRAM, which the kernel does not")
+        print("provide: vramfs (FUSE + OpenCL) is the usual route and is not")
+        print("packaged in Debian. Once it is present:")
+        print("    nethos-memory vram on --size 2G")
+        print("\nLeave headroom for whatever is actually rendering, and never")
+        print("give it all of the card: a GPU that runs out while holding swap")
+        print("cannot page it back, and that is an unrecoverable hang, not a")
+        print("slow one.")
+    elif kind == "integrated":
+        print("\nRefused: this is integrated graphics. Its memory is carved out")
+        print("of the same RAM the kernel allocates from, so swapping to it")
+        print("moves pages from RAM to RAM, pays for the round trip, and leaves")
+        print("you with less memory than before. zram is the tier that helps")
+        print("here -- it compresses in place:")
+        print("    nethos-memory zram on")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# zram
+# --------------------------------------------------------------------------
+def zram_state():
+    try:
+        with open(os.path.join(SYSFS_ZRAM, "disksize")) as fh:
+            size = int(fh.read().strip())
+    except (OSError, ValueError):
+        return None
+    if not size:
+        return None
+    state = {"disksize": size}
+    for key, name in (("comp_algorithm", "algo"), ("mm_stat", "mm")):
+        try:
+            with open(os.path.join(SYSFS_ZRAM, key)) as fh:
+                state[name] = fh.read().strip()
+        except OSError:
+            pass
+    algo = state.get("algo", "")
+    match = re.search(r"\[(\w+)\]", algo)
+    state["algo"] = match.group(1) if match else algo
+    mm = (state.get("mm") or "").split()
+    if len(mm) >= 3:
+        state["stored"] = int(mm[0])
+        state["compressed"] = int(mm[1])
+    return state
+
+
+def cmd_zram(args):
+    if args.state == "off":
+        sh(["swapoff", "/dev/zram0"])
+        sh(["sh", "-c", "echo 1 > /sys/block/zram0/reset"])
+        print("zram off")
+        return 0
+
+    size = args.size or "%dG" % max(2, int(total_ram() / 1024 ** 3 / 2))
+    algo = args.algo or "zstd"
+
+    sh(["swapoff", "/dev/zram0"])
+    sh(["modprobe", "zram", "num_devices=1"])
+    sh(["sh", "-c", "echo 1 > /sys/block/zram0/reset"])
+    # Algorithm before size: setting it afterwards is rejected once the device
+    # has been given a disksize, and the rejection is silent.
+    sh(["sh", "-c", "echo %s > /sys/block/zram0/comp_algorithm" % algo])
+    res = sh(["sh", "-c", "echo %s > /sys/block/zram0/disksize" % size])
+    if res.returncode != 0:
+        print("could not size zram: %s" % res.stderr.strip())
+        return 1
+    sh(["mkswap", "/dev/zram0"])
+    # Higher priority than any disk swap, so the kernel fills this first.
+    res = sh(["swapon", "--priority", "100", "/dev/zram0"])
+    if res.returncode != 0:
+        print("could not enable zram swap: %s" % res.stderr.strip())
+        return 1
+
+    # zram is memory, not a disk, so the usual "avoid swapping" advice is
+    # backwards: pages are cheaper compressed in RAM than kept whole.
+    sh(["sysctl", "-qw", "vm.swappiness=180"])
+    sh(["sysctl", "-qw", "vm.page-cluster=0"])
+    print("zram on: %s, %s, priority 100, swappiness 180" % (size, algo))
+    return 0
+
+
+# --------------------------------------------------------------------------
+# disk swapfile
+# --------------------------------------------------------------------------
+SWAPFILE = "/var/lib/nethos/swapfile"
+
+
+def cmd_swapfile(args):
+    if args.state == "off":
+        sh(["swapoff", SWAPFILE])
+        try:
+            os.remove(SWAPFILE)
+        except OSError:
+            pass
+        print("swapfile off")
+        return 0
+    size = args.size or "4G"
+    os.makedirs(os.path.dirname(SWAPFILE), exist_ok=True)
+    sh(["swapoff", SWAPFILE])
+    # fallocate leaves holes on some filesystems and swapon refuses those, so
+    # the file is written rather than reserved.
+    res = sh(["sh", "-c", "dd if=/dev/zero of=%s bs=1M count=%d status=none"
+              % (SWAPFILE, _mb(size))])
+    if res.returncode != 0:
+        print("could not create %s: %s" % (SWAPFILE, res.stderr.strip()))
+        return 1
+    os.chmod(SWAPFILE, 0o600)
+    sh(["mkswap", SWAPFILE])
+    # Lower priority than zram: this is the tier that catches what zram cannot.
+    res = sh(["swapon", "--priority", "10", SWAPFILE])
+    if res.returncode != 0:
+        print("could not enable %s: %s" % (SWAPFILE, res.stderr.strip()))
+        return 1
+    print("swapfile on: %s at %s, priority 10" % (size, SWAPFILE))
+    return 0
+
+
+def _mb(text):
+    text = text.strip().upper()
+    if text.endswith("G"):
+        return int(float(text[:-1]) * 1024)
+    if text.endswith("M"):
+        return int(float(text[:-1]))
+    return int(int(text) / 1024 / 1024)
+
+
+# --------------------------------------------------------------------------
+def cmd_status(_args):
+    info = meminfo()
+    total = info.get("MemTotal", 0)
+    avail = info.get("MemAvailable", 0)
+    print("ram          %s total, %s available (%.0f%% in use)"
+          % (human(total), human(avail),
+             100 * (1 - avail / total) if total else 0))
+
+    swaps = sh(["swapon", "--show=NAME,SIZE,USED,PRIO", "--noheadings"]).stdout.strip()
+    if swaps:
+        print("swap")
+        for line in swaps.splitlines():
+            print("  %s" % " ".join(line.split()))
+    else:
+        print("swap         none -- an OOM kill is the first symptom of running")
+        print("             out, with nothing in the journal naming the cause")
+
+    z = zram_state()
+    if z:
+        stored, comp = z.get("stored", 0), z.get("compressed", 0)
+        ratio = (stored / comp) if comp else 0
+        print("zram         %s, %s%s" % (human(z["disksize"]), z.get("algo", "?"),
+              ", holding %s in %s (%.1fx)" % (human(stored), human(comp), ratio)
+              if comp else ""))
+
+    kind, size, note = vram_kind()
+    print("graphics     %s (%s%s)" % (note, kind,
+          ", " + human(size) if size else ""))
+
+    print("\ntop consumers")
+    ps = sh(["ps", "-eo", "rss,comm", "--sort=-rss"]).stdout.splitlines()[1:6]
+    for line in ps:
+        rss, _, comm = line.strip().partition(" ")
+        try:
+            print("  %10s  %s" % (human(int(rss) * 1024), comm.strip()))
+        except ValueError:
+            pass
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="nethos-memory", add_help=True)
+    sub = ap.add_subparsers(dest="cmd")
+
+    sub.add_parser("status")
+    sub.add_parser("vram")
+    z = sub.add_parser("zram"); z.add_argument("state", choices=["on", "off"])
+    z.add_argument("--size"); z.add_argument("--algo")
+    f = sub.add_parser("swapfile"); f.add_argument("state", choices=["on", "off"])
+    f.add_argument("--size")
+
+    args = ap.parse_args()
+    cmd = args.cmd or "status"
+    if cmd in ("zram", "swapfile") and os.geteuid() != 0:
+        print("needs root: sudo nethos-memory %s ..." % cmd)
+        return 1
+    return {"status": cmd_status, "vram": cmd_vram,
+            "zram": cmd_zram, "swapfile": cmd_swapfile}[cmd](args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
