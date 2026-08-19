@@ -221,6 +221,15 @@ cp "$ROOT"/pkg/*.py "$STAGE/pkg/"
 # The shell rides along: npkg_bootstrap looks for it beside the pkg directory.
 cp -R "$ROOT/payload" "$STAGE/payload"
 
+# NETHOS_KERNEL_TARBALL=/path/to/linux-7.2.0-x86.tar.gz  ./scripts/build-x86.sh
+# Baked into the image rather than installed afterwards, for when the machine
+# being flashed should arrive already running it.
+if [ -n "${NETHOS_KERNEL_TARBALL:-}" ]; then
+    [ -f "$NETHOS_KERNEL_TARBALL" ] || die "no such kernel tarball: $NETHOS_KERNEL_TARBALL"
+    cp "$NETHOS_KERNEL_TARBALL" "$STAGE/custom-kernel.tar.gz"
+    say "Baking in $(basename "$NETHOS_KERNEL_TARBALL")"
+fi
+
 cat > "$STAGE/build.sh" <<BOOTSTRAP
 #!/bin/bash
 # Runs as root inside the builder. /dev/vdb is the target disk.
@@ -555,6 +564,26 @@ usbhid
 xhci_pci
 MODS
 
+# A kernel built rather than packaged, if one was handed to us.
+#
+# npkg can only install what Debian ships, and Debian does not ship mainline --
+# 7.x is not in trixie at all. nethos-kernel build produces a tarball; this
+# unpacks it into the image so the result boots the kernel you built rather
+# than the one the archive had. KVER is recomputed afterwards because the
+# initramfs below must be built for the kernel that will actually boot.
+if [ -f /root/custom-kernel.tar.gz ]; then
+    echo "--- unpacking the supplied kernel ---"
+    tar xf /root/custom-kernel.tar.gz -C /
+    NEWKVER=$(ls -1 /lib/modules | sort -V | tail -1)
+    if [ -n "$NEWKVER" ] && [ -e "/boot/vmlinuz-$NEWKVER" ]; then
+        KVER="$NEWKVER"
+        echo "    booting $KVER instead of the packaged kernel"
+        depmod -a "$KVER"
+    else
+        echo "    tarball had no usable kernel; keeping $KVER"
+    fi
+fi
+
 echo "--- initramfs ---"
 update-initramfs -c -k "$KVER" || {
     echo "update-initramfs failed; falling back to a bare initramfs"
@@ -609,8 +638,14 @@ date -u +'%Y-%m-%dT%H:%M:%SZ' > /etc/nethos-release
 echo "--- done inside ---"
 INSIDE
 
+# The seed is mounted at /mnt/src in the builder, which is not visible inside
+# the chroot -- so a supplied kernel has to be carried across before inside.sh
+# looks for it.
+[ -f "$SRC/custom-kernel.tar.gz" ] && cp "$SRC/custom-kernel.tar.gz" "$R/root/custom-kernel.tar.gz"
+
 chmod +x "$R/root/inside.sh"
 chroot "$R" env ROOT_UUID="$ROOT_UUID" ESP_UUID="$ESP_UUID" /root/inside.sh
+rm -f "$R/root/custom-kernel.tar.gz" "$R/root/inside.sh"
 rm -f "$R/root/inside.sh"
 
 # Size, reported inside a guard that cannot fail.
