@@ -45,18 +45,36 @@ fi
 # happen. Measured from the compositor's own start rather than slept blindly,
 # so a fast machine waits less and this does not become a fixed tax on boot.
 SETTLE=${NETHOS_SETTLE:-4}
-wf_pid=$(pgrep -x wayfire 2>/dev/null | head -1)
+SESSION_LOG="$HOME/.cache/nethos/session.log"
+mkdir -p "$(dirname "$SESSION_LOG")" 2>/dev/null || true
+
+# Find the compositor without pgrep. autostart runs with whatever PATH the
+# compositor inherited, which is not the login shell's -- and when pgrep was
+# not on it this whole block was skipped silently, so the wait never happened
+# and a boot that was supposed to test the delay tested nothing. /proc is
+# always there.
+wf_pid=""
+for c in /proc/[0-9]*/comm; do
+    if [ -r "$c" ] && [ "$(cat "$c" 2>/dev/null)" = "wayfire" ]; then
+        wf_pid=${c#/proc/}; wf_pid=${wf_pid%/comm}; break
+    fi
+done
+printf '%s settle: wayfire pid=%s settle=%s\n' "$(date +%H:%M:%S)" "${wf_pid:-none}" "$SETTLE" >> "$SESSION_LOG" 2>/dev/null || true
 if [ -n "$wf_pid" ] && [ -r "/proc/$wf_pid/stat" ]; then
     # Field 22 is starttime in clock ticks since boot.
     start_ticks=$(awk '{print $22}' "/proc/$wf_pid/stat" 2>/dev/null)
     hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
     now_s=$(awk '{print int($1)}' /proc/uptime 2>/dev/null || echo 0)
     up_s=$(( now_s - start_ticks / hz ))
+    printf '%s settle: compositor up %ss, waiting for %ss\n' \
+        "$(date +%H:%M:%S)" "$up_s" "$SETTLE" >> "$SESSION_LOG" 2>/dev/null || true
     while [ "$up_s" -lt "$SETTLE" ]; do
         sleep 0.5
         now_s=$(awk '{print int($1)}' /proc/uptime 2>/dev/null || echo 0)
         up_s=$(( now_s - start_ticks / hz ))
     done
+    printf '%s settle: done, compositor up %ss\n' \
+        "$(date +%H:%M:%S)" "$up_s" >> "$SESSION_LOG" 2>/dev/null || true
 fi
 
 # Wait for the API rather than racing it.
