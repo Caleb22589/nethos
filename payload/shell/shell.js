@@ -240,8 +240,36 @@ function repaint() {
    arrives. show() is always called before anything is displayed. */
 function overlayMapped(on) {
   if (typeof nethosHost === "undefined") return;
-  if (on) { if (nethosHost.show) nethosHost.show(); }
-  else if (nethosHost.hide) nethosHost.hide();
+  if (on) {
+    clearTimeout(overlayRelease);
+    overlayRelease = 0;
+    if (nethosHost.show) nethosHost.show();
+  } else if (nethosHost.hide) {
+    nethosHost.hide();
+  }
+}
+
+let overlayRelease = 0;
+
+/* Unmap, but not before the blank frame has been drawn.
+
+   A surface keeps its last buffer while unmapped, and shows it again the
+   moment it is mapped. Unmapping the instant the content is hidden meant the
+   retained frame was still the launcher -- so opening the control centre
+   flashed the launcher first, out of a buffer that was never redrawn.
+
+   So: hide the content, give the page a chance to actually paint the empty
+   surface, then release it. Two frames rather than a timeout where possible,
+   because that is exactly the thing being waited for. Re-checked at the end,
+   because in that gap something may have opened again. */
+function overlayReleaseSoon(stillIdle) {
+  clearTimeout(overlayRelease);
+  overlayRelease = setTimeout(() => {
+    overlayRelease = 0;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (stillIdle()) overlayMapped(false);
+    }));
+  }, 60);
 }
 
 /* Take or release the keyboard.
@@ -614,7 +642,7 @@ function initMenu() {
     // frame the control centre is still on screen and still taking clicks.
     if (!open && !askOpen) keyboard(false);
     repaint();
-    if (!open && !askOpen && !ctxOpen) overlayMapped(false);
+    overlayReleaseSoon(() => !open && !ccOpen && !askOpen && !ctxOpen);
   }
 
   function bar(pct) {
@@ -863,7 +891,7 @@ function initMenu() {
     askEl.hidden = true;
     document.body.classList.remove("ctx");
     keyboard(false);
-    if (!open && !ccOpen && !ctxOpen) overlayMapped(false);
+    overlayReleaseSoon(() => !open && !ccOpen && !askOpen && !ctxOpen);
     if (askDismiss) {
       window.removeEventListener("pointerdown", askDismiss, true);
       askDismiss = null;
@@ -1034,7 +1062,7 @@ function initMenu() {
         // stops it being on screen. A surface that just goes transparent does
         // not damage what it was covering, so the launcher stayed painted
         // until something else forced a repaint twenty seconds later.
-        if (!ccOpen && !askOpen && !ctxOpen) overlayMapped(false);
+        overlayReleaseSoon(() => !open && !ccOpen && !askOpen && !ctxOpen);
       }
     }
     if (open) {
