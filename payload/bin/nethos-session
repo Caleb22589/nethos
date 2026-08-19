@@ -102,6 +102,29 @@ fi
 # path fixes the stuck flip on some hosts and fails to modeset at all on others.
 #   NETHOS_NO_ATOMIC=1 nethos-session
 [ "${NETHOS_NO_ATOMIC:-0}" = "1" ] && export WLR_DRM_NO_ATOMIC=1
+
+# Try it for exactly one boot, and take it back automatically.
+#
+# The legacy modeset path is the documented fix for the fault described above
+# -- wlroots giving up on repaint scheduling -- and that fault is what the
+# ghost looks like: surfaces that draw only when something else forces the
+# compositor to repaint. But the same note records it producing a black screen
+# on other hardware, and a black screen you have to edit a config file to
+# escape is a worse outcome than a ghost.
+#
+# So: a flag consumed before it is used. Set the file, reboot, and the next
+# boot after that is normal whatever happened -- including the boot where you
+# could not see anything to fix it with.
+#
+#   touch ~/.cache/nethos/try-no-atomic   # then reboot
+#
+NO_ATOMIC_ONCE="$HOME/.cache/nethos/try-no-atomic"
+if [ -f "$NO_ATOMIC_ONCE" ]; then
+    rm -f "$NO_ATOMIC_ONCE"
+    export WLR_DRM_NO_ATOMIC=1
+    printf '%s no-atomic: consumed the flag, WLR_DRM_NO_ATOMIC=1 for this boot\n' \
+        "$(date +%H:%M:%S)" >> "$SESSION_LOG" 2>/dev/null || true
+fi
 true
 
 # WebKit's compositing buffers are expensive without a GPU -- but with one they
