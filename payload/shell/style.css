@@ -192,15 +192,30 @@ html.no-motion *::after {
 }
 .dock-tip {
   position: absolute; bottom: 100%; left: 50%;
-  transform: translateX(-50%) translateY(-8px);
   padding: 5px 11px; border-radius: var(--r-pill);
   font-size: 12px; white-space: nowrap;
   background: var(--glass-strong); color: var(--ink);
   box-shadow: var(--shadow-sm);
-  opacity: 0; pointer-events: none;
-  transition: opacity var(--fast);
+  pointer-events: none;
+  /* Moves as well as fades, and the movement is the point.
+
+     Fading alone leaves the label on screen after the pointer has gone: a
+     region that merely becomes transparent damages nothing, so the compositor
+     never repaints it and the name hangs over an icon nobody is pointing at
+     until something else forces a repaint. The same fault that kept the
+     control centre painted after it closed.
+
+     A surface that *moves* damages both where it was and where it went, which
+     the compositor cannot skip. Four pixels is enough to count as movement
+     and too few to read as animation. */
+  transform: translateX(-50%) translateY(-4px);
+  opacity: 0;
+  transition: opacity var(--fast), transform var(--fast);
 }
-.dock-item:hover .dock-tip { opacity: 1; }
+.dock-item:hover .dock-tip {
+  opacity: 1;
+  transform: translateX(-50%) translateY(-8px);
+}
 
 /* ============================================================== launcher */
 
