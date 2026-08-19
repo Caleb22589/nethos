@@ -46,6 +46,13 @@ BUILDER_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-gen
 
 DISK_SIZE="10G"
 DISK_SIZE_SET=0
+# Megabytes for the ESP. It holds a kernel and an initrd for BOTH A/B slots,
+# so it is not merely a boot stub -- and a mainline initramfs is many times the
+# size of a distro one. NETHOS_ESP_MB overrides.
+ESP_MB="${NETHOS_ESP_MB:-512}"
+ESP_MB_SET=0
+# An `a && b` statement that fails is fatal under set -e, so this is an if.
+if [ -n "${NETHOS_ESP_MB:-}" ]; then ESP_MB_SET=1; fi
 USERNAME="neth"
 SETS="base system kernel desktop firmware browser"
 CLEAN=0
@@ -180,11 +187,19 @@ fi
 # shrinks the filesystem before flashing, so a larger disk costs nothing on the
 # stick. This has to be decided before the disk is created, not when the
 # tarball is staged further down.
-if [ -n "${NETHOS_KERNEL_TARBALL:-}" ] && [ "$DISK_SIZE_SET" = 0 ]; then
-    DISK_SIZE="20G"
-    say "A kernel tarball was supplied; using a ${DISK_SIZE} disk for the"
-    say "initramfs staging area (override with --size)."
+if [ -n "${NETHOS_KERNEL_TARBALL:-}" ]; then
+    if [ "$DISK_SIZE_SET" = 0 ]; then
+        DISK_SIZE="20G"
+        say "A kernel tarball was supplied; using a ${DISK_SIZE} disk for the"
+        say "initramfs staging area (override with --size)."
+    fi
+    if [ "$ESP_MB_SET" = 0 ]; then
+        ESP_MB=2048
+        say "and a ${ESP_MB}MB ESP, because the initrd it produces will not fit"
+        say "in the 512MB one (override with NETHOS_ESP_MB)."
+    fi
 fi
+ESP_END=$(( ESP_MB + 1 ))
 
 say "Creating the target disk ($DISK_SIZE)"
 rm -f "$DISK"
@@ -277,6 +292,7 @@ echo "=== NETHOS x86 image build starting \$(date -u) ==="
 
 USERNAME="$USERNAME"
 SETS="$SETS"
+ESP_END="$ESP_END"
 BOOTSTRAP
 cat >> "$STAGE/build.sh" <<'BOOTSTRAP'
 
@@ -328,9 +344,9 @@ TARGET=/dev/vdb
 echo "--- partitioning ---"
 wipefs -a "$TARGET"
 parted -s "$TARGET" mklabel gpt
-parted -s "$TARGET" mkpart ESP fat32 1MiB 513MiB
+parted -s "$TARGET" mkpart ESP fat32 1MiB "${ESP_END:-513}MiB"
 parted -s "$TARGET" set 1 esp on
-parted -s "$TARGET" mkpart root ext4 513MiB 100%
+parted -s "$TARGET" mkpart root ext4 "${ESP_END:-513}MiB" 100%
 sleep 2; partprobe "$TARGET" || true; sleep 2
 
 mkfs.fat -F32 -n NETHOSEFI "${TARGET}1"
@@ -660,19 +676,27 @@ if [ -f /root/custom-kernel.tar.gz ]; then
 fi
 
 echo "--- initramfs ---"
-echo "    $(df -Ph / | awk 'NR==2 {print $4" free, "$5" used"}'), $(find /lib/modules/"$KVER" -name '*.ko*' 2>/dev/null | wc -l) modules"
+# /boot is the ESP, and it is the small one. Reporting / here was actively
+# misleading: it said 16G free while the initrd was failing to fit in 512MB.
+echo "    /     $(df -Ph /     | awk 'NR==2 {print $4" free of "$2}')"
+echo "    /boot $(df -Ph /boot | awk 'NR==2 {print $4" free of "$2}')  <- the initrd goes here"
+echo "    $(find /lib/modules/"$KVER" -name '*.ko*' 2>/dev/null | wc -l) modules"
 update-initramfs -c -k "$KVER" || {
     echo "update-initramfs failed; falling back to a bare initramfs"
     mkinitramfs -o "/boot/initrd.img-$KVER" "$KVER" || {
         echo "FATAL: the initramfs could not be built."
-        echo "  $(df -Ph / | awk 'NR==2 {print $4" free of "$2}')"
+        df -Ph / /boot | sed 's/^/  /'
         echo
-        echo "  If that says the disk is full: mkinitramfs decompresses every"
-        echo "  module into a staging directory before packing it, so MODULES=most"
-        echo "  over a large module tree needs several gigabytes that the finished"
-        echo "  image never contains. Build a bigger disk -- the space is"
-        echo "  transient and make-usb.sh shrinks the image before flashing:"
-        echo "      ./scripts/build-x86.sh --size 32G"
+        echo "  If /boot is the full one, the initrd does not fit in the ESP."
+        echo "  An initramfs built with MODULES=most over a large module tree is"
+        echo "  many times the size of a distro one -- and the ESP holds a kernel"
+        echo "  and an initrd for BOTH A/B slots. Give it more room:"
+        echo "      NETHOS_ESP_MB=3072 ./scripts/build-x86.sh"
+        echo
+        echo "  The lasting fix is fewer modules: this kernel was configured from"
+        echo "  a distro config that builds nearly every driver. Basing it on"
+        echo "  defconfig plus payload/kernel/nethos.config cuts it by an order"
+        echo "  of magnitude and speeds up every boot."
         exit 1
     }
 }
