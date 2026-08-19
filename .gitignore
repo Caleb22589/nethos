@@ -13,3 +13,7 @@ payload/.devstate/
 __pycache__/
 *.pyc
 build/
+
+# Agent scratch: worktrees are separate checkouts, aider keeps its own caches.
+.claude/
+.aider*
