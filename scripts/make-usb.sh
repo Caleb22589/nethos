@@ -53,7 +53,7 @@ Build it first:  $BUILDER"
 
 command -v qemu-img >/dev/null || die "qemu-img not found"
 
-# Refuse a disk that was never built.
+# Refuse a disk that was never built -- read the label, do not guess at it.
 #
 # build-x86.sh can stop before it ever boots the builder -- a missing kernel
 # tarball, no network, a full disk -- and it leaves behind the empty qcow2 it
@@ -61,23 +61,63 @@ command -v qemu-img >/dev/null || die "qemu-img not found"
 # perfectly and boots to nothing, which is a worse failure than an error here
 # because it is only discovered at the machine it was meant for.
 #
-# A built image has a GPT with a NETHOS root in it. An empty one has neither.
-if command -v qemu-img >/dev/null 2>&1; then
-    if ! qemu-img convert -O raw "$SRC" /dev/stdout 2>/dev/null | head -c 1048576 | \
-         grep -qa "NETHOS"; then
-        die "$(basename "$SRC") does not contain a built system.
+# The first version of this check grepped the first megabyte for "NETHOS" and
+# rejected every good image. Nothing in the first megabyte says NETHOS: the GPT
+# names its partitions "ESP" and "root", and the NETHOS label is in the ext4
+# superblock of partition 2, half a gigabyte in. So find the partition the way
+# the partition table describes it and read the label out of the superblock.
+#
+# GPT: entry array at LBA 2, 128 bytes per entry, starting LBA 32 bytes into
+# the entry. Partition 2 is therefore at byte 1024 + 128 + 32.
+# ext4: superblock 1024 bytes into the partition, volume label at 0x78, 16 long.
+# Two different answers, because they mean opposite things. No partition table
+# at all is the empty qcow2 this check exists to catch, and is fatal. A table
+# that is there but whose label will not read is this check being out of its
+# depth, and must not stop a build that is probably fine.
+root_start() {
+    local start
+    start=$(dd if="$1" bs=1 skip=1184 count=8 2>/dev/null | od -An -tu8 | tr -d ' \n')
+    case "$start" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$start" -gt 0 ] 2>/dev/null || return 1
+    printf '%s' "$start"
+}
 
-  It exists, but the builder never finished writing to it -- check the output
-  of build-x86.sh for where it stopped. Flashing this would give you a stick
-  that boots to nothing.
-
-  Re-run:  ./scripts/build-x86.sh"
-    fi
-fi
+root_label() {
+    dd if="$1" bs=1 skip=$(( $2 * 512 + 1024 + 120 )) count=16 2>/dev/null | tr -d '\0'
+}
 
 say "Converting $(basename "$SRC") to a raw disk image"
 rm -f "$IMG"
 qemu-img convert -p -O raw "$SRC" "$IMG"
+
+# A check that cannot read the image says so and gets out of the way. This one
+# has already blocked a perfectly good build once by being confidently wrong,
+# and an unflashable image is a worse outcome than an unbuilt one reaching dd.
+if ! START=$(root_start "$IMG"); then
+    rm -f "$IMG"
+    die "$(basename "$SRC") does not contain a built system.
+
+  It has no partition table at all, so the builder never wrote to it --
+  check the output of build-x86.sh for where it stopped. Flashing this
+  would give you a stick that boots to nothing.
+
+  Re-run:  ./scripts/build-x86.sh"
+fi
+
+LABEL=$(root_label "$IMG" "$START")
+if [ -z "$LABEL" ]; then
+    say "  note: partitioned, but the root label would not read; continuing"
+elif [ "$LABEL" != "NETHOS" ]; then
+    rm -f "$IMG"
+    die "$(basename "$SRC") does not contain a built system.
+
+  Its root partition is labelled '$LABEL', not NETHOS. Flashing this would
+  give you a stick that boots to nothing.
+
+  Re-run:  ./scripts/build-x86.sh"
+else
+    say "  root partition: NETHOS"
+fi
 
 # Shrink to what is actually used, then let it grow again on first boot.
 #
