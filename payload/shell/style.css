@@ -587,6 +587,14 @@ html.no-motion .ctxmenu { animation: none; }
    clickable, but the launcher itself stays hidden. */
 body[data-view="menu"].ctx { opacity: 1; pointer-events: auto; }
 body[data-view="menu"].ctx #menu { display: none; }
+/* And whenever the launcher is not open, which is not the same thing.
+   The rule above only hid it while something else was up. Dismissing the
+   control centre removes .ctx, which put #menu back to display:flex in the
+   same instant -- while the surface itself takes 180ms to fade out. For that
+   window the launcher was displayed on a surface still visible enough to see
+   it, which is the flicker of the launcher when clicking away from the
+   control centre or the ask bar. display does not transition; opacity does. */
+body[data-view="menu"]:not(.shown) #menu { display: none; }
 
 /* ================================================== control centre ====== */
 /* Anchored under the right-hand end of the panel, where the status cluster
