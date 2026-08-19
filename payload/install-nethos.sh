@@ -150,6 +150,16 @@ install -m 0644 "$PAYLOAD"/sway/config /etc/sway/config
 install -d /etc/nethos
 install -m 0644 "$PAYLOAD"/hypr/hyprland.conf /etc/nethos/hyprland.conf
 
+# Portal backends, named rather than discovered. See the file: discovery finds
+# no backend for most interfaces on this desktop and spends 50 seconds finding
+# that out, which is the white screen at startup.
+install -d /etc/xdg/xdg-desktop-portal
+for d in sway Wayfire wlroots; do
+    install -m 0644 "$PAYLOAD"/xdg/portals.conf \
+        "/etc/xdg/xdg-desktop-portal/${d}-portals.conf"
+done
+install -m 0644 "$PAYLOAD"/xdg/portals.conf /etc/xdg/xdg-desktop-portal/portals.conf
+
 # Where the assistant thinks. Never overwritten: this is the one file the user
 # edits to move between the local model and a cloud endpoint, and an update
 # that reset it would put a 10GB model back on a machine they had moved off it.
