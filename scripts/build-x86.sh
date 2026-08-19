@@ -702,17 +702,48 @@ update-initramfs -c -k "$KVER" || {
 }
 ls -la /boot/ | head
 
-# Verify the initramfs can actually reach a disk before calling this a build.
+# Verify the image can actually reach a disk before calling this a build.
+#
+# A driver counts if it is a module inside the initramfs OR built into the
+# kernel, and the difference is a property of whoever configured that kernel.
+# Checking only for the module declared a perfectly good 7.2 build broken
+# because its config has CONFIG_VIRTIO_BLK=y and so ships no .ko at all.
 if command -v lsinitramfs >/dev/null; then
-    found=$(lsinitramfs "/boot/initrd.img-$KVER" 2>/dev/null \
-            | grep -c "virtio_blk" || true)
-    total=$(lsinitramfs "/boot/initrd.img-$KVER" 2>/dev/null \
-            | grep -c "\.ko" || true)
-    echo "initramfs: ${total:-0} modules, virtio_blk x${found:-0}"
-    if [ "${found:-0}" -lt 1 ]; then
-        echo "FATAL: initramfs has no virtio_blk -- it would not find the root"
+    INITRD_LIST=$(lsinitramfs "/boot/initrd.img-$KVER" 2>/dev/null || true)
+    total=$(printf '%s\n' "$INITRD_LIST" | grep -c "\.ko" || true)
+    echo "initramfs: ${total:-0} modules"
+
+    missing=""
+    check_driver() {   # $1 module name, $2 config symbol, $3 what it reaches
+        # usb_storage the module is usb-storage.ko on disk, so match both.
+        alt=$(printf '%s' "$1" | tr '_' '-')
+        if printf '%s\n' "$INITRD_LIST" | grep -qE "/($1|$alt)\.ko"; then
+            echo "    $1: module in initramfs   ($3)"
+        elif grep -q "^$2=y" "/boot/config-$KVER" 2>/dev/null; then
+            echo "    $1: built into the kernel  ($3)"
+        else
+            echo "    $1: MISSING                ($3)"
+            missing="$missing $1"
+        fi
+    }
+    check_driver virtio_blk  CONFIG_VIRTIO_BLK  "the disk in a VM"
+    check_driver usb_storage CONFIG_USB_STORAGE "a USB stick"
+    check_driver nvme        CONFIG_BLK_DEV_NVME "an internal SSD"
+
+    if [ -n "$missing" ]; then
+        echo "FATAL: no way to reach the root filesystem --$missing"
+        echo "  Neither in the initramfs nor built into the kernel. This image"
+        echo "  would boot to an initramfs prompt on the hardware it is for."
         exit 1
     fi
+fi
+
+# targz-pkg ships the unstripped vmlinux -- half a gigabyte of ELF that nothing
+# boots from. On the ESP, where space is measured against two A/B slots, it is
+# the single largest thing there and is pure waste.
+if [ -f "/boot/vmlinux-$KVER" ]; then
+    echo "removing /boot/vmlinux-$KVER ($(du -h "/boot/vmlinux-$KVER" | cut -f1), not used to boot)"
+    rm -f "/boot/vmlinux-$KVER"
 fi
 
 echo "--- bootloader ---"
