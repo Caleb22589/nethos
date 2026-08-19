@@ -153,6 +153,19 @@ install -m 0644 "$PAYLOAD"/hypr/hyprland.conf /etc/nethos/hyprland.conf
 # Portal backends, named rather than discovered. See the file: discovery finds
 # no backend for most interfaces on this desktop and spends 50 seconds finding
 # that out, which is the white screen at startup.
+# PipeWire, enabled rather than merely installed.
+#
+# It was present and inactive, which costs more than sound: the wlroots portal
+# builds its ScreenCast on PipeWire, and without it the attempt fails only
+# after a 25 second D-Bus timeout. That timeout is most of the white screen at
+# startup -- measured, the portal took 50.2s with PipeWire down and 22.4s with
+# it up. The desktop waits behind it either way.
+#
+# --global, because these are user units and the installer is root: enabling
+# them per-user would only ever fix the account that happened to run this.
+systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service >/dev/null 2>&1 || true
+systemctl --global enable pipewire.service >/dev/null 2>&1 || true
+
 install -d /etc/xdg/xdg-desktop-portal
 for d in sway Wayfire wlroots; do
     install -m 0644 "$PAYLOAD"/xdg/portals.conf \
