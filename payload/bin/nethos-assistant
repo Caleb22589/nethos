@@ -227,6 +227,24 @@ def serve():
     ThreadingHTTPServer((host, int(port or 11434)), Handler).serve_forever()
 
 
+def _model_memory_high():
+    """Leave the desktop room, in proportion rather than as a magic number.
+
+    Three quarters of RAM: enough that a model which fits still runs at full
+    speed, little enough that one which does not is throttled instead of
+    taking the session with it.
+    """
+    try:
+        with open("/proc/meminfo") as fh:
+            for line in fh:
+                if line.startswith("MemTotal:"):
+                    kb = int(line.split()[1])
+                    return "%dM" % int(kb * 0.75 / 1024)
+    except (OSError, ValueError, IndexError):
+        pass
+    return "6G"
+
+
 def apply_backend():
     """Give the port to whichever backend is configured, and take it from the
     other. Two units, one port, and the wrong one running is a silence rather
@@ -245,10 +263,24 @@ def apply_backend():
     subprocess.run(["systemctl", "--user", "stop", stop],
                    capture_output=True, check=False)
     if cloud:
+        # The shim is a translator; it costs nothing and should not be starved.
         argv = ["systemd-run", "--user", "--collect", "--unit=nethos-assistant",
+                "--property=CPUWeight=100",
                 "/usr/bin/nethos-assistant", "serve"]
     else:
+        # A model will take every core it is given and does not care that
+        # something is being drawn. CPUWeight is a share under contention, so
+        # inference still uses the whole machine when the desktop is idle --
+        # it just yields first when the desktop is not.
+        #
+        # MemoryHigh throttles rather than kills: past it the kernel reclaims
+        # hard from this cgroup instead of going looking for a victim. On a
+        # machine whose first symptom of running short was an OOM kill, having
+        # the largest consumer be the one that slows down is the whole point.
         argv = ["systemd-run", "--user", "--collect", "--unit=ollama",
+                "--property=CPUWeight=40",
+                "--property=MemoryHigh=%s" % _model_memory_high(),
+                "--property=IOWeight=40",
                 "/usr/local/bin/ollama", "serve"]
     proc = subprocess.run(argv, capture_output=True, text=True, check=False)
     if proc.returncode != 0:

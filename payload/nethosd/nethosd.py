@@ -1867,8 +1867,11 @@ def nethbot_start():
     # restart things when something is wrong. An assistant that cannot outlive
     # the component you are asking it about is not much of one.
     if shutil.which("systemd-run"):
+        # Between the desktop and the model: it should answer promptly, and it
+        # is not what the person is looking at.
         ok = spawn(["systemd-run", "--user", "--collect",
-                    "--unit=nethbot", "--working-directory=" + base] + argv)
+                    "--unit=nethbot", "--property=CPUWeight=200",
+                    "--working-directory=" + base] + argv)
         if ok:
             for _ in range(60):
                 if nethbot_running():

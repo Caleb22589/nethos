@@ -16,5 +16,25 @@ RestartSec=1
 StartLimitBurst=10
 StartLimitIntervalSec=30
 
+# Priority, not preemption.
+#
+# The processor's own governor decides clocks and the kernel's scheduler
+# decides order; neither is replaced here. What these do is tell that
+# scheduler which cgroup matters when two of them want the same core, which is
+# the part it cannot infer. CPUWeight is a share under contention and costs
+# nothing when the machine is idle -- an unloaded system runs identically with
+# or without it.
+#
+# The desktop is what the person is looking at. A model answering a question
+# is not, and it will happily take every core.
+CPUWeight=800
+IOWeight=800
+
+# Reclaim from everything else before this. MemoryLow is a floor the kernel
+# protects rather than a limit, so it never causes a failure -- it only changes
+# who gives memory back first when the machine is short. This machine had no
+# swap and a 10GB model, and the desktop was what died.
+MemoryLow=384M
+
 [Install]
 WantedBy=graphical-session.target
