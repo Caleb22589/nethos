@@ -38,6 +38,50 @@ are macOS-bound but lazily imported, so `from backend.main import app`
 succeeds untouched. What does not work there is clicking and screenshotting;
 the shell and chat paths -- the ones a troubleshooter needs -- do.
 
+## Choosing where it thinks
+
+`gemma4:e4b` resident is ~10GB of the 14GB usable on a 16GB laptop, with no
+swap configured -- measured at 10.2GB for llama-server against 292MB for the
+whole shell. That makes an OOM kill the failure mode rather than a slowdown,
+so the backend is a switch:
+
+    nethos-assistant status           where it thinks now
+    nethos-assistant models           free models the endpoint offers
+    nethos-assistant use cloud        hand the port to the cloud shim
+    nethos-assistant use local        hand it back to Ollama
+
+Run these as yourself, not with sudo: the backends are `--user` units and sudo
+cannot reach that session bus. `/etc/nethos/assistant.conf` is the shipped
+default and is never overwritten by an update; your choices go in
+`~/.config/nethos/assistant.conf`, layered on top.
+
+### Cloud mode is a shim, not a patch
+
+NETHBot hardcodes `localhost:11434` and Ollama's dialect in four places --
+`llm`, `loop_llm`, `vision`, `computer_use`. It is a separate project, so
+patching those would mean patching them again after every update. Instead
+`nethos-assistant serve` answers on that port in that dialect and translates
+to any OpenAI-compatible endpoint. NETHBot never learns which is in use.
+
+Both backends want port 11434, so only one runs at a time; `use` stops the
+other. `serve` refuses to run in local mode against its own address, because
+that is a loop that presents as a hang.
+
+### A key, and where it is not
+
+    install -m 600 /dev/null ~/.config/nethos/assistant.key
+    $EDITOR ~/.config/nethos/assistant.key      # the key, nothing else
+
+The config points at that file rather than containing the key, so the config
+stays shareable and the key stays out of the repository. Without it, cloud
+mode answers -- in the assistant's own reply shape, so it appears in the Ask
+bar -- saying which file to create.
+
+OpenRouter is the default because its free tier needs no card and it publishes
+which models are genuinely free: `nethos-assistant models` lists them live.
+`google/gemma-4-26b-a4b-it:free` keeps the same family as the local default.
+Any OpenAI-compatible provider works; change `cloud_base_url`.
+
 ## The model
 
     # server, in its own unit
