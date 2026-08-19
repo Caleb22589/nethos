@@ -28,13 +28,18 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-CONF = os.environ.get("NETHOS_ASSISTANT_CONF", "/etc/nethos/assistant.conf")
+# System default, then the user's own on top. The units are per-user and
+# systemd --user needs a session bus, which sudo does not carry -- so a config
+# that could only be edited as root meant `use` could write the file and then
+# fail to act on it. The override is the user's, so the whole command is.
+SYSTEM_CONF = "/etc/nethos/assistant.conf"
+USER_CONF = os.path.expanduser("~/.config/nethos/assistant.conf")
+CONF = os.environ.get("NETHOS_ASSISTANT_CONF", "")
 
 
-def load(path=CONF):
-    """key=value, # comments. Deliberately not ini or yaml: it is read by a
-    shell script as well, and one syntax that both agree on is worth more than
-    sections nobody needs."""
+def read_conf(path):
+    """key=value, # comments. Deliberately not ini or yaml: one syntax a shell
+    script can also read is worth more than sections nobody needs."""
     conf = {}
     try:
         with open(os.path.expanduser(path)) as fh:
@@ -47,6 +52,28 @@ def load(path=CONF):
     except OSError:
         pass
     return conf
+
+
+def load():
+    if CONF:
+        return read_conf(CONF)
+    conf = read_conf(SYSTEM_CONF)
+    conf.update(read_conf(USER_CONF))     # the user's choices win
+    return conf
+
+
+def target_conf():
+    """Where `use` writes: the user's own file, created from the system one."""
+    if CONF:
+        return CONF
+    if not os.path.exists(USER_CONF):
+        os.makedirs(os.path.dirname(USER_CONF), exist_ok=True)
+        try:
+            with open(SYSTEM_CONF) as src, open(USER_CONF, "w") as dst:
+                dst.write(src.read())
+        except OSError:
+            open(USER_CONF, "a").close()
+    return USER_CONF
 
 
 def read_key(conf):
@@ -205,6 +232,13 @@ def apply_backend():
     other. Two units, one port, and the wrong one running is a silence rather
     than an error -- so this is a command rather than something to remember."""
     import subprocess
+    # systemd --user needs the session bus, and sudo carries neither it nor
+    # XDG_RUNTIME_DIR -- so under sudo this fails with a message about a bus,
+    # several steps from the cause. Say the actual thing instead.
+    if os.geteuid() == 0 and not os.environ.get("XDG_RUNTIME_DIR"):
+        print("run this as your own user, not with sudo -- the assistant runs\n"
+              "as a --user unit and sudo cannot reach that session bus.")
+        return 1
     conf = load()
     cloud = conf.get("backend", "local") == "cloud"
     stop, start = ("ollama", "nethos-assistant") if cloud else ("nethos-assistant", "ollama")
@@ -242,7 +276,7 @@ def models():
     print("free models at %s:\n" % conf.get("cloud_base_url"))
     for m in sorted(free, key=lambda x: -int(x.get("context_length") or 0)):
         print("  %-52s context %s" % (m["id"], m.get("context_length") or "?"))
-    print("\nSet one as cloud_model in %s" % CONF)
+    print("\nSet one as cloud_model in %s" % (CONF or USER_CONF))
     return 0
 
 
@@ -266,7 +300,7 @@ def use(which):
     if which not in ("local", "cloud"):
         print("usage: nethos-assistant use local|cloud")
         return 2
-    path = os.path.expanduser(CONF)
+    path = os.path.expanduser(target_conf())
     try:
         with open(path) as fh:
             lines = fh.readlines()
@@ -286,7 +320,7 @@ def use(which):
         with open(path, "w") as fh:
             fh.writelines(out)
     except OSError as exc:
-        print("cannot write %s (try sudo): %s" % (path, exc))
+        print("cannot write %s: %s" % (path, exc))
         return 1
     print("backend=%s" % which)
     return apply_backend()
