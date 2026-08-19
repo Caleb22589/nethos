@@ -172,7 +172,9 @@ cat <<EOF
                   ${PART_PREFIX}2  ${SLOT_SIZE}  system slot A (ext4, this install)
                   ${PART_PREFIX}3  ${SLOT_SIZE}  system slot B (ext4, empty until an update)
                   ${PART_PREFIX}4  rest  data (ext4, /home and machine state)
-                  bootloader: GRUB, one entry per slot
+                  bootloader: GRUB (slot A only for now — the slot B entry
+                              and the boot counter arrive with the first
+                              A/B update; slot B is empty until then)
 EOF
 elif [ "$FIRMWARE" = UEFI ]; then
 cat <<EOF
