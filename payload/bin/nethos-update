@@ -3,7 +3,9 @@
 #
 #   nethos-update                pull the configured branch and apply
 #   nethos-update --ref v2       pull a specific branch/tag/commit
-#   nethos-update --packages     also run the pacman package step
+#   nethos-update --packages     also update packages (uses a slot: see below)
+#   nethos-update --slot         force the slot path
+#   nethos-update --in-place     force the fast path, even for packages
 #   nethos-update --status       show what is installed vs available
 #   nethos-update --local DIR    apply from a local checkout instead of git
 #
@@ -106,8 +108,34 @@ INSTALL_ARGS=(--files-only)
 # Not the default. It costs a full copy and a reboot where an in-place update
 # costs seconds, and during active development the fast loop is worth more
 # than atomicity. docs/ABUPDATE.md has the argument in full.
+# Which path, and why.
+#
+# In place is right for the shell: seconds, no reboot, and the files it
+# replaces are not running as anything. It is wrong for the kernel, libc and
+# systemd, which cannot be replaced while they are in use -- and those are
+# exactly the updates most likely to leave a machine that will not boot.
+#
+# So packages imply a slot unless told otherwise. A package update can change
+# any of the three, and by the time it is obvious which, the system it broke
+# is the one you would fix it from.
 USE_SLOT=0
-for a in "$@"; do [ "$a" = "--slot" ] && USE_SLOT=1; done
+FORCE_IN_PLACE=0
+for a in "$@"; do
+    case "$a" in
+        --slot)     USE_SLOT=1 ;;
+        --in-place) FORCE_IN_PLACE=1 ;;
+    esac
+done
+if [ "$PACKAGES" = 1 ] && [ "$FORCE_IN_PLACE" = 0 ] && [ "$USE_SLOT" = 0 ]; then
+    if [ -f /etc/nethos/slots.conf ] && command -v nethos-ab >/dev/null 2>&1; then
+        USE_SLOT=1
+        say "Packages can replace the kernel, libc or systemd, so this goes to"
+        say "the idle slot. The running system is untouched; --in-place overrides."
+    else
+        say "WARNING: updating packages in place. This system has no A/B layout,"
+        say "so a kernel or libc change that fails leaves nothing to fall back to."
+    fi
+fi
 
 if [ "$USE_SLOT" = 1 ]; then
     command -v nethos-ab >/dev/null 2>&1 || die "nethos-ab is not installed"
@@ -152,7 +180,9 @@ if [ "$USE_SLOT" = 1 ]; then
     done
     [ -e /etc/resolv.conf ] && sudo cp -L /etc/resolv.conf "$MNT/etc/resolv.conf" 2>/dev/null || true
 
-    if ! sudo chroot "$MNT" "$SRC/payload/install-nethos.sh" --files-only; then
+    CHROOT_ARGS=(--files-only)
+    [ "$PACKAGES" = 1 ] && CHROOT_ARGS=(--no-packages)   # files + config, not pacman
+    if ! sudo chroot "$MNT" "$SRC/payload/install-nethos.sh" "${CHROOT_ARGS[@]}"; then
         sudo umount -R "$MNT" 2>/dev/null || sudo umount -Rl "$MNT" 2>/dev/null || true
         rmdir "$MNT" 2>/dev/null || true
         die "the update failed inside the idle slot -- the running system is untouched"
