@@ -1,0 +1,128 @@
+#!/bin/bash
+# Install a kernel into the slot you are not running from.
+#
+#   nethos-kernel list                     kernels this machine could run
+#   nethos-kernel current                  what each slot boots
+#   nethos-kernel install <package>        into the idle slot, then switch
+#
+# A kernel is the update that cannot be done in place and the one most likely
+# to leave a machine that will not boot, which is the entire reason for the
+# second slot. Nothing here touches the running system: the package is
+# unpacked into the idle slot, its initramfs is built inside it, and the
+# bootloader is pointed at it with three attempts. If it does not come up you
+# are back on this kernel without doing anything.
+set -euo pipefail
+
+KERNELS=/boot/nethos-kernels.conf
+say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
+die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+command -v npkg      >/dev/null 2>&1 || die "npkg is not installed"
+command -v nethos-ab >/dev/null 2>&1 || die "nethos-ab is not installed"
+[ -f /etc/nethos/slots.conf ] || die "no A/B layout -- see nethos-install --layout ab"
+
+cmd_list() {
+    echo "Standard and real-time kernels in the archive:"
+    echo
+    npkg search linux-image 2>/dev/null \
+        | grep -E "^\s+linux-image-[0-9].*amd64\s" \
+        | grep -vE "dbg|cloud|unsigned" \
+        | sed 's/^ */  /' | sort -V | tail -12
+    echo
+    echo "  ...-rt-amd64 is PREEMPT_RT: the kernel preempts almost everywhere,"
+    echo "  which is what the studio distributions ship for audio work. It"
+    echo "  trades a little throughput for latency that does not spike."
+    echo
+    echo "Install one with: nethos-kernel install <package>"
+}
+
+kver_of() { sed -n "s/^$1=//p" "$KERNELS" 2>/dev/null | tail -1; }
+
+cmd_current() {
+    local run
+    run=$(uname -r)
+    echo "running        $run   (slot $(cat /etc/nethos/slot 2>/dev/null))"
+    echo "slot A boots   $(kver_of A || echo '(newest on the ESP)')"
+    echo "slot B boots   $(kver_of B || echo '(newest on the ESP)')"
+    echo
+    echo "preemption     $(cat /sys/kernel/debug/sched/preempt 2>/dev/null || echo 'unreadable -- needs root')"
+}
+
+cmd_install() {
+    local pkg="$1"
+    [ "$(id -u)" -eq 0 ] || die "needs root"
+    [ -n "$pkg" ] || die "which package? try: nethos-kernel list"
+
+    local idle dev mnt
+    idle=$( [ "$(cat /etc/nethos/slot 2>/dev/null)" = A ] && echo B || echo A )
+    dev=$(sed -n "s/^slot_$(echo "$idle" | tr 'A-Z' 'a-z')=//p" /etc/nethos/slots.conf)
+    case "$dev" in LABEL=*) dev="/dev/disk/by-label/${dev#LABEL=}" ;; esac
+
+    say "Making slot $idle match this system first"
+    nethos-ab sync >/dev/null || die "could not fill slot $idle"
+
+    mnt=$(mktemp -d)
+    mount "$dev" "$mnt" || die "cannot mount slot $idle"
+    # The ESP, so the kernel and initramfs land where the bootloader reads
+    # them -- shared by both slots, which is why each slot pins its own
+    # version rather than taking the newest.
+    mkdir -p "$mnt/boot"
+    mount --bind /boot "$mnt/boot"
+    for d in /dev /dev/pts /proc /sys /run; do
+        mkdir -p "$mnt$d"; mount --rbind "$d" "$mnt$d"
+        mount --make-rslave "$mnt$d" 2>/dev/null || true
+    done
+    [ -e /etc/resolv.conf ] && cp -L /etc/resolv.conf "$mnt/etc/resolv.conf" 2>/dev/null || true
+
+    cleanup() { umount -R "$mnt" 2>/dev/null || umount -Rl "$mnt" 2>/dev/null || true; rmdir "$mnt" 2>/dev/null || true; }
+    trap cleanup EXIT
+
+    say "Fetching $pkg into slot $idle"
+    # --root, so the package is unpacked into the slot rather than into the
+    # running system. npkg runs no maintainer scripts, so the initramfs and
+    # module map below are ours to build; that is the same gap that has
+    # produced every silent hardware fault in this project.
+    if ! npkg --root "$mnt" fetch "$pkg"; then
+        die "npkg could not install $pkg -- the running system is untouched"
+    fi
+
+    local kver
+    kver=$(chroot "$mnt" sh -c 'ls -1 /lib/modules 2>/dev/null | sort -V | tail -1')
+    [ -n "$kver" ] || die "no /lib/modules after install -- is $pkg a kernel?"
+    say "Kernel $kver unpacked"
+
+    say "Building its module map and initramfs inside the slot"
+    chroot "$mnt" depmod -a "$kver" || die "depmod failed for $kver"
+    if chroot "$mnt" sh -c 'command -v update-initramfs >/dev/null'; then
+        chroot "$mnt" update-initramfs -c -k "$kver" || die "initramfs failed for $kver"
+    else
+        die "no update-initramfs in the slot; cannot build an initramfs for $kver"
+    fi
+    [ -e "$mnt/boot/vmlinuz-$kver" ] || die "no /boot/vmlinuz-$kver after install"
+
+    # Record which kernel this slot boots, on the ESP both slots can read.
+    touch "$KERNELS"
+    sed -i "/^$idle=/d" "$KERNELS"
+    echo "$idle=$kver" >> "$KERNELS"
+    # And pin the running slot to what it is running, or regenerating grub
+    # would hand it the new kernel too and there would be nothing to fall
+    # back to.
+    local here; here=$(cat /etc/nethos/slot 2>/dev/null || echo A)
+    grep -q "^$here=" "$KERNELS" || echo "$here=$(uname -r)" >> "$KERNELS"
+
+    cleanup; trap - EXIT
+
+    say "Regenerating the bootloader"
+    grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1 || true
+
+    nethos-ab switch
+    say "Slot $idle runs $kver. Reboot to try it; three failures and you are back here."
+}
+
+case "${1:-list}" in
+    list)    cmd_list ;;
+    current) cmd_current ;;
+    install) shift; cmd_install "${1:-}" ;;
+    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \?//' ;;
+    *) die "unknown command: $1" ;;
+esac

@@ -37,11 +37,27 @@ CMDLINE_FILE=/etc/nethos/cmdline
 NETHOS_CMDLINE="preempt=full"
 [ -r "$CMDLINE_FILE" ] && NETHOS_CMDLINE=$(grep -v '^#' "$CMDLINE_FILE" | tr '\n' ' ')
 
-KERNEL=$(ls -1 /boot/vmlinuz-* 2>/dev/null | sort -V | tail -1)
-INITRD=$(ls -1 /boot/initrd.img-* 2>/dev/null | sort -V | tail -1)
-[ -n "$KERNEL" ] || exit 0
-KERNEL=/$(basename "$KERNEL")
-[ -n "$INITRD" ] && INITRD=/$(basename "$INITRD")
+# Which kernel each slot boots, recorded on the ESP because the ESP is the one
+# thing both slots share.
+#
+# This has to be per-slot or the whole scheme is a lie: /boot is shared, so
+# installing a kernel puts it where both slots can see it, and an entry that
+# simply took the newest would point *both* slots at a kernel only one of them
+# was meant to try. The first kernel that failed to boot would then take the
+# fallback with it.
+KERNELS=/boot/nethos-kernels.conf
+newest=$(ls -1 /boot/vmlinuz-* 2>/dev/null | sort -V | tail -1)
+[ -n "$newest" ] || exit 0
+newest=$(basename "$newest"); newest=${newest#vmlinuz-}
+
+kver_for() {   # slot letter -> kernel version, falling back to the newest
+    v=""
+    [ -r "$KERNELS" ] && v=$(sed -n "s/^$1=//p" "$KERNELS" | tail -1)
+    [ -n "$v" ] && [ -e "/boot/vmlinuz-$v" ] && { echo "$v"; return; }
+    echo "$newest"
+}
+KVER_A=$(kver_for A)
+KVER_B=$(kver_for B)
 
 cat <<EOF
 # --- NETHOS A/B ---------------------------------------------------------
@@ -74,17 +90,17 @@ menuentry 'NETHOS' --id nethos-a {
     # kernel will mount. Searching for the slot here looked for a kernel
     # inside it and found nothing.
     search --no-floppy --label --set=root NETHOSEFI
-    linux  $KERNEL root=LABEL=NETHOS_A rw quiet loglevel=3 $NETHOS_CMDLINE
+    linux  /vmlinuz-$KVER_A root=LABEL=NETHOS_A rw quiet loglevel=3 $NETHOS_CMDLINE
 EOF
-[ -n "$INITRD" ] && echo "    initrd $INITRD"
+[ -e "/boot/initrd.img-$KVER_A" ] && echo "    initrd /initrd.img-$KVER_A"
 cat <<EOF
 }
 
 menuentry 'NETHOS' --id nethos-b {
     search --no-floppy --label --set=root NETHOSEFI
-    linux  $KERNEL root=LABEL=NETHOS_B rw quiet loglevel=3 $NETHOS_CMDLINE
+    linux  /vmlinuz-$KVER_B root=LABEL=NETHOS_B rw quiet loglevel=3 $NETHOS_CMDLINE
 EOF
-[ -n "$INITRD" ] && echo "    initrd $INITRD"
+[ -e "/boot/initrd.img-$KVER_B" ] && echo "    initrd /initrd.img-$KVER_B"
 cat <<'EOF'
 }
 # --- end NETHOS A/B -----------------------------------------------------
