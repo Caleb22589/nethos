@@ -93,6 +93,26 @@ say "Applying        : $AVAILABLE"
 # apply
 # --------------------------------------------------------------------------
 INSTALL_ARGS=(--files-only)
+
+# --slot: apply the update to the slot we are not running from, then boot it.
+#
+# This is what the two partitions are for. In place, an update that breaks the
+# desktop breaks the machine you would fix it with, and cannot touch anything
+# that is in use -- the kernel, libc, systemd, which are exactly the updates
+# most likely to go wrong. Into a slot, the running system is untouched: if
+# the new one does not come up, the bootloader spends its three attempts and
+# returns here.
+#
+# Not the default. It costs a full copy and a reboot where an in-place update
+# costs seconds, and during active development the fast loop is worth more
+# than atomicity. docs/ABUPDATE.md has the argument in full.
+USE_SLOT=0
+for a in "$@"; do [ "$a" = "--slot" ] && USE_SLOT=1; done
+
+if [ "$USE_SLOT" = 1 ]; then
+    command -v nethos-ab >/dev/null 2>&1 || die "nethos-ab is not installed"
+    [ -f /etc/nethos/slots.conf ] || die "this system has no A/B layout -- see nethos-install --layout ab"
+fi
 [ "$PACKAGES" -eq 1 ] && INSTALL_ARGS=()
 
 # A snapshot before every update, so a bad one is a command away from undone
@@ -106,6 +126,45 @@ if command -v nethos-snapshot >/dev/null 2>&1; then
 fi
 
 say "Installing system files (sudo)"
+if [ "$USE_SLOT" = 1 ]; then
+    # Copy first, then update the copy. The order matters: updating the
+    # running system and then copying it would put the new system in both
+    # slots and leave nothing to fall back to.
+    say "Filling the idle slot from the running system"
+    sudo nethos-ab sync >/dev/null || die "could not fill the idle slot"
+
+    IDLE_DEV=$(sudo nethos-ab status | awk '/^idle slot/{print $NF}' | tr -d '()')
+    MNT=$(mktemp -d)
+    sudo mount "$IDLE_DEV" "$MNT" || die "could not mount the idle slot"
+
+    # Run the installer *inside* the slot rather than teaching it about a root
+    # prefix: every path it writes is then correct by construction, and there
+    # is no second code path to keep in step with the first.
+    #
+    # /home is bind-mounted because the repository lives there and the slot
+    # does not have one -- /home is shared and deliberately outside both
+    # slots. The rest are what a chroot needs to run anything at all.
+    say "Applying the update inside it"
+    for d in /dev /dev/pts /proc /sys /run /home; do
+        sudo mkdir -p "$MNT$d"
+        sudo mount --rbind "$d" "$MNT$d"
+        sudo mount --make-rslave "$MNT$d" 2>/dev/null || true
+    done
+    [ -e /etc/resolv.conf ] && sudo cp -L /etc/resolv.conf "$MNT/etc/resolv.conf" 2>/dev/null || true
+
+    if ! sudo chroot "$MNT" "$SRC/payload/install-nethos.sh" --files-only; then
+        sudo umount -R "$MNT" 2>/dev/null || sudo umount -Rl "$MNT" 2>/dev/null || true
+        rmdir "$MNT" 2>/dev/null || true
+        die "the update failed inside the idle slot -- the running system is untouched"
+    fi
+    sudo umount -R "$MNT" 2>/dev/null || sudo umount -Rl "$MNT" 2>/dev/null || true
+    rmdir "$MNT" 2>/dev/null || true
+
+    sudo nethos-ab switch
+    say "Done. Reboot to run it; if it does not come up you land back here."
+    exit 0
+fi
+
 if ! sudo "$SRC/payload/install-nethos.sh" "${INSTALL_ARGS[@]}"; then
     warn "the update failed part way through"
     if [ -n "${SNAP_ID:-}" ]; then
