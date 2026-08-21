@@ -171,7 +171,7 @@ cmd_boot_kernel() {
 # Building one
 # --------------------------------------------------------------------------
 cmd_build() {
-    local version=7.2 bore=1 march="" cfg="" jobs="" out="$PWD"
+    local version=7.2 bore=1 march="" cfg="" jobs="" out="$PWD" cross=auto base=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --version)  version="${2:?}"; shift 2 ;;
@@ -180,10 +180,32 @@ cmd_build() {
             --config)   cfg="${2:?}"; shift 2 ;;
             --jobs)     jobs="${2:?}"; shift 2 ;;
             --out)      out="${2:?}"; shift 2 ;;
+            --cross)    cross=1; shift ;;
+            --native)   cross=0; shift ;;
+            --defconfig) base=defconfig; shift ;;
             *) die "unknown build option: $1" ;;
         esac
     done
     jobs="${jobs:-$(nproc)}"
+
+    # Cross-compiling is the normal case now, not the exotic one.
+    #
+    # An x86 kernel cannot be compiled by an arm64 compiler, but it can be
+    # compiled by an x86-targeting compiler running on arm64 -- at that
+    # machine's full native speed, which is the entire point. Emulating an x86
+    # machine to do the same work is hours instead of minutes.
+    if [ "$cross" = auto ]; then
+        if [ "$(uname -m)" = "x86_64" ]; then cross=0; else cross=1; fi
+    fi
+    if [ "$cross" = 1 ]; then
+        export ARCH=x86_64
+        export CROSS_COMPILE=x86_64-linux-gnu-
+        say "Cross-compiling for x86_64 on $(uname -m)."
+        # This machine's own config describes the wrong architecture, and
+        # defconfig is the only sane base when there is no x86 kernel here to
+        # copy one from.
+        base=defconfig
+    fi
     local series="v${version%%.*}.x"
     local src="$HOME/kernel"
 
@@ -194,9 +216,17 @@ cmd_build() {
     # execute: it will not boot, and the slot will catch it, but pointlessly.
     # So the target is named rather than assumed whenever they might differ.
     if [ -z "$march" ]; then
-        march=native
-        say "No --march given; building for this machine (native)."
-        say "Building for a different CPU? --march znver2 (Zen 2), znver3, x86-64-v3 ..."
+        if [ "$cross" = 1 ]; then
+            # "native" would mean the arm64 host, which is not the target and
+            # not even the right instruction set.
+            march=x86-64-v3
+            say "No --march given; building for $march (Zen 2 / Haswell and newer)."
+            say "Older target? --march x86-64-v2. Specific CPU? --march znver2"
+        else
+            march=native
+            say "No --march given; building for this machine (native)."
+            say "Building for a different CPU? --march znver2 (Zen 2), znver3, x86-64-v3 ..."
+        fi
     fi
 
     say "Installing build dependencies"
@@ -208,17 +238,26 @@ cmd_build() {
         sudo pacman -S --needed --noconfirm base-devel bc openssl elfutils \
             pahole cpio zstd kmod curl >/dev/null || die "pacman could not install the toolchain"
     elif command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get update >/dev/null 2>&1 || true
         sudo apt-get install -y build-essential flex bison bc libssl-dev libelf-dev \
-            dwarves cpio zstd kmod curl >/dev/null || die "apt could not install the toolchain"
+            dwarves cpio zstd kmod curl xz-utils >/dev/null \
+            || die "apt could not install the toolchain"
+        if [ "$cross" = 1 ]; then
+            sudo apt-get install -y crossbuild-essential-amd64 >/dev/null \
+                || die "apt could not install the x86_64 cross toolchain"
+        fi
     elif command -v npkg >/dev/null 2>&1; then
         sudo npkg fetch build-essential flex bison bc libssl-dev libelf-dev \
             dwarves cpio zstd kmod >/dev/null || die "npkg could not install the toolchain"
     else
         say "  no apt or npkg; assuming the toolchain is present"
     fi
-    for t in gcc make flex bison bc; do
+    for t in make flex bison bc; do
         command -v "$t" >/dev/null || die "$t is missing and could not be installed"
     done
+    command -v "${CROSS_COMPILE:-}gcc" >/dev/null \
+        || die "${CROSS_COMPILE:-}gcc is missing and could not be installed"
+    say "Compiler: $(${CROSS_COMPILE:-}gcc --version | head -1)"
 
     mkdir -p "$src"; cd "$src"
     if [ ! -d "linux-$version" ]; then
@@ -256,6 +295,14 @@ cmd_build() {
         [ -r "$cfg" ] || die "--config $cfg cannot be read"
         cp "$cfg" .config
         say "  base: $cfg"
+    elif [ "$base" = defconfig ]; then
+        # Deliberate, not a fallback. A distro config enables nearly every
+        # driver in the tree as a module: 6435 of them, a 2.5GB tarball, an
+        # initrd too big for the ESP, and a longer boot every time. defconfig
+        # plus the fragment below is a few hundred, which is what this system
+        # actually uses.
+        make defconfig >/dev/null
+        say "  base: defconfig (lean; the fragment adds what NETHOS needs)"
     elif [ -r "/boot/config-$(uname -r)" ]; then
         cp "/boot/config-$(uname -r)" .config
         say "  base: this machine's running config"
