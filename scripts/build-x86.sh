@@ -187,16 +187,27 @@ fi
 # shrinks the filesystem before flashing, so a larger disk costs nothing on the
 # stick. This has to be decided before the disk is created, not when the
 # tarball is staged further down.
-if [ -n "${NETHOS_KERNEL_TARBALL:-}" ]; then
-    if [ "$DISK_SIZE_SET" = 0 ]; then
-        DISK_SIZE="20G"
-        say "A kernel tarball was supplied; using a ${DISK_SIZE} disk for the"
-        say "initramfs staging area (override with --size)."
-    fi
-    if [ "$ESP_MB_SET" = 0 ]; then
-        ESP_MB=2048
-        say "and a ${ESP_MB}MB ESP, because the initrd it produces will not fit"
-        say "in the 512MB one (override with NETHOS_ESP_MB)."
+# Size the image to the kernel that is going in it, not to the worst kernel
+# ever handed to it.
+#
+# A tarball built from a distro config is gigabytes and produces an initrd too
+# big for a normal ESP; one built from defconfig plus the fragment is tens of
+# megabytes and needs none of that headroom. Both are legitimate inputs, so
+# measure rather than assume: on macOS especially, where make-usb.sh cannot
+# shrink the filesystem, every gigabyte of disk is a gigabyte written to the
+# stick.
+if [ -n "${NETHOS_KERNEL_TARBALL:-}" ] && [ -f "${NETHOS_KERNEL_TARBALL:-}" ]; then
+    TARBALL_MB=$(( $(wc -c < "$NETHOS_KERNEL_TARBALL") / 1048576 ))
+    say "Kernel tarball: ${TARBALL_MB}MB"
+    if [ "$TARBALL_MB" -gt 300 ]; then
+        if [ "$DISK_SIZE_SET" = 0 ]; then
+            DISK_SIZE="20G"
+            say "  large kernel: using a ${DISK_SIZE} disk (override with --size)"
+        fi
+        if [ "$ESP_MB_SET" = 0 ]; then
+            ESP_MB=2048
+            say "  large kernel: using a ${ESP_MB}MB ESP (override with NETHOS_ESP_MB)"
+        fi
     fi
 fi
 ESP_END=$(( ESP_MB + 1 ))
