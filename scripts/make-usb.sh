@@ -204,8 +204,10 @@ shrink_image() {
 }
 
 before=$(stat -c%s "$IMG" 2>/dev/null || stat -f%z "$IMG")
+SHRUNK=0
 say "Shrinking to the data actually in it"
 if shrink_image; then
+    SHRUNK=1
     after=$(stat -c%s "$IMG" 2>/dev/null || stat -f%z "$IMG")
     say "  $(( before / 1048576 ))MB -> $(( after / 1048576 ))MB to write"
     say "  the filesystem grows back to fill the disk on first boot"
@@ -214,10 +216,34 @@ else
     say "  the image still works; dd will just write its empty space too"
 fi
 
+# What dd will write is the file's length, not its size on disk.
+#
+# The image is sparse, and BSD du has no --apparent-size, so this reported the
+# blocks actually allocated -- "2.3G to flash" for a 10G image that dd dutifully
+# writes in full, zeroes and all. That is the number the stick has to hold and
+# the number the write takes, so it is the one to print.
+bytes=$(stat -c%s "$IMG" 2>/dev/null || stat -f%z "$IMG")
+to_write=$(awk -v b="$bytes" 'BEGIN{printf "%.1fG", b/1073741824}')
 on_disk=$(du -h "$IMG" | cut -f1)
-to_write=$(du -h --apparent-size "$IMG" 2>/dev/null | cut -f1 || echo "$on_disk")
 say "Wrote $IMG"
-say "  $to_write to flash"
+if [ "$SHRUNK" = 1 ]; then
+    say "  $to_write to flash"
+else
+    say "  $to_write to flash (only $on_disk on disk: it is sparse, but dd"
+    say "  writes every byte, so the stick must be at least $to_write)"
+fi
+
+if [ "$SHRUNK" = 1 ]; then
+    FLASH_NOTE="Only the used data is written -- the filesystem was shrunk to fit it. On first
+boot it grows again to fill whatever it landed on, so a 2G write on a 256G SSD
+still gives you the whole 256G.
+"
+else
+    FLASH_NOTE="The filesystem could not be shrunk here ($SHRINK_WHY), so the whole $to_write is
+written, most of it zeroes. The stick must be at least that big. On first boot
+the filesystem grows to fill whatever it landed on regardless.
+"
+fi
 
 if [ -z "$TARGET" ]; then
     cat <<EOF
@@ -236,10 +262,7 @@ Flash it to a USB stick (the stick is completely overwritten):
   Or use Balena Etcher, which accepts a .img and is harder to point at the
   wrong disk.
 
-Only the used data is written -- the filesystem was shrunk to fit it. On first
-boot it grows again to fill whatever it landed on, so a 2G write on a 256G SSD
-still gives you the whole 256G.
-
+$FLASH_NOTE
 Then boot the PC from it with UEFI. Disable Secure Boot: this GRUB is not
 signed, so a machine with Secure Boot on will refuse it without explanation.
 
