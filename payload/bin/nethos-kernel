@@ -362,6 +362,35 @@ cmd_build() {
             esac
         done < "$frag"
         make olddefconfig >/dev/null 2>&1
+
+        # Say so when the fragment did not take.
+        #
+        # scripts/config writes whatever it is given, and olddefconfig then
+        # quietly drops anything whose dependencies are unmet or whose symbol
+        # does not exist. Both happened here: CONFIG_UINPUT is not a symbol
+        # (it is INPUT_UINPUT), and ATH10K_PCI needs ATH10K on first. Nothing
+        # complained, and the result was a kernel missing drivers that the
+        # fragment plainly asked for -- discovered, if at all, on the machine
+        # it was built for.
+        dropped=0
+        while IFS= read -r line; do
+            case "$line" in CONFIG_*=*) ;; *) continue ;; esac
+            sym="${line%%=*}"; want="${line#*=}"
+            if ! grep -q "^$sym=$want\$" .config; then
+                [ "$dropped" = 0 ] && say "  these fragment options did not take:"
+                got=$(grep -E "^$sym=" .config | head -1)
+                printf '    %-32s want=%-4s got=%s\n' \
+                    "$sym" "$want" "${got#*=}${got:+}${got:-(absent)}"
+                dropped=$((dropped + 1))
+            fi
+        done < "$frag"
+        if [ "$dropped" -gt 0 ]; then
+            say "  $dropped option(s) above are NOT in this kernel."
+            say "  An absent one is usually a wrong symbol name or a missing"
+            say "  parent option; check it against the tree's Kconfig."
+        else
+            say "  fragment: all options applied"
+        fi
     else
         say "  WARNING: no nethos.config found; building with the base config only"
     fi
