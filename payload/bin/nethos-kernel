@@ -389,7 +389,29 @@ cmd_build() {
         scripts/config --enable X86_NATIVE_CPU
     else
         scripts/config --disable X86_NATIVE_CPU
-        export KCFLAGS="-march=$march -mtune=$march"
+        # -march takes architecture levels, -mtune does not.
+        #
+        # x86-64-v3 names a feature level, and gcc rejects it outright as an
+        # -mtune value: "bad value 'x86-64-v3' for '-mtune=' switch". Tuning
+        # for "generic" is the right answer for a level anyway -- there is no
+        # single pipeline to schedule for when the target is a whole class of
+        # CPU. A named CPU tunes for itself.
+        case "$march" in
+            x86-64|x86-64-v2|x86-64-v3|x86-64-v4)
+                export KCFLAGS="-march=$march -mtune=generic" ;;
+            *)  export KCFLAGS="-march=$march -mtune=$march" ;;
+        esac
+
+        # Prove the compiler accepts them before the hour-long part rather
+        # than finding out in the first object file it tries to build.
+        if ! echo 'int main(void){return 0;}' \
+             | ${CROSS_COMPILE:-}gcc $KCFLAGS -x c -c -o /dev/null - 2>/dev/null; then
+            say "  the compiler rejects: $KCFLAGS"
+            ${CROSS_COMPILE:-}gcc $KCFLAGS -x c -c -o /dev/null - </dev/null 2>&1 \
+                | head -3 | sed 's/^/    /'
+            die "--march $march is not something this compiler understands"
+        fi
+        say "  flags: $KCFLAGS (accepted)"
     fi
     make olddefconfig >/dev/null 2>&1
 
