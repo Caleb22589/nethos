@@ -290,7 +290,7 @@ cp -R "$ROOT/payload" "$STAGE/payload"
 # being flashed should arrive already running it.
 if [ -n "${NETHOS_KERNEL_TARBALL:-}" ]; then
     [ -f "$NETHOS_KERNEL_TARBALL" ] || die "no such kernel tarball: $NETHOS_KERNEL_TARBALL"
-    cp "$NETHOS_KERNEL_TARBALL" "$STAGE/custom-kernel.tar.gz"
+    cp "$NETHOS_KERNEL_TARBALL" "$STAGE/custom-kernel.tgz"
     say "Baking in $(basename "$NETHOS_KERNEL_TARBALL")"
 fi
 
@@ -304,6 +304,7 @@ echo "=== NETHOS x86 image build starting \$(date -u) ==="
 USERNAME="$USERNAME"
 SETS="$SETS"
 ESP_END="$ESP_END"
+WANT_CUSTOM_KERNEL="$([ -n "${NETHOS_KERNEL_TARBALL:-}" ] && echo 1 || echo 0)"
 BOOTSTRAP
 cat >> "$STAGE/build.sh" <<'BOOTSTRAP'
 
@@ -636,7 +637,7 @@ MODS
 # unpacks it into the image so the result boots the kernel you built rather
 # than the one the archive had. KVER is recomputed afterwards because the
 # initramfs below must be built for the kernel that will actually boot.
-if [ -f /root/custom-kernel.tar.gz ]; then
+if [ -f /root/custom-kernel.tgz ]; then
     echo "--- unpacking the supplied kernel ---"
 
     # Make room before unpacking, not after it fails.
@@ -655,7 +656,7 @@ if [ -f /root/custom-kernel.tar.gz ]; then
     # Refuse to start an unpack that cannot finish. Compressed module trees
     # expand by roughly three; anything less than that free is a build that
     # fails an hour in rather than here, with a message that says so.
-    tar_kb=$(( $(stat -c%s /root/custom-kernel.tar.gz) / 1024 ))
+    tar_kb=$(( $(stat -c%s /root/custom-kernel.tgz) / 1024 ))
     free_kb=$(df -Pk / | awk 'NR==2 {print $4}')
     need_kb=$(( tar_kb * 3 ))
     echo "    tarball ${tar_kb}K, needs about ${need_kb}K, ${free_kb}K free"
@@ -666,7 +667,7 @@ if [ -f /root/custom-kernel.tar.gz ]; then
         exit 1
     fi
 
-    tar xf /root/custom-kernel.tar.gz -C / || {
+    tar xf /root/custom-kernel.tgz -C / || {
         echo "FATAL: the kernel tarball did not unpack."
         echo "  $(df -Ph / | awk 'NR==2 {print $4" free of "$2}')"
         exit 1
@@ -794,11 +795,28 @@ INSIDE
 # The seed is mounted at /mnt/src in the builder, which is not visible inside
 # the chroot -- so a supplied kernel has to be carried across before inside.sh
 # looks for it.
-[ -f "$SRC/custom-kernel.tar.gz" ] && cp "$SRC/custom-kernel.tar.gz" "$R/root/custom-kernel.tar.gz"
+# Find it by glob, and insist on it if one was supplied.
+#
+# ISO9660 permits one dot in a filename. Staging the kernel as
+# custom-kernel.tar.gz meant hdiutil wrote custom-kerneltar.gz, the test for
+# the original name failed, and the build quietly carried on to produce an
+# image running Debian's kernel instead of the one that was asked for -- with
+# nothing in the log saying so. The name has one dot now; the glob is here so
+# that a different tool mangling it differently cannot cost another hour.
+CK=$(ls "$SRC"/custom-kernel* 2>/dev/null | head -1 || true)
+if [ -n "$CK" ]; then
+    echo "supplied kernel: $(basename "$CK")"
+    cp "$CK" "$R/root/custom-kernel.tgz"
+elif [ "${WANT_CUSTOM_KERNEL:-0}" = 1 ]; then
+    echo "FATAL: a kernel tarball was staged but is not on the seed medium."
+    echo "  looked in $SRC for custom-kernel*, found:"
+    ls -la "$SRC" | sed 's/^/    /'
+    exit 1
+fi
 
 chmod +x "$R/root/inside.sh"
 chroot "$R" env ROOT_UUID="$ROOT_UUID" ESP_UUID="$ESP_UUID" /root/inside.sh
-rm -f "$R/root/custom-kernel.tar.gz" "$R/root/inside.sh"
+rm -f "$R/root/custom-kernel.tgz" "$R/root/inside.sh"
 rm -f "$R/root/inside.sh"
 
 # Size, reported inside a guard that cannot fail.
