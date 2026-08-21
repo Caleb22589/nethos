@@ -229,25 +229,32 @@ cmd_build() {
         fi
     fi
 
+    # Already root -- in a container, say -- means there is no sudo to call,
+    # and debian images do not ship one. Asking for it there fails on a
+    # missing command rather than on a missing privilege.
+    local SUDO=sudo
+    if [ "$(id -u)" = 0 ]; then SUDO=""; fi
+    command -v sudo >/dev/null 2>&1 || SUDO=""
+
     say "Installing build dependencies"
     if command -v pacman >/dev/null 2>&1; then
         # Arch and CachyOS: base-devel carries gcc/make/flex/bison/bc, and the
         # kernel needs openssl, elfutils and pahole on top. --needed so this is
         # a no-op on a machine that already builds kernels, which a CachyOS box
         # very likely does.
-        sudo pacman -S --needed --noconfirm base-devel bc openssl elfutils \
+        $SUDO pacman -S --needed --noconfirm base-devel bc openssl elfutils \
             pahole cpio zstd kmod curl >/dev/null || die "pacman could not install the toolchain"
     elif command -v apt-get >/dev/null 2>&1; then
-        sudo apt-get update >/dev/null 2>&1 || true
-        sudo apt-get install -y build-essential flex bison bc libssl-dev libelf-dev \
+        $SUDO apt-get update >/dev/null 2>&1 || true
+        $SUDO apt-get install -y build-essential flex bison bc libssl-dev libelf-dev \
             dwarves cpio zstd kmod curl xz-utils >/dev/null \
             || die "apt could not install the toolchain"
         if [ "$cross" = 1 ]; then
-            sudo apt-get install -y crossbuild-essential-amd64 >/dev/null \
+            $SUDO apt-get install -y crossbuild-essential-amd64 >/dev/null \
                 || die "apt could not install the x86_64 cross toolchain"
         fi
     elif command -v npkg >/dev/null 2>&1; then
-        sudo npkg fetch build-essential flex bison bc libssl-dev libelf-dev \
+        $SUDO npkg fetch build-essential flex bison bc libssl-dev libelf-dev \
             dwarves cpio zstd kmod >/dev/null || die "npkg could not install the toolchain"
     else
         say "  no apt or npkg; assuming the toolchain is present"
@@ -261,13 +268,35 @@ cmd_build() {
 
     mkdir -p "$src"; cd "$src"
     if [ ! -d "linux-$version" ]; then
-        say "Fetching linux $version"
-        [ -f "linux-$version.tar.xz" ] || \
-            curl -fL --progress-bar -o "linux-$version.tar.xz" \
-                "https://cdn.kernel.org/pub/linux/kernel/$series/linux-$version.tar.xz" \
-            || die "could not download linux $version"
-        tar xf "linux-$version.tar.xz"
+        local tb="linux-$version.tar.xz"
+        # A half-finished download must never look like a finished one.
+        #
+        # curl -o writes in place, so an interrupted fetch leaves a truncated
+        # .tar.xz that the -f test happily accepts, and every later run fails
+        # inside tar instead of re-fetching. Download beside it, prove it is
+        # intact, and only then let it take the real name. This one died at
+        # 42% on an HTTP/2 PROTOCOL_ERROR, which is exactly the case.
+        if [ -f "$tb" ] && ! xz -t "$tb" 2>/dev/null; then
+            say "  the cached $tb is corrupt; fetching it again"
+            rm -f "$tb"
+        fi
+        if [ ! -f "$tb" ]; then
+            say "Fetching linux $version"
+            # --http1.1 because the HTTP/2 stream is what broke; --retry and
+            # --continue-at resume rather than restart a 150MB transfer.
+            curl -fL --http1.1 --progress-bar \
+                 --retry 5 --retry-delay 3 --retry-all-errors \
+                 --continue-at - -o "$tb.part" \
+                 "https://cdn.kernel.org/pub/linux/kernel/$series/linux-$version.tar.xz" \
+                || { rm -f "$tb.part"; die "could not download linux $version"; }
+            xz -t "$tb.part" 2>/dev/null \
+                || { rm -f "$tb.part"; die "the downloaded $tb is not a valid xz archive"; }
+            mv "$tb.part" "$tb"
+        fi
+        say "Unpacking $tb"
+        tar xf "$tb" || die "could not unpack $tb"
     fi
+    [ -d "linux-$version" ] || die "linux-$version is missing after unpacking"
     cd "linux-$version"
 
     if [ "$bore" = 1 ] && ! grep -q SCHED_BORE kernel/sched/core.c 2>/dev/null; then
