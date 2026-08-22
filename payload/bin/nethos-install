@@ -316,6 +316,43 @@ if [ "${ONLINE:-0}" = 1 ]; then
         --arch amd64 --user "$NETH_USER" --work /tmp/npkg-work --keep \
         || die "the system could not be built -- nothing was written to the bootloader"
 
+    # The NETHOS kernel, over the one the archive just supplied.
+    #
+    # npkg installs Debian's kernel because that is what the archive has, and
+    # it boots. This replaces it with mainline 7.2 and BORE, published as a
+    # release asset so an installer that is a hundred megabytes does not have
+    # to carry forty of them. Failing to fetch it is not fatal: Debian's kernel
+    # is a working system, and nethos-kernel install-tar can do this later.
+    KURL="${NETHOS_KERNEL_URL:-https://github.com/Caleb22589/nethos/releases/download/kernel-7.2.0/linux-7.2.0-x86_64.tar.gz}"
+    say "Fetching the NETHOS kernel"
+    if curl -fL --retry 3 --retry-delay 2 -o /tmp/nethos-kernel.tgz "$KURL" 2>/dev/null; then
+        # The archive publishes a checksum beside it. A truncated kernel that
+        # unpacks far enough to look installed is the worst outcome here.
+        if curl -fsL -o /tmp/nethos-kernel.sha256 "$KURL.sha256" 2>/dev/null; then
+            want=$(awk '{print $1}' /tmp/nethos-kernel.sha256)
+            got=$(sha256sum /tmp/nethos-kernel.tgz 2>/dev/null | awk '{print $1}')
+            if [ -n "$want" ] && [ -n "$got" ] && [ "$want" != "$got" ]; then
+                say "  checksum does not match; keeping the packaged kernel"
+                rm -f /tmp/nethos-kernel.tgz
+            fi
+        fi
+        if [ -f /tmp/nethos-kernel.tgz ]; then
+            tar xzf /tmp/nethos-kernel.tgz -C "$MNT" && say "  installed alongside the packaged kernel"
+            # The tarball carries a bare lib/ directory entry, and tar
+            # extracting a directory over the /lib -> usr/lib symlink replaces
+            # it with a real one -- orphaning every firmware blob. This cost an
+            # evening once already.
+            if [ -d "$MNT/usr/lib/firmware" ] && [ ! -e "$MNT/lib/firmware" ]; then
+                ln -s ../usr/lib/firmware "$MNT/lib/firmware"
+                say "  relinked /lib/firmware after the kernel unpack"
+            fi
+            rm -f "$MNT"/boot/vmlinux-* 2>/dev/null || true
+        fi
+    else
+        say "  could not fetch it; the packaged kernel will be used"
+        say "  (nethos-kernel install-tar adds it later)"
+    fi
+
     # The desktop, the tools and the shell: everything the image build installs
     # after the packages land.
     PAYLOAD_DIR=""
