@@ -185,6 +185,19 @@ if [ -f /etc/nethos/slots.conf ] && grep -q '^layout=ab' /etc/nethos/slots.conf 
     command -v grub-mkconfig >/dev/null 2>&1 && grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1 || true
 fi
 
+# The development sync, so a fix does not need a rebuild to reach the machine.
+#
+# Deliberately installed and enabled on every image, not just development ones:
+# the whole value is that a stick already in someone's hand can be fixed by
+# copying files onto its ESP from any Mac. It does nothing at all unless
+# /boot/nethos-dev exists, and costs one checksum at boot when it does not.
+if [ -f "$PAYLOAD/systemd/nethos-devsync.service" ]; then
+    install -m 0644 "$PAYLOAD"/systemd/nethos-devsync.service \
+        /etc/systemd/system/nethos-devsync.service
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable nethos-devsync.service >/dev/null 2>&1 || true
+fi
+
 # The kernel fragment, so a machine can rebuild its own kernel without the
 # repository checked out.
 if [ -d "$PAYLOAD/kernel" ]; then

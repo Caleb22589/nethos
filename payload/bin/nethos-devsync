@@ -1,0 +1,54 @@
+#!/bin/sh
+# Apply a payload dropped on the ESP, at boot, without rebuilding anything.
+#
+# The ESP is FAT, so macOS mounts it natively -- which means a fix can be
+# copied onto the stick from the machine that wrote the image, with no Linux
+# host, no loop mount and no image build. scripts/dev-push.sh puts it there;
+# this applies it.
+#
+# Why this exists: a one-line change to the shell used to cost a kernel build
+# and an emulated image build, about fifty minutes, because there was no way to
+# get a file onto the machine. install-nethos.sh --files-only has always taken
+# seconds; nothing carried the files to it.
+#
+# Only runs when the payload has actually changed, so an untouched stick costs
+# one checksum at boot.
+set -eu
+
+DEV=/boot/nethos-dev
+STAMP=/var/lib/nethos/devsync.stamp
+LOG=/var/log/nethos-devsync.log
+
+[ -f "$DEV/install-nethos.sh" ] || exit 0
+
+# Hash the contents, not the metadata.
+#
+# Size and mtime looked cheaper and does not work: cp gives every file the same
+# timestamp, FAT stores mtime to two seconds, and an edit made within that
+# window is invisible -- which is exactly the edit-copy-boot loop this is for.
+# Verified: touching a file did not change the metadata fingerprint at all.
+# The payload is a few megabytes, so hashing it costs a fraction of a second
+# once per boot.
+fingerprint() {
+    find "$DEV" -type f | LC_ALL=C sort | while IFS= read -r f; do
+        printf '%s ' "$f"
+        cksum < "$f"
+    done | cksum
+}
+
+now=$(fingerprint)
+mkdir -p "$(dirname "$STAMP")"
+if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$now" ]; then
+    exit 0
+fi
+
+{
+    echo "--- $(date -Is) applying $DEV ---"
+    # FAT carries no execute bit, so the interpreter is named explicitly.
+    if sh "$DEV/install-nethos.sh" --files-only; then
+        echo "applied"
+        printf '%s' "$now" > "$STAMP"
+    else
+        echo "FAILED (status $?) -- leaving the stamp alone so it retries"
+    fi
+} >> "$LOG" 2>&1

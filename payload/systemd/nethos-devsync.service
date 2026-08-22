@@ -1,0 +1,18 @@
+[Unit]
+Description=Apply a development payload from the ESP
+# Must land before anything reads the files it replaces: the shell, nethosd and
+# the compositor all live in the tree this rewrites.
+After=local-fs.target
+Before=multi-user.target getty@tty1.service
+ConditionPathExists=/boot/nethos-dev/install-nethos.sh
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/nethos-devsync
+RemainAfterExit=yes
+# A bad payload must not stop the machine booting -- that is the whole point of
+# being able to drop a fix on the stick.
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target
