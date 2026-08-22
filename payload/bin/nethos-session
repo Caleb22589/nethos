@@ -161,28 +161,17 @@ true
 # So: composite on hardware that can, fall back where there is no render node
 # (a VM with llvmpipe, where the accelerated path buys nothing anyway).
 # NETHOS_GPU_COMPOSITING=0 forces the fallback; =1 forces acceleration.
-if [ "${NETHOS_GPU_COMPOSITING:-auto}" = "0" ]; then
-    export WEBKIT_DISABLE_COMPOSITING_MODE=1
-elif [ "${NETHOS_GPU_COMPOSITING:-auto}" = "1" ] || ls /dev/dri/renderD* >/dev/null 2>&1; then
-    # Take it back, do not merely decline to set it.
-    #
-    # This branch could only ever add the variable, so it lost every time
-    # something earlier had already exported it -- and .bash_profile does,
-    # before the compositor starts, which means the compositor and every child
-    # inherited it. The detection here ran, decided correctly, and changed
-    # nothing.
-    #
-    # That is the ghost, in full: with compositing off WebKit repaints only
-    # the damaged rectangle and assumes an opaque backdrop, so on a
-    # transparent layer surface nothing clears what was there before. It is
-    # why restarting the shell over SSH always fixed it -- that environment
-    # never had the variable -- and why every fix inside the pages did
-    # nothing, because the pages were never the problem.
-    unset WEBKIT_DISABLE_COMPOSITING_MODE
-    NETHOS_GPU=1; export NETHOS_GPU
-else
-    export WEBKIT_DISABLE_COMPOSITING_MODE=1
-fi
+# The renderer was already decided before the compositor started -- this runs
+# inside it, and wlroots read WLR_RENDERER seconds ago. Re-deciding here is
+# what made the first fix for the white screen do nothing at all: the log said
+# "renderer=pixman" while wayfire had already built a GLES2 one.
+#
+# So this only inherits the decision, for the WebKit settings below that are
+# still ours to make.
+eval "$(nethos-gpu-env)"
+printf '%s gpu: drm=%s renderer=%s\n' "$(date +%H:%M:%S)" \
+    "${NETHOS_DRM_DRIVER:-none}" "$([ "${NETHOS_GPU:-0}" = 1 ] && echo gl || echo pixman)" \
+    >> "$SESSION_LOG" 2>/dev/null || true
 
 # GTK3 applications draw their own title bars by default, which is why Thunar
 # and the terminal used to look like visitors from another desktop. GTK_CSD=0

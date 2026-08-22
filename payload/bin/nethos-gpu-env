@@ -1,0 +1,65 @@
+#!/bin/sh
+# Decide the renderer once, and print it as shell exports.
+#
+#   eval "$(nethos-gpu-env)"
+#
+# This existed twice -- in ~/.bash_profile, which launches the compositor, and
+# in nethos-session, which runs inside it. Both asked whether /dev/dri/renderD*
+# existed, both got it wrong the same way, and fixing one changed nothing
+# because the other had already decided. One copy now, read by both.
+#
+# A render node existing proves nothing about whether anything can render with
+# it. virtio-gpu without virgl publishes renderD128 and cannot do 3D; simpledrm
+# on the UEFI framebuffer publishes no node at all. In both cases wlroots picks
+# its GL renderer, EGL fails to initialise, the swapchain test fails, and the
+# session runs having drawn nothing -- a white or black screen with a live
+# cursor. So ask which driver is bound and trust only the ones that render.
+#
+# The default is deliberately the safe one: a desktop that comes up slowly
+# beats one that does not come up at all, and that is the whole point on
+# hardware whose driver has not been installed yet. NETHOS_RENDERER=gl opts
+# back in; NETHOS_RENDERER=pixman forces software.
+
+drm_driver() {
+    for c in /sys/class/drm/card[0-9]*; do
+        [ -e "$c/device/driver" ] || continue
+        basename "$(readlink -f "$c/device/driver")"
+        return
+    done
+}
+
+driver=$(drm_driver)
+case "${NETHOS_RENDERER:-auto}" in
+    gl)     gpu=1 ;;
+    pixman) gpu=0 ;;
+    *)
+        case "$driver" in
+            amdgpu|radeon|i915|xe|nouveau|nvidia*|msm|panfrost|panthor|lima|v3d|vc4)
+                gpu=1 ;;
+            *)  gpu=0 ;;
+        esac
+        # A driver that can render still needs a node to render into.
+        if [ "$gpu" = 1 ] && ! ls /dev/dri/renderD* >/dev/null 2>&1; then
+            gpu=0
+        fi
+        ;;
+esac
+
+echo "NETHOS_DRM_DRIVER='${driver:-none}'; export NETHOS_DRM_DRIVER"
+if [ "$gpu" = 1 ]; then
+    echo "NETHOS_GPU=1; export NETHOS_GPU"
+    echo "unset WEBKIT_DISABLE_COMPOSITING_MODE"
+else
+    echo "NETHOS_GPU=0; export NETHOS_GPU"
+    echo "WLR_RENDERER=pixman; export WLR_RENDERER"
+    # wlroots refuses a software renderer unless told it may use one.
+    echo "WLR_RENDERER_ALLOW_SOFTWARE=1; export WLR_RENDERER_ALLOW_SOFTWARE"
+    # simpledrm has no cursor plane; without this the pointer is invisible or
+    # smears the frame behind it.
+    echo "WLR_NO_HARDWARE_CURSORS=1; export WLR_NO_HARDWARE_CURSORS"
+    echo "WEBKIT_DISABLE_COMPOSITING_MODE=1; export WEBKIT_DISABLE_COMPOSITING_MODE"
+    # LIBGL_ALWAYS_SOFTWARE is deliberately NOT printed. Mesa refuses it once
+    # wlroots has opened a real DRM node -- "Not allowed to force software
+    # rendering when API explicitly selects a hardware device" -- and the
+    # compositor exits in under a tenth of a second.
+fi
