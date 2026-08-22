@@ -46,6 +46,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HOST = "127.0.0.1"
 PORT = 7777
 
+# Must match nethos-view's apphost_socket_path(). Not read from that file
+# because this daemon has no import path to it -- it is a separate program on
+# purpose, launched by spawn().
+APPHOST_SOCK = os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~/.cache/nethos"),
+    "nethos-apphost.sock")
+
 PREFIX = "/usr/share/nethos"
 SHELL_DIR = os.path.join(PREFIX, "shell")
 LIB_DIR = os.path.join(PREFIX, "lib")
@@ -1379,13 +1386,21 @@ def output_size(default=(1440, 900)):
 
 
 def nethos_app_for(app_id):
-    """Which NETHOS app, if any, a Chromium app_id belongs to.
+    """Which NETHOS app, if any, a window's app_id belongs to.
 
-    Chromium builds app_id from the URL, so /apps/system/index.html becomes
-    chrome-127.0.0.1__apps_system_index.html-Default. Rather than parse that
-    fragile string, check it against the app ids we already know about.
+    nethos-view sets its app_id to "nethos-<name>" (GLib.set_prgname, in
+    Surface.__init__) -- checked first since every app opens through it now.
+    The chrome-* form is what the Chromium --app fallback in launch_web_app
+    produces: it builds app_id from the URL, so /apps/system/index.html
+    becomes chrome-127.0.0.1__apps_system_index.html-Default. Rather than
+    parse that fragile string, check it against the app ids we already know.
     """
-    if not app_id or "__apps_" not in app_id:
+    if not app_id:
+        return ""
+    if app_id.startswith("nethos-"):
+        which = app_id[len("nethos-"):]
+        return which if find_app(which) else ""
+    if "__apps_" not in app_id:
         return ""
     for app in load_apps():
         if app.get("source") == "nethos" and ("_apps_%s_" % app["id"]) in app_id:
@@ -1600,6 +1615,55 @@ def load_web_apps():
     return found
 
 
+def apphost_send(spec, timeout=1.5):
+    """Hand a window spec to the running apphost process, if there is one.
+
+    True only means the spec was delivered -- the apphost opens the window
+    asynchronously on its own GLib main loop, same as every other surface.
+
+    1.5s, not the 0.3s a healthy local Unix socket connect should never need:
+    measured on real hardware, a connect that raced a WebKit cold-start
+    elsewhere on this 2-core CPU missed a 0.3s timeout and fell all the way
+    back to spawning a second apphost plus a standalone nethos-view -- the
+    exact per-launch cost this exists to remove, triggered by the fix meant
+    to remove it. A slow connect here still beats that fallback by a wide
+    margin, so timing out early buys nothing.
+    """
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            sock.connect(APPHOST_SOCK)
+            sock.sendall(spec.encode("utf-8"))
+            sock.shutdown(socket.SHUT_WR)
+        return True
+    except OSError as exc:
+        diag("apphost", "send to %s failed: %r" % (APPHOST_SOCK, exc))
+        return False
+
+
+def ensure_apphost():
+    """Start the apphost if its socket is not answering, and give it a moment
+    to come up. Only pays this cost once per session -- after that the socket
+    is already there and apphost_send() is a single fast connect.
+
+    Polls by connecting, not by os.path.exists(). A socket file left behind
+    by a killed apphost satisfies exists() the instant the path is checked --
+    long before the freshly spawned replacement has even finished importing
+    GTK and WebKit, let alone reached bind(). Measured on real hardware: that
+    false-ready reading is what sent every single launch through the
+    standalone fallback, permanently, defeating the point of this function.
+    """
+    if apphost_send(""):
+        return True
+    spawn(["nethos-view", "--apphost"])
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        time.sleep(0.1)
+        if apphost_send(""):
+            return True
+    return False
+
+
 def launch_web_app(app, query=None):
     """Run a NETHOS app in nethos-view, the same host the shell uses.
 
@@ -1622,6 +1686,18 @@ def launch_web_app(app, query=None):
     spec = "url=%s,role=window,name=%s,title=%s,width=%d,height=%d,transparent=0" % (
         url, app["id"], app.get("name", app["id"]),
         app.get("width", 900), app.get("height", 650))
+    # Route through the shared apphost process when it is available: opening
+    # a window there is a new WebView related to a process already warm,
+    # instead of a whole fresh Python + GTK + WebKitNetworkProcess +
+    # bwrap-sandboxed WebKitWebProcess stack. Measured on real (not VM)
+    # hardware -- a 2013 dual-core Haswell laptop -- that cold start, paid on
+    # every single launch, is the delay users see opening an app. Falling
+    # back to spawning a standalone nethos-view keeps launches working even
+    # if the apphost has never started or has crashed.
+    if ensure_apphost() and apphost_send(spec):
+        return True
+    diag("launch", "apphost unavailable for %s; starting a standalone nethos-view"
+         % app["id"])
     if spawn(["nethos-view", spec]):
         return True
     # Chromium remains the fallback: an app that opens in the wrong engine
@@ -2735,6 +2811,23 @@ class Handler(BaseHTTPRequestHandler):
                 if target is None:
                     return self.send_json({"error": "outside the allowed roots"}, 403)
                 query = {"path": target}
+            # A plain relaunch (no target) of a single-window app focuses the
+            # window already open instead of starting another one. Found on
+            # real hardware: the App Store open twice, 26 seconds apart --
+            # someone clicked it, nothing appeared to happen yet because
+            # nethos-view was still cold-starting, and they clicked again.
+            # Skipped when a target is given (e.g. Files opened at a folder):
+            # the existing window loaded a different location and won't
+            # navigate itself just because it was focused.
+            if app["source"] == "nethos" and not query \
+                    and app.get("mode", "window") == "window":
+                existing = next(
+                    (w for w in list_windows() if w.get("nethos_app") == app["id"]),
+                    None)
+                if existing:
+                    window_action("focus", existing["id"])
+                    menu_toggle(force=False)
+                    return self.send_json({"ok": True, "focused": existing["id"]})
             ok = launch_web_app(app, query) if app["source"] == "nethos" \
                 else launch_desktop_app(app)
             menu_toggle(force=False)

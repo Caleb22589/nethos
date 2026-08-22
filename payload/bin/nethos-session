@@ -236,6 +236,31 @@ nethos_first_run() {
 }
 nethos_first_run &
 
+# Warm the app-window host now rather than on first launch. Without this the
+# first app opened in a session pays ensure_apphost()'s wait-for-socket delay
+# (up to 3s) on top of the apphost's own startup; every launch after that is
+# a single fast connect.
+#
+# Guarded by an actual connection attempt, not just "does the socket file
+# exist" -- a stale file from a killed apphost would otherwise never get
+# cleaned up here, and skipping the spawn on its presence would leave app
+# launches falling back to a cold nethos-view per window forever. `nethos-view
+# --apphost` unlinks and rebinds regardless, so a second one is wasted rather
+# than broken, but nethos-reload --shell runs this on every shell restart and
+# a duplicate live apphost is still a leaked process each time.
+apphost_alive() {
+    command -v nethos-view >/dev/null 2>&1 || return 1
+    python3 - <<'PY' >/dev/null 2>&1
+import os, socket
+path = (os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~/.cache/nethos")) \
+    + "/nethos-apphost.sock"
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(0.3)
+s.connect(path)
+PY
+}
+apphost_alive || nethos-view --apphost &
+
 # The panel is 360 tall, not 54. The bar itself is still 54 and the exclusive
 # zone is still 46 -- the rest is transparent surface for menus to open into.
 # A context menu on a 54px surface is clipped to 54px, which is what happened:

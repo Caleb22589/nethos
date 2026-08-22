@@ -20,6 +20,12 @@ now real wlr-layer-shell surfaces, which means:
 
 Usage:
     nethos-view SPEC [SPEC ...]
+    nethos-view --apphost           run with no windows, accepting SPECs
+                                     over $XDG_RUNTIME_DIR/nethos-apphost.sock
+                                     (one per connection) so every app window
+                                     shares this process's web context instead
+                                     of starting a new one -- see nethosd's
+                                     launch_web_app().
 
 A SPEC is comma-separated key=value:
 
@@ -41,6 +47,7 @@ Pages can talk back:
 
 import json
 import os
+import socket
 import urllib.request
 import time
 import threading
@@ -137,6 +144,11 @@ def _theme():
         return value if value in ("light", "dark") else ""
     except OSError:
         return ""
+
+
+def apphost_socket_path():
+    base = os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~/.cache/nethos")
+    return os.path.join(base, "nethos-apphost.sock")
 
 
 def parse_spec(text):
@@ -742,15 +754,30 @@ class Surface:
 
 
 class App(Gtk.Application):
-    def __init__(self, specs):
+    def __init__(self, specs, apphost=False):
         super().__init__(application_id=None,
                          flags=0)
         self.specs = specs
         self.surfaces = []
+        self.apphost = apphost
 
     def do_activate(self):
         for spec in self.specs:
             self.surfaces.append(Surface(self, spec))
+        if self.apphost:
+            # Every "window"-mode app used to be its own nethos-view process:
+            # its own Python startup, GTK init, WebKitNetworkProcess and
+            # bwrap-sandboxed WebKitWebProcess, paid cold on every launch.
+            # Measured on real (not VM) hardware -- a 2013 dual-core Haswell
+            # laptop -- that cold start is the delay the user sees opening an
+            # app, and clicking again before it finishes doubles the cost
+            # instead of doing nothing. This process stays alive for the
+            # whole session and opens app windows as related WebViews, the
+            # same trick that already made the shell one renderer instead of
+            # four. hold() keeps it running with zero windows between
+            # launches -- GApplication would otherwise treat that as "done".
+            self.hold()
+            threading.Thread(target=self._apphost_listen, daemon=True).start()
         # Wake the pages from out here.
         #
         # WebKit suspends the web process of a page it considers hidden, and a
@@ -823,9 +850,57 @@ class App(Gtk.Application):
                 pass
         return True                            # keep ticking
 
+    def _apphost_listen(self):
+        """Accept "open a window" requests from nethosd over a Unix socket.
+
+        One spec per connection, plain text, same format as a CLI argument --
+        nethosd already builds that string for the spawn() fallback, so it is
+        reused rather than inventing a second format. Runs on its own thread;
+        GTK is only ever touched via GLib.idle_add from here, same as _deliver.
+        """
+        path = apphost_socket_path()
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+        except OSError:
+            pass
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.bind(path)
+        sock.listen(8)
+        while True:
+            conn, _addr = sock.accept()
+            try:
+                conn.settimeout(2.0)
+                chunks = []
+                while True:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                text = b"".join(chunks).decode("utf-8", "replace").strip()
+            except OSError:
+                text = ""
+            finally:
+                conn.close()
+            if text:
+                GLib.idle_add(self._open, text)
+
+    def _open(self, text):
+        try:
+            self.surfaces.append(Surface(self, parse_spec(text)))
+        except Exception as exc:                # noqa: BLE001 - keep the host up
+            print("nethos-view: apphost failed to open %r: %s" % (text, exc),
+                  file=sys.stderr)
+        return False
+
 
 def main():
     args = [a for a in sys.argv[1:] if a != "--"]
+    apphost = "--apphost" in args
+    args = [a for a in args if a != "--apphost"]
     specs = []
     i = 0
     while i < len(args):
@@ -841,7 +916,7 @@ def main():
             specs.append(parse_spec(args[i]))
         i += 1
 
-    if not specs:
+    if not specs and not apphost:
         print(__doc__)
         return 2
 
@@ -849,7 +924,7 @@ def main():
         print("warning: gtk4-layer-shell missing; panels fall back to plain windows",
               file=sys.stderr)
 
-    app = App(specs)
+    app = App(specs, apphost=apphost)
     return app.run([])
 
 
