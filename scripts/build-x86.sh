@@ -717,6 +717,10 @@ if [ "$(find -L /lib/firmware -type f 2>/dev/null | wc -l)" -lt 100 ]; then
     exit 1
 fi
 
+# This image is a live stick until something installs it to a disk.
+mkdir -p /etc/nethos && : > /etc/nethos/live
+echo "marked live: tty1 starts nethos-installer, not the desktop"
+
 echo "--- initramfs ---"
 # /boot is the ESP, and it is the small one. Reporting / here was actively
 # misleading: it said 16G free while the initrd was failing to fit in 512MB.

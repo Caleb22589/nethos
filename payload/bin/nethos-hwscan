@@ -1,0 +1,79 @@
+#!/bin/sh
+# What is in this machine, and did anything claim it.
+#
+#   nethos-hwscan            human summary
+#   nethos-hwscan --unbound  just the devices nothing is driving, one per line
+#
+# The question that matters is not "is there a driver for this" but "did a
+# driver bind". lspci answers it directly: a device with "Kernel modules:"
+# and no "Kernel driver in use:" has a driver available that did not attach,
+# which almost always means firmware it could not find.
+set -eu
+
+MODE=${1:-summary}
+
+# vendor:device prefixes are not worth a database. The module name the kernel
+# already suggests is a better key, and it maps to a firmware package cleanly.
+firmware_package_for() {
+    case "$1" in
+        amdgpu|radeon)              echo firmware-amd-graphics ;;
+        i915|xe)                    echo firmware-misc-nonfree ;;
+        nouveau)                    echo firmware-misc-nonfree ;;
+        iwlwifi|iwlmvm|iwldvm)      echo firmware-iwlwifi ;;
+        rtw88*|rtw89*|r8169|r8152)  echo firmware-realtek ;;
+        ath9k|ath10k*|ath11k*|ath12k*) echo firmware-atheros ;;
+        mt76*|mt79*)                echo firmware-mediatek ;;
+        brcmfmac|b43*|bcma*)        echo firmware-brcm80211 ;;
+        e1000e|igb|igc)             echo "" ;;   # no firmware needed
+        *)                          echo firmware-misc-nonfree ;;
+    esac
+}
+
+scan() {
+    lspci -nnk 2>/dev/null | awk '
+        /^[0-9a-f]{2}:/ { if (dev != "") emit(); dev = $0; drv = ""; mods = "" }
+        /Kernel driver in use:/ { drv = $NF }
+        /Kernel modules:/       { mods = $NF }
+        END { if (dev != "") emit() }
+        function emit() { printf "%s\t%s\t%s\n", drv, mods, dev }
+    '
+}
+
+if [ "$MODE" = "--unbound" ]; then
+    scan | while IFS="$(printf '\t')" read -r drv mods dev; do
+        [ -n "$drv" ] && continue
+        [ -n "$mods" ] || continue
+        printf '%s\t%s\t%s\n' "$mods" "$(firmware_package_for "$mods")" "$dev"
+    done
+    exit 0
+fi
+
+printf 'Hardware\n'
+printf '  cpu      %s\n' "$(awk -F: '/model name/ {print $2; exit}' /proc/cpuinfo 2>/dev/null | sed 's/^ *//')"
+printf '  memory   %s\n' "$(awk '/MemTotal/ {printf "%.1f GB", $2/1048576}' /proc/meminfo 2>/dev/null)"
+printf '  firmware %s files visible to the kernel\n' "$(find -L /lib/firmware -type f 2>/dev/null | wc -l | tr -d ' ')"
+printf '\n'
+
+printf 'Devices that matter\n'
+scan | while IFS="$(printf '\t')" read -r drv mods dev; do
+    case "$dev" in
+        *VGA*|*Display*|*3D*|*Network*|*Ethernet*|*Audio*|*"Non-Volatile memory"*|*SATA*)
+            name=$(printf '%s' "$dev" | sed 's/^[0-9a-f:.]* //; s/ \[[0-9a-f:]*\]$//' | cut -c1-58)
+            if [ -n "$drv" ]; then
+                printf '  [ok]      %-58s %s\n' "$name" "$drv"
+            elif [ -n "$mods" ]; then
+                printf '  [NO DRV]  %-58s (%s did not bind)\n' "$name" "$mods"
+            else
+                printf '  [none]    %-58s no driver exists\n' "$name"
+            fi ;;
+    esac
+done
+
+unbound=$(scan | awk -F'\t' '$1=="" && $2!="" {n++} END {print n+0}')
+printf '\n'
+if [ "$unbound" -gt 0 ]; then
+    printf '%s device(s) have a driver that did not attach.\n' "$unbound"
+    printf 'That is nearly always missing firmware, not a missing driver.\n'
+else
+    printf 'Everything with a driver has one attached.\n'
+fi

@@ -759,6 +759,18 @@ def install_desktop(root: str, payload: str, username: str) -> None:
         fh.write(
             "# ~/.bash_profile\n"
             "[ -f ~/.bashrc ] && . ~/.bashrc\n\n"
+            "# On a live stick, the installer comes first.\n"
+            "#\n"
+            "# An installer that needs a working GPU cannot install the driver\n"
+            "# for that GPU, and the desktop on a stick is slow and falls back\n"
+            "# to software rendering on any machine whose driver has not\n"
+            "# loaded. So text first, and it offers the desktop as a choice.\n"
+            "# nethos-install removes /etc/nethos/live from the disk it\n"
+            "# writes, so an installed system goes straight to the desktop.\n"
+            'if [ -f /etc/nethos/live ] && [ -z "${NETHOS_SKIP_INSTALLER:-}" ] \\\n'
+            '   && [ -z "${WAYLAND_DISPLAY:-}" ] && [ "$(tty)" = "/dev/tty1" ]; then\n'
+            "    exec nethos-installer\n"
+            "fi\n\n"
             "# Start the desktop on the first virtual terminal, nowhere else.\n"
             'if [ -z "${WAYLAND_DISPLAY:-}" ] && [ "$(tty)" = "/dev/tty1" ]; then\n'
             "    export XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=sway\n"

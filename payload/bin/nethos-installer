@@ -1,0 +1,129 @@
+#!/bin/sh
+# The thing you see when you boot the stick.
+#
+# Text, on whatever framebuffer UEFI handed over, because an installer that
+# needs a working GPU cannot install the driver for that GPU. It runs before
+# the desktop and offers to start it, rather than the other way round.
+#
+# Everything it installs is already on this stick: nethos-install rsyncs the
+# running system to the disk, so an install works with no network at all.
+# Network is offered because firmware for a device this machine has and this
+# image lacks can only come from the archive.
+set -eu
+
+BOLD=$(printf '\033[1m'); DIM=$(printf '\033[2m'); RST=$(printf '\033[0m')
+CYAN=$(printf '\033[1;36m'); RED=$(printf '\033[1;31m'); GRN=$(printf '\033[1;32m')
+
+rule() { printf '%s%s%s\n' "$DIM" "----------------------------------------------------------------------" "$RST"; }
+head() { clear 2>/dev/null || true; printf '\n  %sNETHOS%s  installer\n\n' "$CYAN" "$RST"; rule; printf '\n'; }
+ask()  { printf '  %s ' "$1"; read -r REPLY || REPLY=""; }
+
+need_root() {
+    [ "$(id -u)" = 0 ] || exec sudo -- "$0" "$@"
+}
+need_root "$@"
+
+# --------------------------------------------------------------- main menu
+while :; do
+    head
+    nethos-hwscan 2>/dev/null | sed 's/^/  /'
+    printf '\n'; rule; printf '\n'
+    printf '   %s1%s  Install NETHOS to a disk\n' "$BOLD" "$RST"
+    printf '   %s2%s  Connect to a network\n' "$BOLD" "$RST"
+    printf '   %s3%s  Install missing firmware for this machine\n' "$BOLD" "$RST"
+    printf '   %s4%s  Try the desktop without installing\n' "$BOLD" "$RST"
+    printf '   %s5%s  Shell\n' "$BOLD" "$RST"
+    printf '   %s6%s  Reboot\n' "$BOLD" "$RST"
+    printf '\n'
+    ask "choice:"
+    case "$REPLY" in
+
+    1)  # ---------------------------------------------------------- install
+        head
+        printf '  %sDisks%s\n\n' "$BOLD" "$RST"
+        nethos-install --list 2>/dev/null | sed 's/^/  /' || {
+            printf '  %scould not list disks%s\n' "$RED" "$RST"; ask "enter:"; continue; }
+        printf '\n'
+        ask "target disk (e.g. nvme0n1, or blank to go back):"
+        [ -n "$REPLY" ] || continue
+        target="/dev/${REPLY#/dev/}"
+        [ -b "$target" ] || { printf '\n  %s%s is not a block device%s\n' "$RED" "$target" "$RST"; ask "enter:"; continue; }
+
+        head
+        printf '  %sThis erases %s completely.%s\n\n' "$RED" "$target" "$RST"
+        printf '  Everything on it goes: partition table, filesystems, other\n'
+        printf '  operating systems, all data. There is no undo.\n\n'
+        # nethos-install asks for a typed confirmation of its own; this is the
+        # last point where going back costs nothing.
+        ask "type the disk name again to continue:"
+        [ "/dev/${REPLY#/dev/}" = "$target" ] || { printf '\n  did not match; nothing done\n'; ask "enter:"; continue; }
+
+        printf '\n'
+        if nethos-install --target "$target"; then
+            printf '\n  %sInstalled.%s\n' "$GRN" "$RST"
+            printf '  Remove the stick and reboot.\n\n'
+        else
+            printf '\n  %sInstall failed -- nothing was changed after the error.%s\n\n' "$RED" "$RST"
+        fi
+        ask "enter:"
+        ;;
+
+    2)  # ---------------------------------------------------------- network
+        head
+        printf '  %sNetwork%s\n\n' "$BOLD" "$RST"
+        ip -br addr 2>/dev/null | sed 's/^/  /'
+        printf '\n  Wired usually needs nothing. For wifi:\n\n'
+        printf '    %snmcli device wifi list%s\n' "$DIM" "$RST"
+        printf '    %snmcli device wifi connect "SSID" password "..."%s\n\n' "$DIM" "$RST"
+        ask "run a command (blank to go back):"
+        [ -n "$REPLY" ] && { printf '\n'; sh -c "$REPLY" || true; printf '\n'; ask "enter:"; }
+        ;;
+
+    3)  # --------------------------------------------------------- firmware
+        head
+        printf '  %sFirmware%s\n\n' "$BOLD" "$RST"
+        missing=$(nethos-hwscan --unbound 2>/dev/null || true)
+        if [ -z "$missing" ]; then
+            printf '  Every device with a driver has one attached. Nothing to do.\n\n'
+            ask "enter:"; continue
+        fi
+        pkgs=""
+        printf '%s\n' "$missing" | while IFS="$(printf '\t')" read -r mod pkg dev; do
+            printf '  %s\n    driver %s, wants %s\n' \
+                "$(printf '%s' "$dev" | sed 's/^[0-9a-f:.]* //' | cut -c1-60)" "$mod" "${pkg:-unknown}"
+        done
+        pkgs=$(printf '%s\n' "$missing" | cut -f2 | grep -v '^$' | sort -u | tr '\n' ' ')
+        printf '\n  Would install: %s\n\n' "$pkgs"
+        if ! ip route 2>/dev/null | grep -q default; then
+            printf '  %sNo network. Connect one first (option 2).%s\n\n' "$RED" "$RST"
+            ask "enter:"; continue
+        fi
+        ask "fetch these now? [y/N]:"
+        case "$REPLY" in [yY]*)
+            printf '\n'
+            npkg fetch $pkgs || printf '\n  %ssome packages could not be fetched%s\n' "$RED" "$RST"
+            # The kernel only reads /lib/firmware, and a kernel tarball unpack
+            # can have replaced it with a real directory.
+            [ -d /usr/lib/firmware ] && [ ! -e /lib/firmware ] && ln -s ../usr/lib/firmware /lib/firmware
+            printf '\n  Reload the drivers or reboot for these to take effect.\n\n' ;;
+        esac
+        ask "enter:"
+        ;;
+
+    4)  # ---------------------------------------------------------- desktop
+        head
+        printf '  Starting the desktop. It runs from the stick, so it is slow,\n'
+        printf '  and on a machine whose GPU driver has not loaded it falls back\n'
+        printf '  to software rendering. Installing gives you neither problem.\n\n'
+        ask "continue? [y/N]:"
+        case "$REPLY" in [yY]*)
+            NETHOS_SKIP_INSTALLER=1 export NETHOS_SKIP_INSTALLER
+            exec su - "${SUDO_USER:-neth}" -c 'exec bash -lc "exec wayfire"' ;;
+        esac
+        ;;
+
+    5)  head; printf '  Exit the shell to come back.\n\n'; ${SHELL:-/bin/sh} || true ;;
+    6)  reboot ;;
+    *)  ;;
+    esac
+done

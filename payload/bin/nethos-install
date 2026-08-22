@@ -295,6 +295,10 @@ rsync -aAXH --info=progress2 \
     --exclude=/run/ --exclude=/mnt/ --exclude=/media/ --exclude=/lost+found \
     / "$MNT/"
 
+# The disk being installed to is not a live stick, whatever it was copied from.
+# Without this the installed system boots the installer again, for ever.
+rm -f "$MNT/etc/nethos/live"
+
 mkdir -p "$MNT"/{dev,proc,sys,tmp,run,mnt,media}
 chmod 1777 "$MNT/tmp"
 
