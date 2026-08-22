@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures as futures
 import http.client
+import json
 import threading
 import urllib.parse
 import gzip
@@ -1479,7 +1480,7 @@ def _bootstrap_from_repo(root: str, sets: list[str], repo_url: str) -> None:
     for name in sets:
         seeds += SETS.get(name, [])
     seeds = sorted(set(seeds))
-    say(f"\n== NETHOS repository ==")
+    say("\n== NETHOS repository ==")
     say(f"  {repo_url}")
 
     # Written before anything is installed, so the finished system can install

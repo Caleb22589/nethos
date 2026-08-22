@@ -474,7 +474,17 @@ class Repository:
 
     def best(self, name: str, op: str = "", wanted: str = "") -> dict | None:
         for entry in self.packages.get(name, []):
-            if satisfies(entry["version"], op, wanted):
+            version = entry["version"]
+            # A Debian dependency keeps the whole version, revision and all --
+            # "gcc-14-base==14.2.0-19" -- while conversion splits that into a
+            # version of 14.2.0 and a release of 19. Comparing the halves
+            # against the whole never matches, and every exact dependency in
+            # the archive failed to resolve from a repository while the
+            # package sat in the index.
+            release = entry.get("release")
+            if "-" in wanted and release not in (None, ""):
+                version = f"{version}-{release}"
+            if satisfies(version, op, wanted):
                 return entry
         return None
 
@@ -539,6 +549,26 @@ class Solver:
             entry = repo.best(name, op, version)
             if entry:
                 return repo, entry
+
+        # Nothing is called that. Something may still provide it.
+        #
+        # base-files depends on "awk", and no package is named awk: gawk
+        # declares it in Provides. The installed-package side of this was
+        # already handled by Database.provides_map, so a virtual dependency
+        # resolved fine once something supplying it was installed and failed
+        # outright when it had to come from a repository -- which is every
+        # dependency during an install.
+        #
+        # Unversioned only. A versioned dependency on a virtual name is not
+        # something Debian expresses, and guessing at what version a provider
+        # would satisfy is worse than saying it is not there.
+        if not op:
+            for repo in self.repos:
+                for candidates in repo.packages.values():
+                    for entry in candidates:
+                        if name in (entry.get("provides") or []):
+                            return repo, entry
+
         want = f"{name}{op}{version}" if op else name
         if not self.repos:
             # The common case on a fresh system: nothing is configured, so
@@ -1382,7 +1412,10 @@ def main(argv=None):
     # `index` and `build` operate on a directory of files and have no business
     # creating /var/lib/npkg — least of all on a machine that is not the target.
     needs_db = args.command not in ("index", "build", "convert")
-    needs_repos = args.command in ("install", "search", "info", "remove")
+    # upgrade was added to the parser and not to this list, so it loaded no
+    # repositories and then complained that none were configured -- with a
+    # correct repos.json sitting right there.
+    needs_repos = args.command in ("install", "upgrade", "search", "info", "remove")
     try:
         db = Database(args.root) if needs_db else None
         repos = Repository.load_all(db, refresh=args.refresh) if needs_repos else []
