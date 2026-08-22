@@ -162,7 +162,15 @@ SETS = {
         "busybox", "python3-minimal", "libpython3-stdlib",
         "parted", "e2fsprogs", "dosfstools", "util-linux",
         "curl", "ca-certificates", "openssl",
-        "kmod", "pciutils",
+        "kmod", "pciutils", "usbutils",
+        # The installer writes a bootloader to the disk it installs, so it has
+        # to carry one. These are also what build-installer.sh builds the
+        # installer's own EFI image from: they are amd64 packages, which npkg
+        # fetches whatever the host architecture is, and an arm64 Mac has no
+        # other way to get an x86_64 GRUB.
+        "grub-efi-amd64-bin", "grub-common", "grub2-common",
+        # Partitioning the way nethos-install does it.
+        "gdisk", "rsync",
     ],
 
     # A full browser. ~400MB, and separate because the shell does not need it:

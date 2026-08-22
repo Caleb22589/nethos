@@ -44,9 +44,13 @@ docker run --rm --privileged \
     -v "$SYSTEM_KERNEL":/system-kernel.tgz:ro \
     -w /work debian:trixie bash -euo pipefail -c '
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq >/dev/null 2>&1
-apt-get install -y -qq python3 cpio zstd dosfstools mtools grub-efi-amd64-bin \
-    grub-common gdisk curl xz-utils >/dev/null 2>&1
+apt-get update -qq >/dev/null
+# grub-efi-amd64-bin does not exist for arm64 and asking for it failed the
+# whole build with a bare exit 100, because this was silenced. The x86_64 GRUB
+# modules come from the amd64 root npkg builds below; grub-common here only
+# provides grub-mkimage, which is architecture-independent.
+apt-get install -y -qq python3 cpio zstd dosfstools mtools \
+    grub-common gdisk curl xz-utils
 
 R=/work/root
 mkdir -p "$R"
@@ -55,7 +59,7 @@ echo "--- bootstrapping the installer root ---"
 # Only what an installer uses: partition a disk, reach a network, run npkg.
 # No desktop, no browser, no X, no sound.
 python3 -u /nethos/pkg/npkg_bootstrap.py "$R" \
-    --set base --set installer --set net --arch amd64 --user root --work /work/cache --keep
+    --set base --set installer --set net --set firmware --arch amd64 --user root --work /work/cache --keep
 
 echo "--- the kernel it boots with ---"
 tar xzf /kernel.tgz -C "$R"
@@ -65,11 +69,13 @@ echo "    $KVER"
 cp "$R/boot/vmlinuz-$KVER" /out/installer-vmlinuz
 rm -f "$R/boot/vmlinux-$KVER"
 
-echo "--- the kernel it installs ---"
-# Carried, not downloaded: a machine being installed has no kernel yet and no
-# way to build one, and 43MB is worth not depending on the network twice.
-mkdir -p "$R/usr/share/nethos"
-cp /system-kernel.tgz "$R/usr/share/nethos/system-kernel.tgz"
+# The system kernel is not carried.
+#
+# It is 43MB, which is nearly half the budget for the whole image, and this
+# installer exists to be small. The installed system gets its kernel from the
+# archive like everything else; nethos-kernel build --profile system replaces
+# it with 7.2 and BORE afterwards, on a machine that by then has a working
+# network and a compiler.
 
 echo "--- npkg and the payload, so the target can be built and dressed ---"
 mkdir -p "$R/usr/share/nethos/pkg"
@@ -89,20 +95,40 @@ rm -rf "$R"/usr/share/doc "$R"/usr/share/man "$R"/usr/share/info \
 # get online; the rest is a download away once it has.
 FW="$R/usr/lib/firmware"
 if [ -d "$FW" ]; then
+    before_fw=$(du -sm "$FW" | cut -f1)
     ( cd "$FW"
+      # Keep the chips that get a laptop online, and only those. Everything
+      # else is a download away once it is -- which is the only situation in
+      # which any of it matters.
+      #
+      # Kept whole because they are small and cover the machines this is for:
+      # rtw89 (RTL8852, the HP Envy), brcm (the MacBooks), rtw88, ath9k.
+      # iwlwifi is kept under a size cap: it is eighty-odd files and the modern
+      # AX blobs are several megabytes each, which alone would double the
+      # image. The cap keeps the older and mid-range Intel parts -- including
+      # the Latitude Centrino -- and drops the newest, which any machine new
+      # enough to have one can fetch.
       for d in *; do
         case "$d" in
-          iwlwifi*|rtw88|rtw89|brcm|ath9k*|ath10k|mediatek|rtl_nic|rtlwifi|intel) ;;
+          rtw88|rtw89|brcm|ath9k_htc|rtl_nic) ;;
+          iwlwifi-*) [ "$(stat -c%s "$d")" -gt 2200000 ] && rm -f "$d" ;;
           *) rm -rf "$d" ;;
         esac
       done
-      # ath11k and the bulk of mediatek are enormous; drop the largest files.
-      find . -size +8M -delete 2>/dev/null || true
+      find . -type f -size +6M -delete 2>/dev/null || true
     )
+    echo "    firmware: ${before_fw}MB -> $(du -sm "$FW" | cut -f1)MB (wifi to get online; the rest downloads)"
 fi
 # The kernel only ever searches /lib/firmware.
 [ -d "$R/usr/lib/firmware" ] && [ ! -e "$R/lib/firmware" ] && ln -s ../usr/lib/firmware "$R/lib/firmware"
 echo "    ${before}MB -> $(du -sm "$R" | cut -f1)MB"
+
+echo "--- where the size is ---"
+echo "  biggest files:"; find "$R" -type f -size +4M -printf "%s %p\n" 2>/dev/null \
+  | sort -rn | head -6 | awk "{printf \"    %6.1fMB %s\\n\", \$1/1048576, \$2}" | sed "s|$R||"
+du -sm "$R"/usr/lib/firmware "$R"/usr/lib/python3* "$R"/usr/share/nethos \
+       "$R"/usr/lib/x86_64-linux-gnu "$R"/usr/bin "$R"/usr/sbin "$R"/lib/modules 2>/dev/null \
+  | sort -rn | head -8 | sed "s|$R|  |"
 
 echo "--- init ---"
 # No systemd. An installer has one job and running it directly removes every
@@ -141,7 +167,8 @@ rm -f /out/nethos-installer.img
 truncate -s "${KB}K" /out/nethos-installer.img
 mkfs.vfat -F 32 -n NETHOSINST /out/nethos-installer.img >/dev/null
 mmd -i /out/nethos-installer.img ::/EFI ::/EFI/BOOT ::/boot 2>/dev/null || true
-grub-mkimage -O x86_64-efi -o /tmp/bootx64.efi -p /boot/grub \
+# -d points at the amd64 modules npkg fetched, not the arm64 ones here.
+grub-mkimage -d "$R/usr/lib/grub/x86_64-efi" -O x86_64-efi -o /tmp/bootx64.efi -p /boot/grub \
     part_gpt part_msdos fat ext2 normal linux echo all_video search \
     search_label search_fs_uuid configfile loadenv test keystatus
 mmd -i /out/nethos-installer.img ::/boot/grub 2>/dev/null || true
