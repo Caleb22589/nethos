@@ -57,7 +57,34 @@ else
     # simpledrm has no cursor plane; without this the pointer is invisible or
     # smears the frame behind it.
     echo "WLR_NO_HARDWARE_CURSORS=1; export WLR_NO_HARDWARE_CURSORS"
-    echo "WEBKIT_DISABLE_COMPOSITING_MODE=1; export WEBKIT_DISABLE_COMPOSITING_MODE"
+    # WEBKIT_DISABLE_COMPOSITING_MODE is deliberately NOT set, even here.
+    #
+    # It looks right without a GPU and is the cause of the half-drawn windows:
+    # with compositing off WebKit repaints only the damaged rectangle and
+    # assumes an opaque backdrop, so nothing clears what was drawn before. The
+    # shell's layer surfaces came out perfect while an app window rendered as
+    # clipped text over white rectangles that moved between frames.
+    #
+    # Mesa gives WebKit llvmpipe, so it can composite in software. That is
+    # slower than a GPU and correct, which is the right way round.
+    #
+    # What it does need is to stop reaching for dmabuf. WebKit hands its
+    # rendered frames to the compositor as dmabufs by default, which requires
+    # the GPU path it has just failed to initialise:
+    #
+    #   libEGL warning: DRI2: failed to create screen
+    #
+    # and the window arrives as fragments -- clipped text over white
+    # rectangles in one variant, a collapsed corner of the window in another,
+    # while the shell's own layer surfaces drew perfectly throughout. Shared
+    # memory is the software path and it is what pixman is already using for
+    # everything else.
+    #
+    # This is narrower than LIBGL_ALWAYS_SOFTWARE deliberately: that one is
+    # refused by Mesa once wlroots has opened a real DRM node and kills the
+    # compositor outright, whereas this only changes how WebKit hands over a
+    # finished frame.
+    echo "WEBKIT_DISABLE_DMABUF_RENDERER=1; export WEBKIT_DISABLE_DMABUF_RENDERER"
     # LIBGL_ALWAYS_SOFTWARE is deliberately NOT printed. Mesa refuses it once
     # wlroots has opened a real DRM node -- "Not allowed to force software
     # rendering when API explicitly selects a hardware device" -- and the
