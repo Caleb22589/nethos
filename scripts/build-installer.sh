@@ -275,7 +275,7 @@ echo "--- checking the installer can actually run ---"
 missing=""
 for prog in ip iw wpa_supplicant udhcpc reboot lsblk sgdisk mkfs.ext4 mkfs.fat \
             lspci dmesg awk sed nl sort cut python3 tar zstd xz curl \
-            grub-install chroot rsync; do
+            grub-install chroot rsync blkid nethos-firmware-scan; do
     found=""
     for d in usr/bin usr/sbin bin sbin; do
         resolve_in_root "$d/$prog" >/dev/null 2>&1 && found=1 && break
@@ -353,11 +353,11 @@ cat > /tmp/grub.cfg <<GRUBCFG
 set timeout=3
 set default=0
 menuentry "Install NETHOS" {
-    linux /boot/vmlinuz console=tty0 quiet loglevel=3
+    linux /boot/vmlinuz console=tty0 console=ttyS0,115200 quiet loglevel=3
     initrd /boot/initrd.zst
 }
 menuentry "Install NETHOS (verbose)" {
-    linux /boot/vmlinuz console=tty0
+    linux /boot/vmlinuz console=tty0 console=ttyS0,115200
     initrd /boot/initrd.zst
 }
 GRUBCFG

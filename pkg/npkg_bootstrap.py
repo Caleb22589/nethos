@@ -59,6 +59,24 @@ SUITE = "trixie"
 # in through dependencies; these are only the things worth naming.
 SETS = {
     "base": [
+        # Debian's Essential set, which no package declares a dependency on
+        # because every package may assume it is already there. Resolution
+        # therefore never reaches them, and naming them here is the only way
+        # they arrive. libc-bin is the one that showed the gap: it owns
+        # /usr/bin/ldd, mkinitramfs runs ldd to find each binary's libraries,
+        # and without it update-initramfs failed with "no ldd around" after
+        # the entire system had already been installed and there was nothing
+        # left to do but refuse to write a bootloader.
+        #
+        # The Debian bootstrap path picked these up from the archive's own
+        # Essential/Required flags; the repository path had no archive to ask.
+        # Listing them in the set means both paths, and the published
+        # repository, agree on one source.
+        "apt", "base-passwd", "bsdutils", "debconf", "dpkg", "libc-bin",
+        "libpam-modules", "libpam-modules-bin", "libpam-runtime",
+        "login", "login.defs", "mawk", "perl-base", "sysvinit-utils",
+        "tzdata",
+
         "base-files", "libc6", "coreutils", "bash", "dash",
         "util-linux",            # su, mount, login
         "passwd",                # useradd, passwd, chpasswd
@@ -129,6 +147,12 @@ SETS = {
     # gives a black screen and no network. Several hundred megabytes, so a VM
     # image should not carry it: build with --sets "base system kernel desktop"
     # for a VM and add "firmware" for hardware.
+    # Installed in full only when the hardware is unknown. `nethos-install`
+    # scans the machine and passes --firmware-packages with just what it
+    # found, which is typically 17-67 MB of this rather than 189 MB. The full
+    # list stays here as the fallback, because installing firmware for a card
+    # that is not present costs bandwidth, while missing the one that is
+    # present costs the network connection.
     "firmware": [
         "firmware-linux-free", "firmware-misc-nonfree",
         "firmware-amd-graphics",
@@ -217,7 +241,11 @@ SETS = {
         # NOT wf-shell: it ships wf-panel and wf-background, and NETHOS has
         # its own panel, dock and wallpaper. Installing it puts a second bar
         # across the top of the screen and a second thing drawing the desktop.
-        "wayfire", "wayfire-plugins-extra",
+        # No wayfire-plugins-extra: trixie has no such package (it ships
+        # wayfire, wayfire-dev and wayfire-plugin-winshadows), so asking for
+        # it only produced a "not in the repository" note on every install.
+        # The one plugin outside core that NETHOS uses is firedecor, below.
+        "wayfire",
         # reform-firedecor is firedecor, packaged. Wayfire's own decorator has
         # no corner radius and no way to move its buttons off the right, so
         # without this a foreign window can never match a NETHOS one. Despite
@@ -1194,6 +1222,36 @@ def resolve_in_root(root: str, path: str) -> str | None:
     return None
 
 
+# Links update-alternatives creates from nothing, rather than by repairing a
+# dangling one. gawk and mawk ship /usr/bin/gawk and /usr/bin/mawk and no
+# /usr/bin/awk at all -- the name every script actually calls exists only
+# because a postinst made it. fix_alternatives cannot help: there is no broken
+# link to find, just an absence.
+#
+# Ordered by preference, first one present wins.
+ALTERNATIVES = {
+    "usr/bin/awk":    ["gawk", "mawk", "busybox"],
+    "usr/bin/pager":  ["less", "more"],
+    "usr/bin/editor": ["nano", "vim.basic", "vim.tiny", "vi", "mousepad"],
+    "usr/bin/vi":     ["vim.basic", "vim.tiny", "busybox"],
+}
+
+
+def ensure_alternatives(root: str) -> int:
+    """Create the alternatives no package ships and nothing else will."""
+    made = 0
+    for link, candidates in ALTERNATIVES.items():
+        path = os.path.join(root, link)
+        if os.path.lexists(path):
+            continue
+        for candidate in candidates:
+            if os.path.isfile(os.path.join(root, "usr/bin", candidate)):
+                os.symlink(candidate, path)     # relative: same directory
+                made += 1
+                break
+    return made
+
+
 def fix_alternatives(root: str) -> int:
     """Resolve the symlinks update-alternatives would have made.
 
@@ -1358,13 +1416,13 @@ def _convert_many(paths: list[str], npks: str):
 def bootstrap(root: str, sets: list[str], arch: str, username: str,
               password: str, root_password: str, hostname: str,
               work: str, mirror: str, suite: str, keep: bool = False,
-              repo: str = "") -> None:
+              repo: str = "", firmware_packages: list[str] | None = None) -> None:
     debs = os.path.join(work, "debs")
     npks = os.path.join(work, "packages")
     os.makedirs(work, exist_ok=True)
 
     if repo:
-        _bootstrap_from_repo(root, sets, repo)
+        _bootstrap_from_repo(root, sets, repo, arch, firmware_packages)
         _finish_root(root, username, password, root_password, hostname, arch,
                      sets, keep, debs)
         return
@@ -1373,11 +1431,7 @@ def bootstrap(root: str, sets: list[str], arch: str, username: str,
     archive = DebianArchive(mirror, suite, arch, cache=work)
     archive.load()
 
-    seeds = []
-    for name in sets:
-        if name not in SETS:
-            raise NpkgError(f"unknown set '{name}' (have: {', '.join(SETS)})")
-        seeds += [s.format(arch=arch) for s in SETS[name]]
+    seeds = _seed_packages(sets, arch, firmware_packages)
 
     if "base" in sets:
         essential = archive.base_seeds()
@@ -1462,7 +1516,28 @@ def bootstrap(root: str, sets: list[str], arch: str, username: str,
                  sets, keep, debs)
 
 
-def _bootstrap_from_repo(root: str, sets: list[str], repo_url: str) -> None:
+def _seed_packages(sets: list[str], arch: str,
+                   firmware_packages: list[str] | None) -> list[str]:
+    """Expand the requested sets into package names.
+
+    The firmware set is the one that varies by machine: passing a detected
+    list replaces it wholesale rather than adding to it, because the point is
+    not to download the other 120-170 MB.
+    """
+    seeds: list[str] = []
+    for name in sets:
+        if name not in SETS:
+            raise NpkgError(f"unknown set '{name}' (have: {', '.join(SETS)})")
+        if name == "firmware" and firmware_packages:
+            seeds += list(firmware_packages)
+        else:
+            seeds += [s.format(arch=arch) for s in SETS[name]]
+    return seeds
+
+
+def _bootstrap_from_repo(root: str, sets: list[str], repo_url: str,
+                         arch: str = "amd64",
+                         firmware_packages: list[str] | None = None) -> None:
     """Build a root from prebuilt npkg packages instead of converting Debian.
 
     Conversion is decompression and repacking: identical on every machine, and
@@ -1476,10 +1551,10 @@ def _bootstrap_from_repo(root: str, sets: list[str], repo_url: str) -> None:
     """
     from npkg import Repository
 
-    seeds: list[str] = []
-    for name in sets:
-        seeds += SETS.get(name, [])
-    seeds = sorted(set(seeds))
+    # {arch} is a placeholder the Debian path expands and this one did not, so
+    # it went looking for a package literally called linux-image-{arch}.
+    seeds = sorted({s.replace("{arch}", arch)
+                    for s in _seed_packages(sets, arch, firmware_packages)})
     say("\n== NETHOS repository ==")
     say(f"  {repo_url}")
 
@@ -1489,6 +1564,17 @@ def _bootstrap_from_repo(root: str, sets: list[str], repo_url: str) -> None:
     os.makedirs(conf_dir, exist_ok=True)
     with open(os.path.join(conf_dir, "repos.json"), "w") as fh:
         json.dump({"repos": [{"name": "nethos", "url": repo_url}]}, fh, indent=2)
+
+    # The Arch-shaped skeleton, before a single package lands.
+    #
+    # The Debian path builds this and the repository path did not, so the two
+    # produced different systems from the same packages. Without it there is
+    # no /lib -> usr/lib symlink (tar quietly makes a real directory instead)
+    # and no /usr/lib/x86_64-linux-gnu -> . compatibility link, so every path
+    # compiled into a binary at build time points at nothing: perl could not
+    # find strict.pm, so linux-version would not run, so update-initramfs
+    # produced no initramfs and the install refused to write a bootloader.
+    make_skeleton(root)
 
     db = Database(root)
     repository = Repository("nethos", repo_url, root)
@@ -1531,6 +1617,9 @@ def _finish_root(root: str, username: str, password: str,
     fixed = fix_alternatives(root)
     if fixed:
         say(f"  resolved {fixed} dangling alternatives link(s)")
+    made = ensure_alternatives(root)
+    if made:
+        say(f"  created {made} alternatives link(s) no package ships")
     install_npkg(root)
 
     if "desktop" in sets:
@@ -1580,6 +1669,9 @@ def main(argv=None):
     parser.add_argument("--hostname", default="nethos")
     parser.add_argument("--work", default="./bootstrap-work")
     parser.add_argument("--keep-debs", action="store_true")
+    parser.add_argument("--firmware-packages", default="",
+                        help="install these firmware packages instead of the "
+                             "whole firmware set (see nethos-firmware-scan)")
     parser.add_argument("--repo", default="",
                         help="build from a prebuilt npkg repository instead of "
                              "converting Debian packages on this machine")
@@ -1589,7 +1681,8 @@ def main(argv=None):
         bootstrap(os.path.abspath(args.root), args.sets or ["base"], args.arch,
                   args.user, args.password, args.root_password, args.hostname,
                   os.path.abspath(args.work), args.mirror, args.suite,
-                  keep=args.keep_debs, repo=args.repo)
+                  keep=args.keep_debs, repo=args.repo,
+                  firmware_packages=args.firmware_packages.replace(",", " ").split())
     except NpkgError as exc:
         say(f"error: {exc}", file=sys.stderr)
         return 1

@@ -140,7 +140,7 @@ def convert_arch(path: str, outdir: str, layout: str = "native") -> str:
             manifest = Manifest(
                 name=fields.get("pkgname", ["unknown"])[0],
                 version=version,
-                release=int(release) if str(release).isdigit() else 1,
+                release=str(release) if release else "1",
                 arch=fields.get("arch", ["any"])[0],
                 summary=fields.get("pkgdesc", [""])[0],
                 url=fields.get("url", [""])[0],
@@ -343,7 +343,7 @@ def convert_deb(path: str, outdir: str, layout: str = "native",
         manifest = Manifest(
             name=fields.get("Package", "unknown"),
             version=version,
-            release=int(release) if str(release).isdigit() else 1,
+            release=str(release) if release else "1",
             arch=fields.get("Architecture", "any"),
             summary=summary.strip(),
             description=body.strip(),
@@ -430,6 +430,7 @@ def arch_link_target(target: str) -> str:
 def relayout(staging: str) -> int:
     """Move a staged package tree into the Arch layout in place."""
     moved = 0
+    emptied: set[str] = set()          # directories a move took files out of
     for base, _dirs, names in os.walk(staging, topdown=False):
         for name in names:
             src = os.path.join(base, name)
@@ -460,9 +461,11 @@ def relayout(staging: str) -> int:
                     moved += 1
                 else:
                     os.remove(src)
+                emptied.add(base)
                 continue
 
             os.replace(src, dst)
+            emptied.add(base)
             moved += 1
 
     # A link that now points at itself is worse than no link at all.
@@ -477,13 +480,22 @@ def relayout(staging: str) -> int:
                 if resolved.rstrip("/") == path.rstrip("/"):
                     os.remove(path)
 
-    # Prune the directories the move emptied.
-    for base, dirs, _names in os.walk(staging, topdown=False):
-        for d in dirs:
+    # Prune the directories the move emptied -- and only those.
+    #
+    # This used to rmdir every empty directory in the tree, which also threw
+    # away the ones a package deliberately ships empty. initramfs-tools ships
+    # fourteen (/etc/initramfs-tools/scripts/local-top and friends) as the
+    # places hooks are dropped into; without them mkinitramfs cannot cd to its
+    # own script directory and no initramfs gets built. Debian creates them by
+    # shipping them, not in a postinst, so there is nothing else to fall back
+    # on.
+    for directory in sorted(emptied, key=len, reverse=True):
+        while directory.startswith(staging) and directory != staging:
             try:
-                os.rmdir(os.path.join(base, d))
+                os.rmdir(directory)
             except OSError:
-                pass
+                break            # not empty, or never existed: leave it alone
+            directory = os.path.dirname(directory)
     return moved
 
 

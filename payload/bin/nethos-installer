@@ -336,8 +336,38 @@ step_disk() {
         ui_head "Installer" 2
         say "Choose the disk to install to. Everything on it is erased."
         gap
-        lsblk -dno NAME,SIZE,MODEL 2>/dev/null | grep -vE '^(loop|sr|ram)' \
+        # The stick this installer booted from is a disk like any other, and
+        # listing it invites erasing the installer mid-install -- it was
+        # offered as "/dev/sda 101.1M" next to the real disk, with nothing to
+        # say which was which.
+        #
+        # The medium is never mounted (this all runs from the initramfs), so
+        # there is no mountpoint to trace back. What it does have is the FAT
+        # label the build writes, on the whole-disk device or on a partition
+        # of it. If nothing matches, every disk stays listed: refusing to
+        # guess is better than hiding the disk someone meant to install to.
+        # lsblk reads LABEL out of the udev database, and there is no udev
+        # running here -- it printed an empty column and the stick stayed in
+        # the list. blkid probes the filesystem itself, which is what is
+        # actually wanted, so ask each device directly.
+        boot_dev=""
+        for d in $(lsblk -rno NAME 2>/dev/null); do
+            [ "$(blkid -s LABEL -o value "/dev/$d" 2>/dev/null)" = NETHOSINST ] \
+                || continue
+            boot_dev=$(lsblk -no PKNAME "/dev/$d" 2>/dev/null | head -1)
+            [ -n "$boot_dev" ] || boot_dev=$d
+            break
+        done
+        lsblk -dno NAME,SIZE,MODEL 2>/dev/null \
+            | awk -v skip="$boot_dev" '
+                $1 ~ /^(loop|sr|ram)/ { next }
+                skip != "" && $1 == skip { next }
+                { print }' \
             | nl -w3 -s'  ' > /tmp/disk.list || true
+        if [ -n "$boot_dev" ]; then
+            dim "(/dev/$boot_dev is the installer medium and is not listed)"
+            gap
+        fi
         [ -s /tmp/disk.list ] || { warn "No disks found."; pause; return 1; }
         # Printed from the same file the selection is read from. They were two
         # different things: the list came from a variable and the choice was

@@ -65,6 +65,23 @@ print(f"  {len(seeds)} seed packages from {len(sets)} sets")
 
 archive = nb.DebianArchive(arch="amd64")
 archive.load()
+
+# Debian Essential packages, which nothing declares a dependency on.
+#
+# Being Essential means every other package may assume it is present without
+# saying so, so dependency resolution never reaches them and they were absent
+# from the repository entirely. libc-bin is the one that showed: it owns
+# /usr/bin/ldd, mkinitramfs calls ldd to find the libraries a binary needs,
+# and without it update-initramfs failed with "no ldd around" after the whole
+# system had already been installed.
+#
+# The Debian bootstrap path already adds these (archive.base_seeds()); the
+# repository was built without them, so the two produced different systems.
+essential = archive.base_seeds()
+extra = sorted(set(essential) - set(seeds))
+if extra:
+    print(f"  + {len(extra)} essential/required packages Debian assumes present")
+seeds = sorted(set(seeds) | set(essential))
 resolved = archive.resolve(seeds)
 print(f"  {len(resolved)} packages after dependency resolution")
 
@@ -89,6 +106,75 @@ for npk, err in nb._convert_many(paths, npks):
         print(f"  skipped {err}")
     if done % 100 == 0 or done == len(resolved):
         print(f"  converted {done}/{len(resolved)}")
+
+idx = build_index(npks)
+print("  index: %d packages" % len(idx.get("packages", [])))
+
+# Close the repository under npkg resolution, not Debian resolution.
+#
+# The two do not agree. Debian satisfies some dependencies through virtual
+# packages and alternatives that npkg resolves differently, so a set that
+# apt considers complete can still leave npkg saying "no package satisfies
+# gir1.2-cairo-1.0" halfway through an install -- on the target machine, with
+# the disk already formatted.
+#
+# So ask npkg itself what is missing, fetch exactly that, and repeat until it
+# has nothing left to ask for.
+from npkg import Repository, Database, DependencyError, Solver
+import re, tempfile
+
+for attempt in range(1, 26):
+    fake = tempfile.mkdtemp()
+    repo = Repository("local", npks, fake)
+    repo.fetch_index()
+    solver = Solver(Database(fake), [repo])
+    have = [n for n in seeds if repo.best(n)]
+    try:
+        plan = solver.resolve(have)
+        print("  closure: %d packages resolve with nothing unmet" % len(plan))
+        break
+    except DependencyError as exc:
+        text = str(exc)
+        if "satisfies" not in text:
+            print("  closure: %s" % text)
+            break
+        # chr(39) is a single quote. Writing one here would end the shell
+        # string this whole script is embedded in, which has cost four builds.
+        q = chr(39)
+        token = text.split("satisfies ", 1)[1].strip()
+        token = token.replace(q, "").strip()
+        want = re.split(r"[<>=(\s]", token)[0]
+        print("  closure pass %d: adding %s" % (attempt, want))
+        # The name may not be a package at all. gir1.2-cairo-1.0 is a virtual
+        # name that gir1.2-freedesktop declares in Provides, and asking Debian
+        # to resolve it directly finds nothing -- which is how this loop span
+        # eight times adding the same missing thing.
+        if want in archive.packages:
+            extra = archive.resolve([want])
+        else:
+            providers = [f for f in archive.packages.values()
+                         if want in [p.strip().split(" ")[0]
+                                     for p in (f.get("Provides") or "").split(",")]]
+            if not providers:
+                print("    nothing in Debian provides %s; giving up on it" % want)
+                break
+            print("    provided by %s" % providers[0].get("Package"))
+            extra = archive.resolve([providers[0]["Package"]])
+        new_paths = []
+        for f in extra:
+            npk_name = None
+            try:
+                new_paths.append(archive.download(f, debs))
+            except Exception as e:
+                print("    could not fetch %s: %s" % (f.get("Package"), e))
+        added = 0
+        for npk, err in nb._convert_many(new_paths, npks):
+            if not err:
+                added += 1
+        print("    +%d packages" % added)
+        build_index(npks)
+else:
+    print("  closure: gave up after 25 passes")
 
 idx = build_index(npks)
 n = len(idx.get("packages", []))

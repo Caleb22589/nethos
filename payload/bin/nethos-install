@@ -321,12 +321,34 @@ if [ "${ONLINE:-0}" = 1 ]; then
     # if the repository is unreachable or does not have this architecture, and
     # it is slow rather than broken.
     REPO_URL="${NETHOS_REPO_URL:-https://moddl.app}"
+
+    # Firmware for the hardware that is here, not for all of it.
+    #
+    # The full firmware set is 189 MB of a 648 MB install and almost none of
+    # it applies to any one machine: a Latitude was downloading 44 MB of
+    # Atheros and 31 MB of AMD graphics to run an Intel card. The scan reads
+    # PCI and USB vendor IDs out of sysfs and names the packages that match.
+    #
+    # If the scan finds nothing or is missing, FW stays empty and the whole
+    # set is installed as before -- a slow install is recoverable, a laptop
+    # with no wifi firmware is not.
+    FW=""
+    if command -v nethos-firmware-scan >/dev/null 2>&1; then
+        FW=$(nethos-firmware-scan 2>/dev/null | tr '\n' ' ' | sed 's/ *$//')
+    fi
+    if [ -n "$FW" ]; then
+        say "  firmware for this machine: $FW"
+    else
+        say "  firmware: could not detect the hardware, installing all of it"
+    fi
+
     say "Building the system on $TARGET"
     if curl -fsL --retry 2 -o /tmp/repo-index.json "$REPO_URL/index.json" 2>/dev/null; then
         say "  from the NETHOS repository (prebuilt; no conversion on this machine)"
         python3 -u "$NPKG_DIR/npkg_bootstrap.py" "$MNT" \
             --set base --set system --set kernel --set desktop --set firmware --set net \
             --arch amd64 --user "$NETH_USER" --work /tmp/npkg-work --keep \
+            ${FW:+--firmware-packages "$FW"} \
             --repo "$REPO_URL" \
             || die "the system could not be built -- nothing was written to the bootloader"
     else
@@ -335,6 +357,7 @@ if [ "${ONLINE:-0}" = 1 ]; then
         python3 -u "$NPKG_DIR/npkg_bootstrap.py" "$MNT" \
             --set base --set system --set kernel --set desktop --set firmware --set net \
             --arch amd64 --user "$NETH_USER" --work /tmp/npkg-work --keep \
+            ${FW:+--firmware-packages "$FW"} \
             || die "the system could not be built -- nothing was written to the bootloader"
     fi
 

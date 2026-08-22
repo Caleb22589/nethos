@@ -17,3 +17,6 @@ build/
 # Agent scratch: worktrees are separate checkouts, aider keeps its own caches.
 .claude/
 .aider*
+
+# Debian archive indexes fetched during a build — large and reproducible.
+Packages-*.gz

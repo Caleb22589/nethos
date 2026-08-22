@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Which firmware packages this machine actually needs.
+
+The firmware set is 189 MB of the 648 MB an install downloads -- 29% of it,
+and on any one machine nearly all of it is for hardware that is not there. A
+Latitude needs firmware-iwlwifi; it does not need 44 MB of Atheros, 31 MB of
+AMD graphics and 25 MB of MediaTek.
+
+The mapping is by PCI/USB vendor (and class, where one vendor makes several
+kinds of device), because that is how Debian organises these packages in the
+first place: firmware-realtek is the Realtek one, firmware-iwlwifi is Intel
+wireless. It is a lookup table rather than anything clever, and the honest
+limitation is that it only knows about hardware present at install time -- a
+USB wifi dongle plugged in next week gets nothing until it is asked for.
+
+Two packages are always included regardless of what is found:
+firmware-linux-free (no size) and firmware-misc-nonfree (6 MB), which between
+them carry the odds and ends -- i915 display firmware, tg3, nouveau -- that no
+per-vendor package owns.
+
+Printing nothing but package names, one per line, so the caller is a pipe.
+"""
+
+import argparse
+import os
+import sys
+
+ALWAYS = ["firmware-linux-free", "firmware-misc-nonfree"]
+
+# vendor -> package, for vendors whose devices all want the same firmware.
+PCI_VENDOR = {
+    "10ec": "firmware-realtek",           # Realtek
+    "14c3": "firmware-mediatek",          # MediaTek
+    "1814": "firmware-mediatek",          # Ralink, now MediaTek
+    "168c": "firmware-atheros",           # Atheros
+    "17cb": "firmware-atheros",           # Qualcomm, ath11k/ath12k
+    "1969": "firmware-atheros",           # Atheros ethernet
+    "11ab": "firmware-libertas",          # Marvell
+    "1286": "firmware-libertas",          # Marvell
+    "104c": "firmware-ti-connectivity",   # Texas Instruments
+}
+
+# (vendor, PCI class prefix) -> package, where one vendor makes several kinds
+# of device that want different firmware. The class prefix is the first two
+# hex digits of the class code: 02 network, 03 display.
+PCI_VENDOR_CLASS = {
+    ("8086", "02"): "firmware-iwlwifi",       # Intel wireless
+    ("8086", "03"): "firmware-misc-nonfree",  # Intel graphics: i915 DMC/GuC
+    ("1002", "03"): "firmware-amd-graphics",  # ATI/AMD
+    ("1022", "03"): "firmware-amd-graphics",  # AMD
+    ("10de", "03"): "firmware-misc-nonfree",  # NVIDIA, nouveau signed firmware
+    ("14e4", "02"): "firmware-brcm80211",     # Broadcom wireless
+    ("14e4", "03"): "firmware-misc-nonfree",  # Broadcom, tg3 and friends
+}
+
+USB_VENDOR = {
+    "0bda": "firmware-realtek",
+    "148f": "firmware-mediatek",
+    "0e8d": "firmware-mediatek",
+    "0cf3": "firmware-atheros",
+    "05c6": "firmware-atheros",
+    "0a5c": "firmware-brcm80211",
+    "1286": "firmware-libertas",
+}
+
+
+def _read(path):
+    try:
+        with open(path) as fh:
+            return fh.read().strip().lower()
+    except OSError:
+        return ""
+
+
+def _hex(text):
+    """Sysfs writes these as 0x8086 or 8086 depending on the file."""
+    return text[2:] if text.startswith("0x") else text
+
+
+def scan(sysfs="/sys"):
+    """Firmware package names for the hardware under `sysfs`."""
+    found = set()
+    seen = []
+
+    pci = os.path.join(sysfs, "bus/pci/devices")
+    for name in sorted(os.listdir(pci)) if os.path.isdir(pci) else []:
+        d = os.path.join(pci, name)
+        vendor = _hex(_read(os.path.join(d, "vendor")))
+        klass = _hex(_read(os.path.join(d, "class"))).rjust(6, "0")[:2]
+        if not vendor:
+            continue
+        pkg = PCI_VENDOR_CLASS.get((vendor, klass)) or PCI_VENDOR.get(vendor)
+        if pkg:
+            found.add(pkg)
+            seen.append(f"pci {vendor}:{_hex(_read(os.path.join(d, 'device')))} class {klass} -> {pkg}")
+
+    usb = os.path.join(sysfs, "bus/usb/devices")
+    for name in sorted(os.listdir(usb)) if os.path.isdir(usb) else []:
+        d = os.path.join(usb, name)
+        vendor = _hex(_read(os.path.join(d, "idVendor")))
+        pkg = USB_VENDOR.get(vendor)
+        if pkg:
+            found.add(pkg)
+            seen.append(f"usb {vendor}:{_hex(_read(os.path.join(d, 'idProduct')))} -> {pkg}")
+
+    return sorted(found | set(ALWAYS)), seen
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--sysfs", default="/sys",
+                    help="scan this tree instead of /sys (for testing)")
+    ap.add_argument("--explain", action="store_true",
+                    help="also write the matches to stderr")
+    ap.add_argument("--all", action="store_true",
+                    help="every firmware package, as before hardware detection")
+    args = ap.parse_args()
+
+    if args.all:
+        print("\n".join(sorted(set(ALWAYS) | set(PCI_VENDOR.values())
+                               | set(PCI_VENDOR_CLASS.values())
+                               | set(USB_VENDOR.values()))))
+        return 0
+
+    packages, seen = scan(args.sysfs)
+    if args.explain:
+        for line in seen:
+            print("  " + line, file=sys.stderr)
+    print("\n".join(packages))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

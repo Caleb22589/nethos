@@ -34,9 +34,11 @@ Design decisions worth knowing:
 from __future__ import annotations
 
 import argparse
+import concurrent.futures as futures
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import tarfile
@@ -81,7 +83,11 @@ class Manifest:
 
     name: str
     version: str
-    release: int = 1
+    # A string, not an int. Debian revisions are not numbers: 4+deb13u1,
+    # 2~bpo12+1, 1.1. Coercing them to int meant falling back to 1 for 403 of
+    # 618 packages, and every dependency naming the real revision then failed
+    # to resolve against a package that was sitting in the index.
+    release: str = "1"
     arch: str = "any"
     summary: str = ""
     description: str = ""
@@ -154,6 +160,20 @@ def version_key(version: str):
 def satisfies(version: str, op: str, wanted: str) -> bool:
     if not op:
         return True
+
+    # Debian writes "<< 2.47.3-." to mean "any revision of 2.47.3". The dot is
+    # not a version component; it sorts above every real revision, which is the
+    # whole trick. git depends on git-man (>> 2.47.3) and (<< 2.47.3-.) to pin
+    # it to that upstream version whatever the packaging revision, and reading
+    # the dot literally makes the pair unsatisfiable by anything at all.
+    if wanted.endswith("-."):
+        upstream = wanted[:-2]
+        if op in ("<", "<="):
+            return version_key(version.split("-")[0]) <= version_key(upstream)
+        if op in (">", ">="):
+            return version_key(version.split("-")[0]) >= version_key(upstream)
+        wanted = upstream
+
     a, b = version_key(version), version_key(wanted)
     return {
         "==": a == b, ">=": a >= b, "<=": a <= b, ">": a > b, "<": a < b,
@@ -294,7 +314,16 @@ class Database:
         return out
 
     def get(self, name: str) -> Manifest | None:
-        return self.installed().get(name)
+        # One package, one file. Going through installed() reads and parses
+        # every manifest on the system to answer a question about one of them,
+        # and install asks it twice per package plus once per conflict -- so a
+        # 618-package install spent most of a slow laptop's disk on re-reading
+        # manifests it had already read.
+        meta = os.path.join(self._pkg_dir(name), "manifest.json")
+        if not os.path.isfile(meta):
+            return None
+        with open(meta) as fh:
+            return Manifest.from_dict(json.load(fh))
 
     def is_installed(self, name: str) -> bool:
         return os.path.isfile(os.path.join(self._pkg_dir(name), "manifest.json"))
@@ -432,6 +461,7 @@ class Repository:
         self.url = url.rstrip("/")
         self.root = root
         self.packages: dict[str, list[dict]] = {}
+        self._verified: set[tuple[str, str]] = set()
 
     @property
     def is_local(self) -> bool:
@@ -481,10 +511,24 @@ class Repository:
             # against the whole never matches, and every exact dependency in
             # the archive failed to resolve from a repository while the
             # package sat in the index.
+            # Try the version both ways, because the index cannot tell which
+            # one a requirement means.
+            #
+            # Debian versions may or may not carry a revision. git-man is
+            # 2.47.3-0+deb13u1 and git wants (>> 2.47.3), so the comparison has
+            # to include the revision. initramfs-tools-core is a native package
+            # at plain 0.148.4, conversion synthesises a release of 1, and
+            # initramfs-tools wants (= 0.148.4) -- so including the synthesised
+            # revision makes the package fail to satisfy itself.
+            #
+            # Nothing in the index records which of those it is, so accept
+            # either. Being slightly permissive here resolves both; being
+            # strict resolves neither.
             release = entry.get("release")
-            if "-" in wanted and release not in (None, ""):
-                version = f"{version}-{release}"
-            if satisfies(version, op, wanted):
+            forms = [version]
+            if release not in (None, ""):
+                forms.append(f"{version}-{release}")
+            if any(satisfies(form, op, wanted) for form in forms):
                 return entry
         return None
 
@@ -510,12 +554,17 @@ class Repository:
                 os.replace(tmp, path)
 
         expected = entry.get("sha256")
-        if expected:
+        if expected and (path, expected) not in self._verified:
             actual = sha256_file(path)
             if actual != expected:
                 raise NpkgError(
                     f"checksum mismatch for {entry['name']}\n"
                     f"  expected {expected}\n  got      {actual}")
+            # Prefetch downloads and verifies, then the install loop asks for
+            # the same file again -- hashing 773MB twice. Remember what this
+            # process has already checked. Keyed on the expected digest too,
+            # so a changed index still forces a re-check.
+            self._verified.add((path, expected))
         return path
 
     @staticmethod
@@ -559,14 +608,25 @@ class Solver:
         # outright when it had to come from a repository -- which is every
         # dependency during an install.
         #
-        # Unversioned only. A versioned dependency on a virtual name is not
-        # something Debian expresses, and guessing at what version a provider
-        # would satisfy is worse than saying it is not there.
-        if not op:
-            for repo in self.repos:
-                for candidates in repo.packages.values():
-                    for entry in candidates:
-                        if name in (entry.get("provides") or []):
+        # Versioned ones count too. gir1.2-freedesktop depends on
+        # gir1.2-gobject-2.0>=2.82.0 and gir1.2-glib-2.0 provides
+        # gir1.2-gobject-2.0==2.84.4-3~deb13u3; skipping those because Debian
+        # supposedly does not express them left the desktop unresolvable.
+        for repo in self.repos:
+            for candidates in repo.packages.values():
+                for entry in candidates:
+                    for capability in (entry.get("provides") or []):
+                        parts = re.split(r"(==|>=|<=|>|<)", capability, maxsplit=1)
+                        cap_name = parts[0].strip()
+                        if cap_name != name:
+                            continue
+                        if not op:
+                            return repo, entry
+                        cap_version = parts[2].strip() if len(parts) > 2 else ""
+                        # A bare provide carries no version to check against,
+                        # and refusing it would be worse than trusting it:
+                        # the alternative is a dependency nothing can satisfy.
+                        if not cap_version or satisfies(cap_version, op, version):
                             return repo, entry
 
         want = f"{name}{op}{version}" if op else name
@@ -623,7 +683,18 @@ class Solver:
 
         for requested in names:
             visit(requested, [])
-        return [chosen[n] for n in order]
+        # `chosen` is keyed by the name that was asked for, and a virtual
+        # capability is a different key from the package providing it -- a
+        # dependency on "awk" and one on "gawk" both land on gawk's entry.
+        # Left alone that downloads and installs the same package twice.
+        plan, seen = [], set()
+        for n in order:
+            repo, entry = chosen[n]
+            if entry["name"] in seen:
+                continue
+            seen.add(entry["name"])
+            plan.append((repo, entry))
+        return plan
 
     def dependents(self, name: str) -> list[str]:
         """Installed packages that would break if `name` went away."""
@@ -644,12 +715,14 @@ class Solver:
 
 class Transaction:
     def __init__(self, db: Database, repos: list[Repository], *,
-                 verbose: bool = True, dry_run: bool = False):
+                 verbose: bool = True, dry_run: bool = False,
+                 quiet: bool = False):
         self.db = db
         self.repos = repos
         self.solver = Solver(db, repos)
         self.verbose = verbose
         self.dry_run = dry_run
+        self.quiet = quiet
         # path -> owning package, built once and maintained as we go. Without
         # it, checking each new package against every installed one re-reads
         # every file list from disk: installing 150 packages, some shipping
@@ -669,6 +742,18 @@ class Transaction:
         if self.verbose:
             print(text)
 
+    def step(self, text: str) -> None:
+        """Progress, printed even when verbose is off.
+
+        `verbose` decides whether to narrate what is being installed; it should
+        not decide whether the user sees anything at all. An install of several
+        hundred packages that prints one line and then goes quiet for twenty
+        minutes is indistinguishable from a hang, and on a slow laptop that is
+        exactly how long it takes.
+        """
+        if not self.quiet:
+            print(text, flush=True)
+
     # -- install ---------------------------------------------------------
     def install(self, names: list[str], reinstall: bool = False) -> list[str]:
         plan = self.solver.resolve(names, reinstall=reinstall)
@@ -681,11 +766,48 @@ class Transaction:
         if self.dry_run:
             return [e["name"] for _r, e in plan]
 
+        self.prefetch(plan)
+
         done = []
-        for repo, entry in plan:
+        total = len(plan)
+        for i, (repo, entry) in enumerate(plan, 1):
+            self.step(f"  [{i:>4}/{total}] {entry['name']}")
             path = repo.download(entry)
             done.append(self._install_file(path, entry.get("name")))
         return done
+
+    def prefetch(self, plan: list[tuple["Repository", dict]]) -> None:
+        """Download the whole plan before unpacking any of it.
+
+        Downloading and unpacking one package at a time makes each unpack wait
+        on a round trip and each download wait on a decompression, so neither
+        the link nor the CPU is ever busy. Several hundred packages, each
+        paying connection setup on a home connection, is most of the install
+        time on a slow machine -- and all of it avoidable, because the files
+        are independent.
+
+        Failures are left to the install loop rather than raised here: it
+        re-requests anything missing from the cache, so a download that fails
+        in a worker gets one more attempt with a clear error at the point the
+        package is actually needed.
+        """
+        remote = [(r, e) for r, e in plan if not r.is_local]
+        if not remote:
+            return
+        workers = max(1, int(os.environ.get("NPKG_DOWNLOAD_WORKERS", "16")))
+        total = len(remote)
+        self.step(f"  downloading {total} packages ({workers} at a time)")
+        done = 0
+        with futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            jobs = [pool.submit(r.download, e) for r, e in remote]
+            for job in futures.as_completed(jobs):
+                done += 1
+                try:
+                    job.result()
+                except NpkgError:
+                    pass          # reported by the install loop, with context
+                if done % 25 == 0 or done == total:
+                    self.step(f"  downloaded {done}/{total}")
 
     def install_files(self, paths: list[str]) -> list[str]:
         return [self._install_file(p) for p in paths]
