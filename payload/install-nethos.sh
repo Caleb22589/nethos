@@ -185,6 +185,44 @@ if [ -f /etc/nethos/slots.conf ] && grep -q '^layout=ab' /etc/nethos/slots.conf 
     command -v grub-mkconfig >/dev/null 2>&1 && grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1 || true
 fi
 
+# GSettings schemas, compiled by libglib2.0-0's postinst, which never runs.
+#
+# They ship as .gschema.xml and are useless until compiled into a single
+# gschemas.compiled. GLib treats the absence as fatal -- "No GSettings schemas
+# are installed on the system" -- and kills the process, so every WebKit view
+# dies at startup and reports it as "WebKit encountered an internal error.
+# This is a WebKit bug", which it is not.
+#
+# The image build does this in its chroot; an online install builds its root
+# from the archive and never did, so an installed system came up with a
+# desktop that could not draw a single window.
+if command -v glib-compile-schemas >/dev/null 2>&1 && \
+   [ -d /usr/share/glib-2.0/schemas ]; then
+    glib-compile-schemas /usr/share/glib-2.0/schemas >/dev/null 2>&1 || true
+    if [ -f /usr/share/glib-2.0/schemas/gschemas.compiled ]; then
+        log "compiled GSettings schemas ($(wc -c < /usr/share/glib-2.0/schemas/gschemas.compiled) bytes)"
+    else
+        log "WARNING: GSettings schemas did not compile; the shell will not start"
+    fi
+fi
+
+# Font caches, from fontconfig's postinst. Without them GTK falls back to
+# whatever it can find and the shell renders in the wrong face.
+if command -v fc-cache >/dev/null 2>&1; then
+    fc-cache -f >/dev/null 2>&1 || true
+fi
+
+# ca-certificates builds its trust store in a postinst too, and without it
+# every https client reports zero trusted certificates.
+if [ -d /usr/share/ca-certificates ] && [ ! -s /etc/ssl/certs/ca-certificates.crt ]; then
+    install -d -m 0755 /etc/ssl/certs
+    find /usr/share/ca-certificates -name "*.crt" | sort | xargs cat \
+        > /etc/ssl/certs/ca-certificates.crt 2>/dev/null || true
+    ( cd /usr/share/ca-certificates && find . -name "*.crt" | sed 's|^\./||' | sort ) \
+        > /etc/ca-certificates.conf 2>/dev/null || true
+    log "built the CA trust store ($(grep -c 'BEGIN CERTIFICATE' /etc/ssl/certs/ca-certificates.crt 2>/dev/null || echo 0) certificates)"
+fi
+
 # openssh-server ships no sshd_config; its postinst writes one.
 #
 # npkg runs no maintainer scripts, so sshd starts, says
