@@ -591,20 +591,6 @@ KVER=$(ls /usr/lib/modules 2>/dev/null | head -1)
 echo "kernel modules: ${KVER:-none}"
 [ -n "$KVER" ] || { echo "FATAL: no kernel installed"; exit 1; }
 
-# The kernel searches /lib/firmware and nowhere else. Debian puts firmware in
-# /usr/lib/firmware, which is the same path only because /lib is normally a
-# symlink; npkg makes /lib a real directory for /lib/modules, so without this
-# the kernel finds no firmware and every device needing a blob -- amdgpu, all
-# wifi -- silently does not work.
-if [ -d /usr/lib/firmware ] && [ ! -e /lib/firmware ]; then
-    ln -s ../usr/lib/firmware /lib/firmware
-    echo "firmware: linked /lib/firmware -> /usr/lib/firmware ($(find /usr/lib/firmware -type f | wc -l) files)"
-elif [ -e /lib/firmware ]; then
-    echo "firmware: /lib/firmware present ($(find -L /lib/firmware -type f 2>/dev/null | wc -l) files)"
-else
-    echo "WARNING: no firmware anywhere -- wifi and AMD graphics will not work"
-fi
-
 echo "--- module map ---"
 depmod -a "$KVER"
 ls /usr/lib/modules/$KVER/modules.dep >/dev/null && echo "modules.dep generated"
@@ -699,6 +685,36 @@ if [ -f /root/custom-kernel.tgz ]; then
         echo "  nothing to fall back to. Check the tarball is a targz-pkg."
         exit 1
     fi
+fi
+
+# Put /lib/firmware back, because unpacking the kernel just destroyed it.
+#
+# make targz-pkg writes a bare "lib/" directory entry into the tarball. /lib is
+# a symlink to usr/lib, and GNU tar extracting a directory over a symlink
+# replaces the symlink with a real directory -- so the moment the kernel is
+# unpacked, /usr/lib/firmware is orphaned and /lib/firmware contains nothing
+# but modules. The kernel searches /lib/firmware and nowhere else.
+#
+# Everything followed from this. amdgpu would not bind, so the desktop fell
+# back to software rendering and drew glitched windows; rtw89 would not bind,
+# so there was no wifi on any machine. Both drivers were present and correct
+# the whole time and neither could find a single byte of firmware.
+#
+# It has to run after the unpack. The first version of this check ran before
+# it, saw the symlink still intact, and reported "firmware: /lib/firmware
+# present (2174 files)" -- measuring the state immediately before the step
+# that broke it.
+if [ -d /usr/lib/firmware ] && [ ! -e /lib/firmware ]; then
+    ln -s ../usr/lib/firmware /lib/firmware
+    echo "firmware: relinked /lib/firmware after the kernel unpack ($(find -L /lib/firmware -type f 2>/dev/null | wc -l) files)"
+elif [ -e /lib/firmware ]; then
+    echo "firmware: /lib/firmware intact ($(find -L /lib/firmware -type f 2>/dev/null | wc -l) files)"
+else
+    echo "WARNING: no firmware anywhere -- wifi and AMD graphics will not work"
+fi
+if [ "$(find -L /lib/firmware -type f 2>/dev/null | wc -l)" -lt 100 ]; then
+    echo "FATAL: /lib/firmware exposes almost nothing; wifi and GPU will not work"
+    exit 1
 fi
 
 echo "--- initramfs ---"

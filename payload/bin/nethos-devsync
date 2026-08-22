@@ -61,6 +61,15 @@ install_kernel() {
     [ -n "$kver" ] && [ -e "/boot/vmlinuz-$kver" ] || {
         echo "kernel: no bootable kernel after unpack"; return 1; }
     echo "kernel: $kver"
+    # The tarball carries a bare "lib/" directory entry, and tar extracting a
+    # directory over the /lib -> usr/lib symlink replaces it with a real one.
+    # That orphans /usr/lib/firmware, the kernel searches /lib/firmware and
+    # nowhere else, and every device needing a blob stops working -- no wifi,
+    # no amdgpu, no explanation anywhere. Put it back before anything reboots.
+    if [ -d /usr/lib/firmware ] && [ ! -e /lib/firmware ]; then
+        ln -s ../usr/lib/firmware /lib/firmware
+        echo "kernel: relinked /lib/firmware ($(find -L /lib/firmware -type f 2>/dev/null | wc -l) files)"
+    fi
     # targz-pkg ships the unstripped vmlinux; nothing boots from it and the ESP
     # is small.
     rm -f "/boot/vmlinux-$kver"
