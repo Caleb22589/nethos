@@ -1474,13 +1474,18 @@ def apply_window_rules_sway(container):
         )
     elif app.get("floating"):
         SWAY.command(
-            "%s floating enable, border pixel 2, "
+            "%s floating enable, border none, "
             "resize set width %d px height %d px, move position center"
             % (sel, app["width"], app["height"])
         )
     else:
-        # A real window: leave it to the tiling layout like any other program.
-        SWAY.command("%s border pixel 2" % sel)
+        # A real window: leave it to the tiling layout like any other
+        # program. No compositor border -- nethos-view already draws its own
+        # 14px-radius frame with a drop shadow (.nethos-frame in
+        # NETHOS_GTK_CSS). sway's border is a plain rectangle with no radius
+        # option, so a bordered NETHOS window is a square outline sitting on
+        # top of a rounded one.
+        SWAY.command("%s border none" % sel)
 
 
 # --------------------------------------------------------------------------
@@ -2920,7 +2925,9 @@ def main():
     # not fire.
     def snapper():
         EDGE = 24            # how close to an edge counts as intent
-        last = {}
+        last_key = {}        # wid -> geometry seen on the previous tick
+        settled = {}         # wid -> consecutive ticks that geometry has been unchanged
+        last_cmd = {}        # wid -> the snap command last issued for it
         while True:
             time.sleep(0.2)
             try:
@@ -2937,18 +2944,34 @@ def main():
                     continue
                 win = _focused_floating(tree)
                 if not win:
-                    last.clear()
+                    last_key.clear()
+                    settled.clear()
+                    last_cmd.clear()
                     continue
                 wid, r = win["id"], win["rect"]
                 key = (r["x"], r["y"], r["width"], r["height"])
-                # Still moving: remember and wait.
-                if last.get(wid) != key:
-                    last[wid] = key
-                    last["settled"] = 0
+                # Still moving: remember and wait. Real movement means
+                # whatever we last snapped this window to no longer applies,
+                # so a later drag back to the same corner snaps again.
+                if last_key.get(wid) != key:
+                    last_key[wid] = key
+                    settled[wid] = 0
+                    last_cmd.pop(wid, None)
                     continue
-                # Unchanged for two ticks -- the drag has ended.
-                last["settled"] = last.get("settled", 0) + 1
-                if last["settled"] != 2:
+                # Unchanged for two ticks -- the drag, or our own previous
+                # snap command taking effect, has settled.
+                settled[wid] = settled.get(wid, 0) + 1
+                if settled[wid] != 2:
+                    # Once this hits 2 it is left to keep counting up rather
+                    # than being reset after firing below, so a window sitting
+                    # in a snapped corner is only ever evaluated once instead
+                    # of every 0.2s forever: the earlier version reset this to
+                    # 0 after each command specifically to force a recheck,
+                    # which is exactly what made an already-snapped window
+                    # re-trigger the identical resize on a loop -- measured on
+                    # real hardware, the same con_id snapped four times in two
+                    # seconds with no further input. Only genuine movement
+                    # (the branch above) rearms it.
                     continue
 
                 left, top = r["x"] <= EDGE, r["y"] <= EDGE
@@ -2969,10 +2992,17 @@ def main():
                     cmd = "resize set 50ppt 100ppt, move position 0 0"
                 elif right:
                     cmd = "resize set 50ppt 100ppt, move position 50ppt 0"
-                if cmd:
+                # settled staying stuck above 2 already stops most repeats,
+                # but the tick where sway's reported geometry jumps to match
+                # our own command still counts as "moved" and earns its own
+                # settle-and-reclassify pass two ticks later -- which lands
+                # on a position that, being the snap target, still reads as
+                # the same edge. This is the second, cheaper guard: do not
+                # issue the identical command twice in a row for one window.
+                if cmd and last_cmd.get(wid) != cmd:
                     SWAY.command("[con_id=%s] %s" % (wid, cmd))
                     diag("snap", "con_id=%s %s" % (wid, cmd))
-                    last[wid] = None
+                    last_cmd[wid] = cmd
             except Exception as exc:             # noqa: BLE001
                 diag("snap", "error: %s" % exc)
                 time.sleep(2)

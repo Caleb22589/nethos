@@ -179,7 +179,17 @@ printf '%s gpu: drm=%s renderer=%s\n' "$(date +%H:%M:%S)" \
 # same rounded frame and the same three lights as everything else.
 # GTK4 ignores it -- those apps keep their own header bars, and that is the
 # remaining gap.
-export GTK_CSD=0
+#
+# Only under Wayfire, though -- firedecor is a Wayfire plugin. sway's own
+# decoration is `border pixel`/`border normal`, and neither draws a close
+# button; that has never been a sway feature (i3 does not have one either).
+# Without this guard, GTK_CSD=0 under sway told every GTK3 app -- GIMP,
+# Thunar -- to stop drawing its own header bar for a compositor that was
+# never going to draw one back, leaving no title bar and no way to close
+# except a keybind. foot and VLC are unaffected by this specific setting --
+# neither is GTK3 -- but they have the same visible symptom for a different
+# reason: `border pixel` genuinely has no title bar on any app, GTK or not.
+[ -n "$wf_pid" ] && export GTK_CSD=0
 
 # LIBGL_ALWAYS_SOFTWARE is *not* forced here. It used to be, on the assumption
 # that a VM has no GPU -- but virtio_gpu is a real DRM device, and Mesa rejects

@@ -1151,16 +1151,25 @@ function initDesktop() {
   }
 
   loadIcons();
-  /* Refreshed on a change signal, not a poll. nethosd's watch_files thread
-     publishes a reload event with reason "files-changed" when anything in the
-     served tree changes on disk, and the reload handler below repaints the
-     icons immediately. The slow timer stays as a safety net for a filesystem
-     change that nethosd's watcher never noticed (it polls the tree once a
-     second and only tracks mtime, so a rename that preserves mtime slips
-     through); a couple of seconds of staleness is fine, losing the icon until
-     the next session is not. */
+  // watch_files only watches the app/shell source tree (SHELL_DIR, LIB_DIR,
+  // APP_DIRS_WEB in nethosd.py) for the reload-on-edit workflow -- it has
+  // never watched ~/Desktop, so nothing pushes a signal when the user adds or
+  // removes a file there. This has to poll.
+  //
+  // The desktop is role=widget, layer=bottom, and never takes focus, which is
+  // exactly the surface WebKit suspends "moments after load" (see the
+  // App.do_activate comment in nethos-view) -- so plain setInterval is not a
+  // safety net here, it is the only path, and it stops. Measured: a folder
+  // dropped on the Desktop after the shell had been up a few minutes never
+  // appeared, on a shell that had not been touched or reloaded since boot.
+  // nethos-tick is driven from nethos-view's own process, which WebKit does
+  // not get to suspend, so it is the one that actually keeps arriving.
+  let iconTick = 0;
+  window.addEventListener("nethos-tick", () => {
+    const now = Date.now();
+    if (now - iconTick > 20000) { iconTick = now; loadIcons(); }
+  });
   setInterval(loadIcons, 20000);
-  window.addEventListener("nethos-tick", () => {});
 
 
   // The desktop is the surface most likely to be right-clicked by reflex, and
