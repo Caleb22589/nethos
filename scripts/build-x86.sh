@@ -591,6 +591,20 @@ KVER=$(ls /usr/lib/modules 2>/dev/null | head -1)
 echo "kernel modules: ${KVER:-none}"
 [ -n "$KVER" ] || { echo "FATAL: no kernel installed"; exit 1; }
 
+# The kernel searches /lib/firmware and nowhere else. Debian puts firmware in
+# /usr/lib/firmware, which is the same path only because /lib is normally a
+# symlink; npkg makes /lib a real directory for /lib/modules, so without this
+# the kernel finds no firmware and every device needing a blob -- amdgpu, all
+# wifi -- silently does not work.
+if [ -d /usr/lib/firmware ] && [ ! -e /lib/firmware ]; then
+    ln -s ../usr/lib/firmware /lib/firmware
+    echo "firmware: linked /lib/firmware -> /usr/lib/firmware ($(find /usr/lib/firmware -type f | wc -l) files)"
+elif [ -e /lib/firmware ]; then
+    echo "firmware: /lib/firmware present ($(find -L /lib/firmware -type f 2>/dev/null | wc -l) files)"
+else
+    echo "WARNING: no firmware anywhere -- wifi and AMD graphics will not work"
+fi
+
 echo "--- module map ---"
 depmod -a "$KVER"
 ls /usr/lib/modules/$KVER/modules.dep >/dev/null && echo "modules.dep generated"

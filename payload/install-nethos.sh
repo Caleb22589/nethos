@@ -185,6 +185,22 @@ if [ -f /etc/nethos/slots.conf ] && grep -q '^layout=ab' /etc/nethos/slots.conf 
     command -v grub-mkconfig >/dev/null 2>&1 && grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1 || true
 fi
 
+# The kernel only ever looks in /lib/firmware.
+#
+# Debian ships firmware to /usr/lib/firmware and gets away with it because
+# /lib is a symlink to usr/lib. npkg makes /lib a real directory to hold
+# /lib/modules, so the two are different places and the kernel sees no
+# firmware at all -- amdgpu refuses to load and falls back to software
+# rendering, and every wifi chip comes up dead. Nothing reports it as a
+# missing firmware tree; it looks like broken hardware support.
+#
+# The kernel's search path is compiled in as /lib/firmware/updates and
+# /lib/firmware. It does not know about /usr/lib/firmware.
+if [ -d /usr/lib/firmware ] && [ ! -e /lib/firmware ]; then
+    ln -s ../usr/lib/firmware /lib/firmware
+    log "linked /lib/firmware -> /usr/lib/firmware ($(find /usr/lib/firmware -type f 2>/dev/null | wc -l | tr -d ' ') files the kernel could not see)"
+fi
+
 # The development sync, so a fix does not need a rebuild to reach the machine.
 #
 # Deliberately installed and enabled on every image, not just development ones:
