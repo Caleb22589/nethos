@@ -292,12 +292,49 @@ if [ "$LAYOUT" = ab ]; then
     mount "$P4" "$MNT/home"
 fi
 
-# Copy the live filesystem rather than pacstrapping: it needs no network and
-# it guarantees the installed system is exactly what you just tried.
-rsync -aAXH --info=progress2 \
-    --exclude=/dev/ --exclude=/proc/ --exclude=/sys/ --exclude=/tmp/ \
-    --exclude=/run/ --exclude=/mnt/ --exclude=/media/ --exclude=/lost+found \
-    / "$MNT/"
+if [ "${ONLINE:-0}" = 1 ]; then
+    # Build the system from the archive, because there is not one here to copy.
+    #
+    # The lightweight installer is a hundred megabytes: a kernel, busybox,
+    # python and enough firmware to get online. Copying it onto the disk would
+    # install the installer, which is not what anybody wants. So npkg builds a
+    # real NETHOS root on the target the same way the image build does, and the
+    # machine ends up with a current system rather than whatever the stick was
+    # made with.
+    NPKG_DIR=""
+    for d in /usr/share/nethos/pkg /nethos/pkg; do
+        [ -f "$d/npkg_bootstrap.py" ] && NPKG_DIR="$d" && break
+    done
+    [ -n "$NPKG_DIR" ] || die "no npkg on this installer; cannot build a system"
+    command -v python3 >/dev/null || die "no python3 on this installer"
+    ip route 2>/dev/null | grep -q '^default' \
+        || die "no network. The full system is downloaded, so one is required."
+
+    say "Building the system on $TARGET (this downloads roughly 700MB)"
+    python3 -u "$NPKG_DIR/npkg_bootstrap.py" "$MNT" \
+        --set base --set system --set kernel --set desktop --set firmware --set net \
+        --arch amd64 --user "$NETH_USER" --work /tmp/npkg-work --keep \
+        || die "the system could not be built -- nothing was written to the bootloader"
+
+    # The desktop, the tools and the shell: everything the image build installs
+    # after the packages land.
+    PAYLOAD_DIR=""
+    for d in /usr/share/nethos/payload /nethos/payload; do
+        [ -f "$d/install-nethos.sh" ] && PAYLOAD_DIR="$d" && break
+    done
+    if [ -n "$PAYLOAD_DIR" ]; then
+        say "Installing the NETHOS layer"
+        mkdir -p "$MNT/root/payload"
+        cp -R "$PAYLOAD_DIR/." "$MNT/root/payload/"
+    fi
+else
+    # Copy the live filesystem rather than pacstrapping: it needs no network and
+    # it guarantees the installed system is exactly what you just tried.
+    rsync -aAXH --info=progress2 \
+        --exclude=/dev/ --exclude=/proc/ --exclude=/sys/ --exclude=/tmp/ \
+        --exclude=/run/ --exclude=/mnt/ --exclude=/media/ --exclude=/lost+found \
+        / "$MNT/"
+fi
 
 # The disk being installed to is not a live stick, whatever it was copied from.
 # Without this the installed system boots the installer again, for ever.
@@ -393,6 +430,15 @@ fi
 sed -i 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=2/' /etc/default/grub 2>/dev/null || true
 sed -i 's/^GRUB_DISTRIBUTOR=.*/GRUB_DISTRIBUTOR="NETHOS"/' /etc/default/grub 2>/dev/null || true
 grub-mkconfig -o /boot/grub/grub.cfg
+
+# The NETHOS layer, when the system was built from the archive rather than
+# copied. install-nethos.sh puts the shell, the apps and the nethos-* tools in
+# place and enables the services; --no-packages because npkg already ran.
+if [ -f /root/payload/install-nethos.sh ]; then
+    sh /root/payload/install-nethos.sh --no-packages || \
+        echo "WARNING: the NETHOS layer did not install cleanly"
+    rm -rf /root/payload
+fi
 
 # Mark this as an installed build, not a live session.
 date -u +'%Y-%m-%dT%H:%M:%SZ' > /etc/nethos-release

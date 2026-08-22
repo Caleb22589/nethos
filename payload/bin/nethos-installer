@@ -23,22 +23,53 @@ need_root() {
 }
 need_root "$@"
 
+online() { ip route 2>/dev/null | grep -q '^default'; }
+
+# This image carries no system to install -- it is a hundred megabytes of
+# kernel, busybox and enough firmware to get online. The system is downloaded.
+# So the network is not a convenience here, it is the install.
+require_network() {
+    online && return 0
+    head
+    printf '  %sA network is required.%s\n\n' "$RED" "$RST"
+    printf '  This installer is 97MB. It does not contain NETHOS -- it downloads\n'
+    printf '  it, so the machine ends up with a current system rather than\n'
+    printf '  whatever this stick was built with. About 700MB.\n\n'
+    printf '  %sAnything that works without firmware:%s\n\n' "$BOLD" "$RST"
+    printf '    Ethernet          plug it in; nothing else needed\n'
+    printf '    USB-C adapter     the same\n'
+    printf '    Phone over USB    plug in, enable USB tethering, no firmware\n'
+    printf '                      needed on any Android or iPhone\n\n'
+    printf '  Wifi needs firmware for your exact chip. This image carries some\n'
+    printf '  (Intel, Realtek, Broadcom, Atheros) but not all of them.\n\n'
+    ip -br addr 2>/dev/null | sed 's/^/    /'
+    printf '\n'
+    ask "press enter to re-check, or type a command to run:"
+    [ -n "$REPLY" ] && { printf '\n'; sh -c "$REPLY" || true; printf '\n'; ask "enter:"; }
+    online
+}
+
 # --------------------------------------------------------------- main menu
 while :; do
     head
     nethos-hwscan 2>/dev/null | sed 's/^/  /'
     printf '\n'; rule; printf '\n'
-    printf '   %s1%s  Install NETHOS to a disk\n' "$BOLD" "$RST"
+    if online; then
+        printf '   network: %sconnected%s\n\n' "$GRN" "$RST"
+    else
+        printf '   network: %snot connected%s  (required -- the system is downloaded)\n\n' "$RED" "$RST"
+    fi
+    printf '   %s1%s  Install NETHOS to a disk   %s(downloads ~700MB)%s\n' "$BOLD" "$RST" "$DIM" "$RST"
     printf '   %s2%s  Connect to a network\n' "$BOLD" "$RST"
-    printf '   %s3%s  Install missing firmware for this machine\n' "$BOLD" "$RST"
-    printf '   %s4%s  Try the desktop without installing\n' "$BOLD" "$RST"
-    printf '   %s5%s  Shell\n' "$BOLD" "$RST"
-    printf '   %s6%s  Reboot\n' "$BOLD" "$RST"
+    printf '   %s3%s  Fetch firmware for a device that has none\n' "$BOLD" "$RST"
+    printf '   %s4%s  Shell\n' "$BOLD" "$RST"
+    printf '   %s5%s  Reboot\n' "$BOLD" "$RST"
     printf '\n'
     ask "choice:"
     case "$REPLY" in
 
     1)  # ---------------------------------------------------------- install
+        require_network || continue
         head
         printf '  %sDisks%s\n\n' "$BOLD" "$RST"
         nethos-install --list 2>/dev/null | sed 's/^/  /' || {
@@ -59,7 +90,7 @@ while :; do
         [ "/dev/${REPLY#/dev/}" = "$target" ] || { printf '\n  did not match; nothing done\n'; ask "enter:"; continue; }
 
         printf '\n'
-        if nethos-install --target "$target"; then
+        if nethos-install --online --target "$target"; then
             printf '\n  %sInstalled.%s\n' "$GRN" "$RST"
             printf '  Remove the stick and reboot.\n\n'
         else
@@ -110,20 +141,8 @@ while :; do
         ask "enter:"
         ;;
 
-    4)  # ---------------------------------------------------------- desktop
-        head
-        printf '  Starting the desktop. It runs from the stick, so it is slow,\n'
-        printf '  and on a machine whose GPU driver has not loaded it falls back\n'
-        printf '  to software rendering. Installing gives you neither problem.\n\n'
-        ask "continue? [y/N]:"
-        case "$REPLY" in [yY]*)
-            NETHOS_SKIP_INSTALLER=1 export NETHOS_SKIP_INSTALLER
-            exec su - "${SUDO_USER:-neth}" -c 'exec bash -lc "exec wayfire"' ;;
-        esac
-        ;;
-
-    5)  head; printf '  Exit the shell to come back.\n\n'; ${SHELL:-/bin/sh} || true ;;
-    6)  reboot ;;
+    4)  head; printf '  Exit the shell to come back.\n\n'; ${SHELL:-/bin/sh} || true ;;
+    5)  reboot ;;
     *)  ;;
     esac
 done
