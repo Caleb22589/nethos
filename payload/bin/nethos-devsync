@@ -42,13 +42,47 @@ if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$now" ]; then
     exit 0
 fi
 
+# Installing a kernel here rather than rebuilding an image.
+#
+# A kernel change is five minutes to cross-compile and twenty-five to bake into
+# an image, and the image build spends nearly all of that reinstalling 621
+# Debian packages that did not change. Unpacking the tarball over the running
+# root and regenerating the initramfs does the same job in about a minute.
+#
+# Only in place: this is the development path for a stick being iterated on.
+# nethos-kernel install-tar is still the right tool for an installed system
+# with slots, where a bad kernel has somewhere to fall back to.
+install_kernel() {
+    tgz="$DEV/kernel.tgz"
+    [ -f "$tgz" ] || return 0
+    echo "--- kernel: unpacking $(basename "$tgz") ---"
+    tar xzf "$tgz" -C / || { echo "kernel: tar failed"; return 1; }
+    kver=$(ls -1 /lib/modules 2>/dev/null | sort -V | tail -1)
+    [ -n "$kver" ] && [ -e "/boot/vmlinuz-$kver" ] || {
+        echo "kernel: no bootable kernel after unpack"; return 1; }
+    echo "kernel: $kver"
+    # targz-pkg ships the unstripped vmlinux; nothing boots from it and the ESP
+    # is small.
+    rm -f "/boot/vmlinux-$kver"
+    depmod -a "$kver" || true
+    if command -v update-initramfs >/dev/null 2>&1; then
+        update-initramfs -c -k "$kver" || mkinitramfs -o "/boot/initrd.img-$kver" "$kver" || {
+            echo "kernel: no initramfs -- refusing to leave it half installed"; return 1; }
+    fi
+    command -v grub-mkconfig >/dev/null 2>&1 && grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1
+    echo "kernel: installed, reboot to run it"
+}
+
 {
     echo "--- $(date -Is) applying $DEV ---"
+    ok=1
     # FAT carries no execute bit, so the interpreter is named explicitly.
-    if sh "$DEV/install-nethos.sh" --files-only; then
+    sh "$DEV/install-nethos.sh" --files-only || { echo "payload FAILED"; ok=0; }
+    install_kernel || { echo "kernel FAILED"; ok=0; }
+    if [ "$ok" = 1 ]; then
         echo "applied"
         printf '%s' "$now" > "$STAMP"
     else
-        echo "FAILED (status $?) -- leaving the stamp alone so it retries"
+        echo "left the stamp alone so it retries next boot"
     fi
 } >> "$LOG" 2>&1
