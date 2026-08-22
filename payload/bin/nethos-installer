@@ -11,25 +11,74 @@
 # directly, which is fewer moving parts than a service manager anyway.
 set -eu
 
-B=$(printf '\033[1m'); D=$(printf '\033[2m'); R=$(printf '\033[0m')
-C=$(printf '\033[1;36m'); RD=$(printf '\033[1;31m'); G=$(printf '\033[1;32m')
+# ----------------------------------------------------------------- looking
+# right
+#
+# A console has sixteen colours and one font, and that is enough. docs/DESIGN.md
+# rule 1 holds here as much as in the shell: one accent, and it marks the thing
+# you would press -- the number you are about to type, and the step you are on.
+# Everything else is the terminal default or dimmed. Status colours appear only
+# when something has a status.
+#
+# The accent is #3b6ea5, a muted steel blue; bright blue is the closest a
+# console gets. Rule 23 rules out anything more saturated -- a neon accent on a
+# black console looks like a boot menu from 1998, which is precisely the
+# impression an installer should not give.
+ESC=$(printf '\033')
+B="${ESC}[1m"; D="${ESC}[2m"; R="${ESC}[0m"
+A="${ESC}[94m"; AB="${ESC}[1;94m"      # accent, and accent bold
+GRN="${ESC}[32m"; RED="${ESC}[31m"; AMB="${ESC}[33m"
 
-head() {
-    clear 2>/dev/null || true
-    printf '\n  %sNETHOS%s\n  %s%s%s\n\n' "$C" "$R" "$D" "${1:-}" "$R"
+W=68                                    # content width, fits an 80-col console
+
+rep()  { n=$1; c=$2; out=""; while [ "$n" -gt 0 ]; do out="$out$c"; n=$((n-1)); done; printf '%s' "$out"; }
+line() { printf '  %s%s%s\n' "$D" "$(rep "$W" '─')" "$R"; }
+gap()  { printf '\n'; }
+
+# The wordmark and where you are in the sequence. Three steps, always all three
+# shown: an installer that reveals its length one screen at a time feels longer
+# than one that says up front there are three.
+ui_head() {   # $1 title, $2 current step number (0 for none)
+    clear 2>/dev/null || printf '\033[H\033[2J'
+    gap
+    printf '  %sNETHOS%s%s  %s%s\n' "$AB" "$R" "$D" "${1:-}" "$R"
+    gap
+    if [ "${2:-0}" != 0 ]; then
+        i=1
+        printf '  '
+        for name in Network Disk Confirm; do
+            [ "$i" = 1 ] || printf '%s  ·  %s' "$D" "$R"
+            if [ "$i" -lt "${2}" ]; then   printf '%s%s%s' "$GRN" "$name" "$R"
+            elif [ "$i" = "${2}" ]; then   printf '%s%s%s' "$AB" "$name" "$R"
+            else                           printf '%s%s%s' "$D" "$name" "$R"
+            fi
+            i=$((i+1))
+        done
+        gap
+    fi
+    line
+    gap
 }
+
 say()  { printf '  %s\n' "$*"; }
-warn() { printf '  %s%s%s\n' "$RD" "$*" "$R"; }
-ok()   { printf '  %s%s%s\n' "$G" "$*" "$R"; }
-ask()  { printf '  %s ' "$1"; read -r REPLY || REPLY=""; }
+dim()  { printf '  %s%s%s\n' "$D" "$*" "$R"; }
+warn() { printf '  %s%s%s\n' "$RED" "$*" "$R"; }
+ok()   { printf '  %s%s%s\n' "$GRN" "$*" "$R"; }
+note() { printf '  %s%s%s\n' "$AMB" "$*" "$R"; }
+
+# The number is the accent because the number is what you press.
+item() { printf '   %s%3s%s  %s\n' "$AB" "$1" "$R" "$2"; }
+itemd(){ printf '   %s%3s%s  %-30.30s  %s%s%s\n' "$AB" "$1" "$R" "$2" "$D" "$3" "$R"; }
+
+ask()  { gap; printf '  %s ' "$1"; read -r REPLY || REPLY=""; }
 askpw() {
-    printf '  %s ' "$1"
+    gap; printf '  %s ' "$1"
     stty -echo 2>/dev/null || true
     read -r PW || PW=""
     stty echo 2>/dev/null || true
-    printf '\n'
+    gap
 }
-pause() { printf '\n'; ask "press enter"; }
+pause() { gap; printf '  %spress enter%s ' "$D" "$R"; read -r _ || true; }
 
 [ "$(id -u)" = 0 ] || exec sudo -- "$0" "$@"
 
@@ -51,8 +100,9 @@ dhcp_on() {
 # ------------------------------------------------------------------ network
 wifi_connect() {   # $1 interface
     dev=$1
+    ui_head "Wifi" 1
     ip link set "$dev" up 2>/dev/null || true
-    say "Scanning..."
+    say "Scanning on $dev..."
     # One network per line as "signal<TAB>ssid", strongest first.
     #
     # The SSID is everything after "SSID: " -- it can contain spaces, so it
@@ -135,18 +185,20 @@ wifi_connect() {   # $1 interface
 
 step_network() {
     while :; do
-        head "Step 1 of 3   Network"
+        ui_head "Installer" 1
         if online; then
-            ok "Connected."
-            ip -br addr 2>/dev/null | grep -v '^lo' | sed 's/^/    /'
-            printf '\n'
-            say "NETHOS is downloaded during the install, about 700MB."
+            ok "Connected"
+            gap
+            ip -br addr 2>/dev/null | grep -v '^lo' \
+                | awk '{printf "    %-10s %s\n", $1, $3}'
+            gap
+            dim "NETHOS is downloaded during the install -- about 700MB."
             pause
             return 0
         fi
 
-        say "NETHOS is downloaded during the install, so a connection is needed."
-        printf '\n'
+        say "NETHOS is downloaded during the install, so it needs a connection."
+        gap
 
         # Wired first, silently: it needs no firmware and no questions.
         for i in $(ifaces); do
@@ -160,19 +212,18 @@ step_network() {
         wifis=$(for i in $(ifaces); do is_wifi "$i" && echo "$i"; done)
         wired=$(for i in $(ifaces); do is_wifi "$i" || echo "$i"; done)
 
-        printf '\n'
-        n=1
-        if [ -n "$wifis" ]; then
-            printf '   %s1%s  Connect to wifi\n' "$B" "$R"; n=2
-        fi
-        printf '   %s%d%s  Retry wired  %s(plug in ethernet, a USB-C adapter, or a\n' "$B" "$n" "$R" "$D"
-        printf '        phone with USB tethering on -- none need firmware)%s\n' "$R"
-        printf '   %s%d%s  Shell\n' "$B" "$((n+1))" "$R"
-        printf '   %s%d%s  Reboot\n' "$B" "$((n+2))" "$R"
-        printf '\n'
+        gap
+        [ -n "$wifis" ] && item 1 "Connect to wifi"
+        item 2 "Retry wired"
+        dim "        ethernet, a USB-C adapter, or a phone with USB"
+        dim "        tethering switched on -- none of these need firmware"
+        item 3 "Shell"
+        item 4 "Reboot"
         if [ -z "$wifis" ] && [ -z "$wired" ]; then
-            warn "No network interfaces at all -- this machine's driver may need"
-            warn "firmware that is not in this image."
+            gap
+            warn "No network interfaces at all."
+            dim "This machine's network driver may need firmware that is not"
+            dim "in this 98MB image."
         fi
         ask "choice:"
         case "$REPLY" in
@@ -203,9 +254,9 @@ step_disk() {
         printf '\n'
         ask "disk number (or r to reboot):"
         [ "$REPLY" = r ] && reboot
-        line=$(printf '%s\n' "$disks" | sed -n "${REPLY}p" 2>/dev/null || true)
-        [ -n "$line" ] || { warn "no such number"; pause; continue; }
-        TARGET="/dev/$(printf '%s' "$line" | awk '{print $1}')"
+        row=$(sed -n "${REPLY}p" /tmp/disk.list 2>/dev/null || true)
+        [ -n "$row" ] || { warn "no such number"; pause; continue; }
+        TARGET="/dev/$(printf '%s' "$row" | awk '{print $2}')"
         [ -b "$TARGET" ] || { warn "$TARGET is not a disk"; pause; continue; }
         return 0
     done
@@ -229,9 +280,10 @@ step_confirm() {
 
 # --------------------------------------------------------------------- main
 while :; do
-    head "Installer"
+    ui_head "Install to this machine" 0
     nethos-hwscan 2>/dev/null | sed 's/^/  /' || say "(hardware scan unavailable)"
-    printf '\n'
+    gap
+    line
     ask "press enter to begin, or s for a shell:"
     [ "$REPLY" = s ] && { ${SHELL:-/bin/sh} || true; continue; }
 
@@ -249,9 +301,10 @@ while :; do
         ask "reboot now? [Y/n]:"
         case "$REPLY" in [nN]*) ;; *) reboot ;; esac
     else
-        printf '\n'; warn "The install did not finish."
-        say "Nothing was written to the bootloader, so the disk is not"
-        say "half-installed -- it is simply not installed."
+        gap; line; gap
+        warn "The install did not finish."
+        dim "Nothing was written to the bootloader, so the disk is not"
+        dim "half-installed -- it is simply not installed."
         pause
     fi
 done
