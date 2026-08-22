@@ -26,6 +26,9 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures as futures
+import http.client
+import threading
+import urllib.parse
 import gzip
 import multiprocessing
 import os
@@ -421,6 +424,43 @@ class DebianArchive:
                   f"(virtual or unavailable): {', '.join(sorted(missing)[:6])}")
         return list(chosen.values())
 
+    # One connection per worker thread, kept open.
+    #
+    # Six hundred packages fetched one at a time each pay a TCP handshake and
+    # a fresh congestion window, and most Debian packages are small enough
+    # that the transfer never leaves slow start -- so the setup costs more
+    # than the data. HTTP/1.1 keep-alive makes the second and later requests
+    # on a thread nearly free. Thread-local because http.client connections
+    # are not safe to share, and the download pool has sixteen of them.
+    _conns = threading.local()
+
+    def _connection(self):
+        parts = urllib.parse.urlsplit(self.mirror)
+        key = (parts.scheme, parts.hostname, parts.port)
+        conn = getattr(self._conns, "conn", None)
+        if conn is not None and getattr(self._conns, "key", None) == key:
+            return conn, parts
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        cls = (http.client.HTTPSConnection if parts.scheme == "https"
+               else http.client.HTTPConnection)
+        conn = cls(parts.hostname, parts.port, timeout=120)
+        self._conns.conn = conn
+        self._conns.key = key
+        return conn, parts
+
+    def _drop_connection(self):
+        conn = getattr(self._conns, "conn", None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        self._conns.conn = None
+
     def download(self, fields: dict, outdir: str) -> str:
         filename = fields["Filename"]
         target = os.path.join(outdir, os.path.basename(filename))
@@ -445,8 +485,21 @@ class DebianArchive:
         last_exc = None
         for attempt in range(3):
             try:
-                with urllib.request.urlopen(url, timeout=120) as resp, open(tmp, "wb") as fh:
+                conn, parts = self._connection()
+                path = urllib.parse.quote(f"{parts.path}/{filename}".replace("//", "/"))
+                conn.request("GET", path, headers={"Host": parts.netloc,
+                                                   "Connection": "keep-alive",
+                                                   "User-Agent": "npkg"})
+                resp = conn.getresponse()
+                if resp.status != 200:
+                    resp.read()
+                    raise OSError(f"HTTP {resp.status} for {filename}")
+                with open(tmp, "wb") as fh:
                     shutil.copyfileobj(resp, fh)
+                # The response must be drained for the connection to be
+                # reusable; copyfileobj does that, but a short read would
+                # leave it mid-message and poison every later request on this
+                # thread. The length check below catches it either way.
                 # A connection closed early gives a short file and no
                 # exception at all, so retrying on errors alone is not
                 # enough -- that is how a truncated .deb reaches the cache
@@ -456,8 +509,11 @@ class DebianArchive:
                     raise OSError(f"truncated: got {got} bytes, expected {want}")
                 os.replace(tmp, target)
                 return target
-            except (urllib.error.URLError, OSError) as exc:
+            except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
                 last_exc = exc
+                # A connection that failed mid-message cannot be trusted for
+                # the next file on this thread.
+                self._drop_connection()
                 import time
                 time.sleep(1 * (attempt + 1))
         
@@ -1330,7 +1386,8 @@ def bootstrap(root: str, sets: list[str], arch: str, username: str,
     say("\n== downloading ==")
     paths: list[str] = [""] * len(resolved)
     done = 0
-    with futures.ThreadPoolExecutor(max_workers=16) as pool:
+    dl_workers = int(os.environ.get("NPKG_DOWNLOAD_WORKERS", "16"))
+    with futures.ThreadPoolExecutor(max_workers=dl_workers) as pool:
         jobs = {pool.submit(archive.download, f, debs): i
                 for i, f in enumerate(resolved)}
         for job in futures.as_completed(jobs):
