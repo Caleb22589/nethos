@@ -91,7 +91,12 @@ dhcp_on() {
     ip link set "$1" up 2>/dev/null || true
     # busybox udhcpc first: it is always here and needs no lease database.
     if command -v udhcpc >/dev/null 2>&1; then
-        udhcpc -i "$1" -n -q -t 6 -T 2 >/dev/null 2>&1 && return 0
+        udhcpc -i "$1" -n -q -t 8 -T 2 >/tmp/dhcp.log 2>&1 && ip route 2>/dev/null | grep -q '^default' && return 0
+        # A lease with no route is worth one more try with the script named
+        # explicitly, in case the built-in path is not where Debian put it.
+        [ -x /usr/share/udhcpc/default.script ] && \
+            udhcpc -i "$1" -n -q -t 4 -T 2 -s /usr/share/udhcpc/default.script \
+                >>/tmp/dhcp.log 2>&1 && ip route 2>/dev/null | grep -q '^default' && return 0
     fi
     command -v dhclient >/dev/null 2>&1 && dhclient -1 -timeout 15 "$1" >/dev/null 2>&1 && return 0
     return 1
@@ -248,8 +253,25 @@ wifi_connect() {   # $1 interface
         return 1
     fi
     say "Associated. Getting an address..."
-    dhcp_on "$dev" || { warn "associated, but DHCP gave no address"; return 1; }
-    online
+    if ! dhcp_on "$dev"; then
+        warn "Associated with $ssid, but DHCP gave no address."
+        gap
+        [ -s /tmp/dhcp.log ] && { dim "udhcpc said:"; tail -4 /tmp/dhcp.log | sed 's/^/    /'; gap; }
+        ip -br addr show "$dev" 2>/dev/null | sed 's/^/    /'
+        return 1
+    fi
+    if ! online; then
+        # An address without a route is the DHCP script half-working, and
+        # returning quietly here sent you back to the menu with no reason given.
+        warn "Got an address on $dev but no default route."
+        gap
+        ip -br addr show "$dev" 2>/dev/null | sed 's/^/    /'
+        ip route 2>/dev/null | sed 's/^/    /'
+        [ -s /tmp/dhcp.log ] && { gap; dim "udhcpc said:"; tail -4 /tmp/dhcp.log | sed 's/^/    /'; }
+        return 1
+    fi
+    ok "Connected to $ssid."
+    return 0
 }
 
 step_network() {

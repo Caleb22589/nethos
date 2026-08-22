@@ -157,11 +157,19 @@ if [ -x "$R/bin/busybox" ] || [ -x "$R/usr/bin/busybox" ]; then
 case "$1" in
     deconfig) ip addr flush dev "$interface" 2>/dev/null; ip link set "$interface" up ;;
     bound|renew)
-        ip addr add "$ip/$mask" dev "$interface" 2>/dev/null
-        ip link set "$interface" up
-        [ -n "$router" ] && ip route add default via "${router%% *}" dev "$interface" 2>/dev/null
+        # busybox udhcpc exports "subnet", not "mask". Using the wrong name
+        # gave ip an address with an empty prefix, which it rejected -- so the
+        # lease was obtained, no address was ever set, and the installer said
+        # "Associated" and then quietly went back to the menu.
+        ip addr flush dev "$interface" 2>/dev/null
+        ip addr add "$ip${subnet:+/$subnet}" dev "$interface" 2>/dev/null
+        ip link set "$interface" up 2>/dev/null
+        for r in $router; do
+            ip route add default via "$r" dev "$interface" 2>/dev/null && break
+        done
         : > /etc/resolv.conf
         for s in $dns; do echo "nameserver $s" >> /etc/resolv.conf; done
+        [ -n "$domain" ] && echo "search $domain" >> /etc/resolv.conf
         ;;
 esac
 exit 0
@@ -291,7 +299,11 @@ echo "--- initramfs ---"
 ls -l /out/installer-initrd.zst | awk "{print \"    initrd: \" \$5 \" bytes\"}"
 
 echo "--- EFI image ---"
-KB=$(( ( $(stat -c%s /out/installer-vmlinuz) + $(stat -c%s /out/installer-initrd.zst) ) / 1024 + 24576 ))
+# 4MB of slack, not 24. FAT needs room for its tables and GRUB, and nothing
+# else is ever written here. The extra was invisible in du, which reports
+# blocks actually allocated on a sparse file -- but dd writes the length, so
+# it was twenty megabytes of zeroes going to the stick every time.
+KB=$(( ( $(stat -c%s /out/installer-vmlinuz) + $(stat -c%s /out/installer-initrd.zst) ) / 1024 + 4096 ))
 rm -f /out/nethos-installer.img
 truncate -s "${KB}K" /out/nethos-installer.img
 mkfs.vfat -F 32 -n NETHOSINST /out/nethos-installer.img >/dev/null
@@ -322,7 +334,9 @@ echo "--- done ---"
 '
 
 [ -f "$OUT" ] || die "no image produced"
-say "Built: $OUT  ($(du -h "$OUT" | cut -f1))"
+bytes=$(stat -f%z "$OUT" 2>/dev/null || stat -c%s "$OUT")
+say "Built: $OUT"
+say "  $(awk -v b="$bytes" 'BEGIN{printf "%.0fMB", b/1048576}') to flash (what dd writes, not what du reports)"
 echo
 echo "Flash it (the whole stick is overwritten):"
 echo "  diskutil list external physical"
