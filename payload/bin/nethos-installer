@@ -109,18 +109,56 @@ wifi_connect() {   # $1 interface
     # cannot be a field. Taking $2 lost half of them and leaving awk to rebuild
     # $0 left a leading space on the rest, which then reached wpa_supplicant as
     # part of the name and matched nothing.
-    scan=$(iw dev "$dev" scan 2>/dev/null | awk '
-        /^\tsignal:/ { sig = $2 }
-        /^\tSSID: /  {
-            ssid = substr($0, index($0, "SSID: ") + 6)
+    # Patterns are unanchored on purpose. Anchoring them to a leading tab
+    # broke a scan that worked: iw's indentation is not something to depend on,
+    # and a parser that silently yields nothing looks exactly like a radio that
+    # found nothing.
+    # Scan more than once. A radio brought up a second ago routinely returns an
+    # empty first result, and reporting "no networks found" for that sends
+    # somebody looking for a firmware problem they do not have.
+    try=1
+    while [ "$try" -le 3 ]; do
+        iw dev "$dev" scan > /tmp/scan.raw 2>/tmp/scan.err || true
+        grep -q "SSID:" /tmp/scan.raw 2>/dev/null && break
+        [ "$try" -lt 3 ] && { printf '  %sscanning (%d)...%s\n' "$D" "$try" "$R"; sleep 2; }
+        try=$((try + 1))
+    done
+    scan=$(awk '
+        /signal:/ { sig = $2 }
+        /SSID:/   {
+            i = index($0, "SSID:")
+            ssid = substr($0, i + 5)
+            sub(/^[ \t]+/, "", ssid)
             gsub(/[^[:print:]]/, "", ssid)
             if (ssid != "" && !(ssid in seen)) { seen[ssid] = 1; printf "%d\t%s\n", sig, ssid }
-        }' | sort -rn | head -15)
+        }' /tmp/scan.raw | sort -rn | head -15)
 
     if [ -z "$scan" ]; then
         warn "No networks found on $dev."
-        say "If this wifi chip needs firmware that is not in this 98MB image,"
-        say "nothing will appear here. Ethernet or a phone over USB needs none."
+        gap
+        # Three different faults look identical from here, so show which.
+        if [ -s /tmp/scan.err ]; then
+            dim "iw said:"; sed 's/^/    /' /tmp/scan.err | head -3
+            gap
+        fi
+        if command -v rfkill >/dev/null 2>&1 && rfkill list 2>/dev/null | grep -qi 'yes'; then
+            note "The radio is blocked -- try the wifi key or switch on this laptop."
+            rfkill list 2>/dev/null | sed 's/^/    /' | head -6
+            gap
+        fi
+        fw=$(dmesg 2>/dev/null | grep -icE "$dev|firmware.*(fail|not found)" || echo 0)
+        if dmesg 2>/dev/null | grep -qiE "firmware.*(fail|missing|not found)"; then
+            note "The kernel could not load some firmware:"
+            dmesg 2>/dev/null | grep -iE "firmware.*(fail|missing|not found)" \
+                | tail -3 | sed 's/^/    /'
+            gap
+            dim "This 98MB image carries firmware for common chips, not all of"
+            dim "them. Ethernet or a phone over USB needs none at all."
+        else
+            dim "The driver is loaded and the scan returned nothing. If there are"
+            dim "networks in range, try again -- a radio that has just come up"
+            dim "sometimes reports an empty first scan."
+        fi
         return 1
     fi
 
