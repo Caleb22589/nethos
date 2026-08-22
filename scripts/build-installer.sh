@@ -137,6 +137,32 @@ du -sm "$R"/usr/lib/firmware "$R"/usr/lib/python3* "$R"/usr/share/nethos \
        "$R"/usr/lib/x86_64-linux-gnu "$R"/usr/bin "$R"/usr/sbin "$R"/lib/modules 2>/dev/null \
   | sort -rn | head -8 | sed "s|$R|  |"
 
+echo "--- TLS trust store ---"
+# ca-certificates builds its bundle in a postinst, and npkg runs none -- so
+# /etc/ssl/certs is empty, every https client reports "System trust contains
+# zero trusted certificates", and the installer could not fetch its own kernel
+# from a GitHub release. It reported that as "could not fetch it" and carried
+# on with Debian kernel.
+#
+# The bundle is just every certificate concatenated, which is what
+# update-ca-certificates produces and which needs no maintainer script and no
+# ability to execute amd64 binaries on an arm64 build host.
+mkdir -p "$R/etc/ssl/certs"
+if [ -d "$R/usr/share/ca-certificates" ]; then
+    find "$R/usr/share/ca-certificates" -name "*.crt" | sort \
+        | xargs cat > "$R/etc/ssl/certs/ca-certificates.crt" 2>/dev/null || true
+    ( cd "$R/usr/share/ca-certificates" && find . -name "*.crt" | sed "s|^\./||" | sort ) \
+        > "$R/etc/ca-certificates.conf" 2>/dev/null || true
+fi
+certs=$(grep -c "BEGIN CERTIFICATE" "$R/etc/ssl/certs/ca-certificates.crt" 2>/dev/null || echo 0)
+echo "    $certs certificates in the bundle"
+if [ "$certs" -lt 50 ]; then
+    echo "FATAL: the trust store is empty or tiny."
+    echo "  Every https fetch the installer makes would fail, including the"
+    echo "  kernel it installs. ca-certificates must be in the package set."
+    exit 1
+fi
+
 echo "--- busybox applets ---"
 # Debian ships busybox as one binary and creates almost no applet symlinks, so
 # udhcpc exists inside it and cannot be called by name. It decides which applet

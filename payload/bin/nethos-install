@@ -346,6 +346,24 @@ if [ "${ONLINE:-0}" = 1 ]; then
                 ln -s ../usr/lib/firmware "$MNT/lib/firmware"
                 say "  relinked /lib/firmware after the kernel unpack"
             fi
+            # Modules are stranded the same way, and it is worse: Debian keeps
+            # its kernel modules in /usr/lib/modules, so once /lib is a real
+            # directory holding only 7.2, depmod cannot find 6.12 at all and
+            # builds it an empty initramfs. The result boots 7.2 perfectly and
+            # panics if anyone picks the fallback entry in GRUB.
+            #
+            # Put the tree back the way Debian has it: everything under
+            # /usr/lib/modules, with /lib/modules a symlink to it.
+            if [ -d "$MNT/usr/lib/modules" ] && [ -d "$MNT/lib/modules" ] && \
+               [ ! -L "$MNT/lib/modules" ]; then
+                for m in "$MNT"/lib/modules/*; do
+                    [ -e "$m" ] || continue
+                    mv "$m" "$MNT/usr/lib/modules/" 2>/dev/null || true
+                done
+                rmdir "$MNT/lib/modules" 2>/dev/null && \
+                    ln -s ../usr/lib/modules "$MNT/lib/modules" && \
+                    say "  merged /lib/modules into /usr/lib/modules"
+            fi
             rm -f "$MNT"/boot/vmlinux-* 2>/dev/null || true
         fi
     else
@@ -460,15 +478,21 @@ elif command -v mkinitcpio >/dev/null 2>&1; then
 fi
 
 # And prove it, because a missing initrd is only discovered at the panic.
-kver=$(ls -1 /lib/modules 2>/dev/null | sort -V | tail -1)
-if [ -n "$kver" ] && [ ! -e "/boot/initrd.img-$kver" ] && [ ! -e "/boot/initramfs-$kver.img" ]; then
-    echo "FATAL: no initramfs for $kver."
+#
+# Every expansion here is escaped. This heredoc is unquoted so that a few
+# values from the installer are baked in, which means anything not escaped is
+# evaluated by the installer instead of by the script -- and \$kver, being a
+# variable of the script, came out empty and aborted the install with
+# "kver: unbound variable".
+kver=\$(ls -1 /lib/modules 2>/dev/null | sort -V | tail -1)
+if [ -n "\$kver" ] && [ ! -e "/boot/initrd.img-\$kver" ] && [ ! -e "/boot/initramfs-\$kver.img" ]; then
+    echo "FATAL: no initramfs for \$kver."
     echo "  The kernel cannot reach the root filesystem without one and would"
     echo "  panic on the first boot. Refusing to install a bootloader for it."
     ls -la /boot | sed 's/^/    /'
     exit 1
 fi
-echo "initramfs: $(ls -1 /boot/initrd.img-* /boot/initramfs-*.img 2>/dev/null | tr "\n" " ")"
+echo "initramfs: \$(ls -1 /boot/initrd.img-* /boot/initramfs-*.img 2>/dev/null | tr "\\n" " ")"
 
 systemctl enable systemd-networkd systemd-resolved 2>/dev/null || true
 systemctl enable NetworkManager 2>/dev/null || true
