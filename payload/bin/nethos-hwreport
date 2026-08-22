@@ -1,0 +1,43 @@
+#!/bin/sh
+# Write what this machine actually is, and what the kernel actually did, to the
+# ESP -- where any computer can read it without a Linux host or a network.
+#
+# Exists because diagnosing hardware on a machine with no working wifi means
+# somebody transcribing dmesg by hand, and because guessing from a symptom
+# ("no wifi") has repeatedly cost a build cycle to disprove. /boot is FAT and
+# every desktop OS mounts it.
+set -eu
+OUT=${1:-/boot/nethos-hw.txt}
+
+{
+    echo "=== NETHOS hardware report  $(date -Is) ==="
+    echo "kernel: $(uname -r)   cmdline: $(cat /proc/cmdline 2>/dev/null)"
+    echo
+    echo "--- firmware tree (the kernel only searches /lib/firmware) ---"
+    ls -ld /lib/firmware /usr/lib/firmware 2>&1
+    echo "visible files: $(find -L /lib/firmware -type f 2>/dev/null | wc -l)"
+    echo
+    echo "--- devices and the driver bound to each ---"
+    lspci -nnk 2>&1 || echo "(no lspci)"
+    echo
+    echo "--- usb ---"
+    lsusb 2>&1 || echo "(no lsusb)"
+    echo
+    echo "--- what the kernel said about firmware and drivers ---"
+    dmesg 2>&1 | grep -iE "firmware|amdgpu|drm|i915|iwl|rtw|ath[0-9]|mt79|brcm|i2c_hid|designware|pinctrl|rfkill" || true
+    echo
+    echo "--- modules ---"
+    lsmod 2>&1 || true
+    echo
+    echo "--- network interfaces and radio state ---"
+    ip -br link 2>&1 || true
+    rfkill list 2>&1 || true
+    echo
+    echo "--- graphics ---"
+    ls -l /dev/dri 2>&1 || echo "(no /dev/dri at all)"
+    for c in /sys/class/drm/card[0-9]*; do
+        [ -e "$c/device/driver" ] && echo "$c -> $(basename "$(readlink -f "$c/device/driver")")"
+    done 2>/dev/null || true
+} > "$OUT" 2>&1
+sync
+echo "wrote $OUT"

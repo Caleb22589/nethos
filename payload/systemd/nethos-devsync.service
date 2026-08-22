@@ -9,6 +9,11 @@ ConditionPathExists=/boot/nethos-dev/install-nethos.sh
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/nethos-devsync
+# Always leave a hardware report on the ESP, whether or not a payload was
+# applied. On a machine with no working network this is the only way the
+# report gets off it, and it is what turns "no wifi" into a named chip and a
+# named missing firmware file.
+ExecStartPost=-/usr/bin/nethos-hwreport
 RemainAfterExit=yes
 # A bad payload must not stop the machine booting -- that is the whole point of
 # being able to drop a fix on the stick.
