@@ -98,10 +98,41 @@ dhcp_on() {
 }
 
 # ------------------------------------------------------------------ network
+# Bring an interface up and wait for it, rather than assuming it worked.
+#
+# ip link set up was called with its error thrown away, and iw then reported
+# "command failed: Network is down (-100)" -- which reads as a scan problem
+# and is actually the interface never having come up. A wifi driver loads its
+# firmware when the interface is brought up, so this can take a moment after
+# the device appears, and failing once means nothing.
+bring_up() {   # $1 interface
+    command -v rfkill >/dev/null 2>&1 && rfkill unblock all 2>/dev/null || true
+    n=0
+    while [ "$n" -lt 10 ]; do
+        ip link set "$1" up 2>/tmp/link.err && \
+            grep -q up "/sys/class/net/$1/operstate" 2>/dev/null && return 0
+        # "up" in flags is enough; operstate stays "down" until associated.
+        ip link show "$1" 2>/dev/null | head -1 | grep -q "[<,]UP[,>]" && return 0
+        n=$((n + 1)); sleep 1
+    done
+    return 1
+}
+
 wifi_connect() {   # $1 interface
     dev=$1
     ui_head "Wifi" 1
-    ip link set "$dev" up 2>/dev/null || true
+    say "Bringing $dev up..."
+    if ! bring_up "$dev"; then
+        warn "$dev will not come up."
+        gap
+        [ -s /tmp/link.err ] && { dim "ip said:"; sed 's/^/    /' /tmp/link.err | head -2; gap; }
+        dmesg 2>/dev/null | grep -iE "$dev|rtw|iwl|ath|brcm" | tail -4 | sed 's/^/    /'
+        gap
+        dim "A wifi driver loads its firmware when the interface comes up, so"
+        dim "this is usually firmware this image does not carry. Ethernet or a"
+        dim "phone over USB needs none."
+        return 1
+    fi
     say "Scanning on $dev..."
     # One network per line as "signal<TAB>ssid", strongest first.
     #

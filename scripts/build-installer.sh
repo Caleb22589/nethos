@@ -111,6 +111,13 @@ if [ -d "$FW" ]; then
       for d in *; do
         case "$d" in
           rtw88|rtw89|brcm|ath9k_htc|rtl_nic) ;;
+          # regulatory.db is a symlink to regulatory.db-debian, and deleting
+          # the target left a dangling link that the kernel reports as
+          # "Direct firmware load for regulatory.db failed with error -2" --
+          # indistinguishable from the file never having been there. Without
+          # it cfg80211 falls back to a world domain that refuses most
+          # channels, which looks like a radio that finds nothing.
+          regulatory.db*) ;;
           iwlwifi-*) [ "$(stat -c%s "$d")" -gt 2200000 ] && rm -f "$d" ;;
           *) rm -rf "$d" ;;
         esac
