@@ -41,7 +41,8 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from npkg import Database, Manifest, NpkgError, Package, Transaction, build_index  # noqa: E402
+from npkg import (Database, Manifest, NpkgError, Package, Transaction,  # noqa: E402
+                  USER_AGENT, build_index)
 from npkg_convert import convert_deb, parse_control  # noqa: E402
 
 def say(*args, **kwargs):
@@ -489,7 +490,7 @@ class DebianArchive:
                 path = urllib.parse.quote(f"{parts.path}/{filename}".replace("//", "/"))
                 conn.request("GET", path, headers={"Host": parts.netloc,
                                                    "Connection": "keep-alive",
-                                                   "User-Agent": "npkg"})
+                                                   "User-Agent": USER_AGENT})
                 resp = conn.getresponse()
                 if resp.status != 200:
                     resp.read()

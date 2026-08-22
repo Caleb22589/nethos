@@ -411,6 +411,19 @@ class Database:
 # repositories
 # ---------------------------------------------------------------------------
 
+# Cloudflare, and anything else in front of a bucket, blocks Python's default
+# user agent as a bot. urllib sends "Python-urllib/3.12" and gets 403 while
+# curl gets 200 from the same URL, which reads as a permissions problem and is
+# not one -- every package download would have failed on the target machine
+# with the repository working perfectly.
+USER_AGENT = "npkg/1 (+https://github.com/Caleb22589/nethos)"
+
+
+def _open_url(url: str, timeout: int = 120):
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    return urllib.request.urlopen(request, timeout=timeout)
+
+
 class Repository:
     """A named source of packages: a URL or a local directory with index.json."""
 
@@ -440,7 +453,7 @@ class Repository:
             cache = self.index_cache()
             if refresh or not os.path.isfile(cache):
                 try:
-                    with urllib.request.urlopen(self.url + "/index.json",
+                    with _open_url(self.url + "/index.json",
                                                 timeout=30) as resp:
                         blob = resp.read()
                 except (urllib.error.URLError, OSError) as exc:
@@ -479,7 +492,7 @@ class Repository:
                 url = f"{self.url}/{filename}"
                 tmp = path + ".part"
                 try:
-                    with urllib.request.urlopen(url, timeout=120) as resp, \
+                    with _open_url(url, timeout=120) as resp, \
                             open(tmp, "wb") as fh:
                         shutil.copyfileobj(resp, fh)
                 except (urllib.error.URLError, OSError) as exc:
