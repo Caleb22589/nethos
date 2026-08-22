@@ -2,7 +2,8 @@
 # Build and publish the NETHOS package repository.
 #
 #   scripts/publish-repo.sh              convert and index, locally
-#   scripts/publish-repo.sh --publish    ...and upload it
+#   scripts/publish-repo.sh --publish    ...and upload to a GitHub release
+#   scripts/publish-repo.sh --r2         ...and upload to Cloudflare R2
 #
 # Converting Debian packages to npkg is decompression and repacking: identical
 # on every machine, and pure CPU. Doing it during an install means a two-core
@@ -23,7 +24,21 @@ OUT="$HERE/build/repo"
 SETS="${NETHOS_REPO_SETS:-base system kernel desktop firmware net browser installer}"
 TAG="${NETHOS_REPO_TAG:-repo-x86_64}"
 PUBLISH=0
-[ "${1:-}" = "--publish" ] && PUBLISH=1
+R2=0
+case "${1:-}" in
+    --publish) PUBLISH=1 ;;
+    --r2)      R2=1 ;;
+esac
+
+# Uploading and serving are two different hostnames on R2.
+#
+# The S3 API endpoint signs every request, so an anonymous GET to it returns
+# 400 and npkg -- which fetches with a plain GET -- cannot read the repository
+# from it at all. Packages are served from the public bucket URL instead, and
+# that is what goes in repos.json.
+R2_REMOTE="${NETHOS_R2_REMOTE:-r2}"
+R2_BUCKET="${NETHOS_R2_BUCKET:-nethos}"
+R2_PUBLIC="${NETHOS_R2_PUBLIC:-}"
 
 command -v docker >/dev/null || die "docker (colima) is needed"
 mkdir -p "$OUT"
@@ -85,6 +100,41 @@ count=$(ls -1 "$OUT"/*.npk 2>/dev/null | wc -l | tr -d ' ')
 [ "$count" -gt 0 ] || die "no packages were produced"
 size=$(du -sh "$OUT" | cut -f1)
 say "Built: $count packages, $size, index at $OUT/index.json"
+
+if [ "$R2" = 1 ]; then
+    command -v rclone >/dev/null || die "rclone is needed for R2 (brew install rclone)"
+    rclone listremotes 2>/dev/null | grep -q "^${R2_REMOTE}:" || die \
+        "no rclone remote called '$R2_REMOTE'.
+
+  Create one without putting the secret in your shell history:
+      rclone config
+    n) new remote   name: $R2_REMOTE   storage: s3   provider: Cloudflare
+    endpoint: https://3710ed8f24d77f61a3aea82883bb1a9f.r2.cloudflarestorage.com"
+
+    say "Uploading $size to $R2_REMOTE:$R2_BUCKET"
+    # --checksum, not timestamps: re-running should upload what changed and
+    # nothing else, and object stores have no useful mtime.
+    rclone copy "$OUT" "$R2_REMOTE:$R2_BUCKET" --checksum --transfers 16 \
+        --progress --s3-no-check-bucket
+    remote_count=$(rclone lsf "$R2_REMOTE:$R2_BUCKET" 2>/dev/null | grep -c "\.npk$" || echo 0)
+    say "$remote_count packages in the bucket"
+    [ "$remote_count" -ge "$count" ] || die "the upload did not take"
+
+    if [ -n "$R2_PUBLIC" ]; then
+        say "Checking it is readable without credentials"
+        code=$(curl -s -o /dev/null -w "%{http_code}" "$R2_PUBLIC/index.json" --max-time 20)
+        if [ "$code" = 200 ]; then
+            say "  $R2_PUBLIC/index.json -> 200"
+            say "  put this in /etc/npkg/repos.json as the url"
+        else
+            say "  $R2_PUBLIC/index.json -> $code"
+            say "  the bucket is not public yet: enable the Public Development"
+            say "  URL in the R2 dashboard, or bind a custom domain."
+        fi
+    else
+        say "Set NETHOS_R2_PUBLIC to the bucket public URL to verify it serves."
+    fi
+fi
 
 if [ "$PUBLISH" = 1 ]; then
     command -v gh >/dev/null || die "gh is needed to publish"

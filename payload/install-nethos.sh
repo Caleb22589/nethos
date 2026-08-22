@@ -192,19 +192,22 @@ fi
 # repository is Debian packages already converted to npkg format, published
 # once, so that no machine ever repeats that work -- which on a two-core 2012
 # laptop is the difference between a download and the better part of an hour.
+# One place. Overridable at install time so a mirror or a local repository can
+# be used without editing the installed system afterwards.
+NETHOS_REPO_URL="${NETHOS_REPO_URL:-https://github.com/Caleb22589/nethos/releases/download/repo-x86_64}"
 install -d -m 0755 /etc/npkg
 if [ ! -s /etc/npkg/repos.json ]; then
-    cat > /etc/npkg/repos.json <<'REPOS'
+    cat > /etc/npkg/repos.json <<REPOS
 {
   "repos": [
     {
       "name": "nethos",
-      "url": "https://github.com/Caleb22589/nethos/releases/download/repo-x86_64"
+      "url": "$NETHOS_REPO_URL"
     }
   ]
 }
 REPOS
-    log "configured the nethos package repository"
+    log "configured the nethos package repository: $NETHOS_REPO_URL"
 fi
 
 # GSettings schemas, compiled by libglib2.0-0's postinst, which never runs.
