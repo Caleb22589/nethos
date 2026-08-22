@@ -310,11 +310,33 @@ if [ "${ONLINE:-0}" = 1 ]; then
     ip route 2>/dev/null | grep -q '^default' \
         || die "no network. The full system is downloaded, so one is required."
 
-    say "Building the system on $TARGET (this downloads roughly 700MB)"
-    python3 -u "$NPKG_DIR/npkg_bootstrap.py" "$MNT" \
-        --set base --set system --set kernel --set desktop --set firmware --set net \
-        --arch amd64 --user "$NETH_USER" --work /tmp/npkg-work --keep \
-        || die "the system could not be built -- nothing was written to the bootloader"
+    # From the repository, not from Debian.
+    #
+    # Converting 618 packages is pure CPU and identical on every machine: 90
+    # seconds on a fast desktop, most of an hour on a two-core 2012 laptop.
+    # The repository is that work already done, so this downloads finished
+    # packages and checks each against the sha256 in the index.
+    #
+    # Falling back to the Debian path matters: it is the only way to install
+    # if the repository is unreachable or does not have this architecture, and
+    # it is slow rather than broken.
+    REPO_URL="${NETHOS_REPO_URL:-https://github.com/Caleb22589/nethos/releases/download/repo-x86_64}"
+    say "Building the system on $TARGET"
+    if curl -fsL --retry 2 -o /tmp/repo-index.json "$REPO_URL/index.json" 2>/dev/null; then
+        say "  from the NETHOS repository (prebuilt; no conversion on this machine)"
+        python3 -u "$NPKG_DIR/npkg_bootstrap.py" "$MNT" \
+            --set base --set system --set kernel --set desktop --set firmware --set net \
+            --arch amd64 --user "$NETH_USER" --work /tmp/npkg-work --keep \
+            --repo "$REPO_URL" \
+            || die "the system could not be built -- nothing was written to the bootloader"
+    else
+        say "  the repository is unreachable; converting Debian packages instead"
+        say "  (this is much slower on an older machine)"
+        python3 -u "$NPKG_DIR/npkg_bootstrap.py" "$MNT" \
+            --set base --set system --set kernel --set desktop --set firmware --set net \
+            --arch amd64 --user "$NETH_USER" --work /tmp/npkg-work --keep \
+            || die "the system could not be built -- nothing was written to the bootloader"
+    fi
 
     # The NETHOS kernel, over the one the archive just supplied.
     #

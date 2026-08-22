@@ -944,6 +944,74 @@ def cmd_install(args, db, repos):
         tx.install(remote, reinstall=args.reinstall)
 
 
+def cmd_upgrade(args, db, repos):
+    """Install the newer version of anything the repository has moved on.
+
+    npkg had no way to do this at all: packages could be installed and
+    removed, and a system could only get newer by being reinstalled. An
+    operating system that cannot take a security fix without a reinstall is
+    not finished.
+
+    Deliberately simple. It compares what is installed against what the
+    repository offers and installs the difference; it does not try to be
+    clever about held versions or partial upgrades, because the failure mode
+    of clever here is a machine that will not boot.
+    """
+    if not repos:
+        raise NpkgError(
+            "no repositories are configured, so there is nothing to upgrade "
+            "from.\n  Configure one in /etc/npkg/repos.json")
+
+    installed = db.installed()
+    if not installed:
+        print("no packages installed")
+        return
+
+    plan = []
+    for name, manifest in sorted(installed.items()):
+        best, best_repo = None, None
+        for repo in repos:
+            entry = repo.best(name)
+            if entry and (best is None or
+                          version_key(entry["version"]) > version_key(best["version"])):
+                best, best_repo = entry, repo
+        if best and version_key(best["version"]) > version_key(manifest.version):
+            plan.append((name, manifest.version, best["version"], best_repo, best))
+
+    if not plan:
+        print(f"up to date — {len(installed)} packages, none newer in the repository")
+        return
+
+    print(f"{len(plan)} package(s) to upgrade:")
+    for name, old, new, _r, _e in plan:
+        print(f"  {name:<28} {old}  ->  {new}")
+    if args.dry_run:
+        return
+    if not args.yes:
+        try:
+            if input("\ncontinue? [y/N] ").strip().lower() not in ("y", "yes"):
+                print("nothing done")
+                return
+        except EOFError:
+            print("nothing done")
+            return
+
+    tx = Transaction(db, repos)
+    # One at a time, so a package that fails leaves the rest of the system
+    # upgraded rather than the whole run rolled back into an unknown state.
+    failed = []
+    for name, _old, _new, _repo, _entry in plan:
+        try:
+            tx.install([name], reinstall=True)
+        except NpkgError as exc:
+            failed.append((name, exc))
+            print(f"  {name}: {exc}")
+    if failed:
+        print(f"\n{len(failed)} of {len(plan)} failed; the rest are upgraded")
+    else:
+        print(f"\nupgraded {len(plan)} package(s)")
+
+
 def cmd_remove(args, db, repos):
     Transaction(db, repos, dry_run=args.dry_run).remove(args.names, force=args.force)
 
@@ -1222,6 +1290,12 @@ def main(argv=None):
     p.add_argument("names", nargs="+")
     p.add_argument("--reinstall", action="store_true")
     p.set_defaults(func=cmd_install)
+
+    p = sub.add_parser("upgrade", help="upgrade everything the repository has newer")
+    p.add_argument("--dry-run", action="store_true",
+                   help="list what would change and stop")
+    p.add_argument("-y", "--yes", action="store_true", help="do not ask")
+    p.set_defaults(func=cmd_upgrade)
 
     p = sub.add_parser("remove", help="remove packages")
     p.add_argument("names", nargs="+")

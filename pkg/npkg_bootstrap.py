@@ -1355,10 +1355,17 @@ def _convert_many(paths: list[str], npks: str):
 
 def bootstrap(root: str, sets: list[str], arch: str, username: str,
               password: str, root_password: str, hostname: str,
-              work: str, mirror: str, suite: str, keep: bool = False) -> None:
+              work: str, mirror: str, suite: str, keep: bool = False,
+              repo: str = "") -> None:
     debs = os.path.join(work, "debs")
     npks = os.path.join(work, "packages")
     os.makedirs(work, exist_ok=True)
+
+    if repo:
+        _bootstrap_from_repo(root, sets, repo)
+        _finish_root(root, username, password, root_password, hostname, arch,
+                     sets, keep, debs)
+        return
 
     say(f"\n== Debian {suite}/{arch} index ==")
     archive = DebianArchive(mirror, suite, arch, cache=work)
@@ -1446,6 +1453,68 @@ def bootstrap(root: str, sets: list[str], arch: str, username: str,
     with open(os.path.join(root, "etc/npkg/suite"), "w") as fh:
         fh.write(suite + "\n")
 
+    # The same finishing work the repository path does. Splitting it out and
+    # forgetting to call it here would have produced a root full of packages
+    # and no user, no services and no desktop.
+    _finish_root(root, username, password, root_password, hostname, arch,
+                 sets, keep, debs)
+
+
+def _bootstrap_from_repo(root: str, sets: list[str], repo_url: str) -> None:
+    """Build a root from prebuilt npkg packages instead of converting Debian.
+
+    Conversion is decompression and repacking: identical on every machine, and
+    pure CPU. Doing it during an install means a two-core laptop spends the
+    better part of an hour redoing what has already been done once. The
+    repository is that work, published; this downloads the result.
+
+    npkg needed nothing new for it. Transaction.install already resolves
+    against a repository index, downloads by filename and checks a sha256, so
+    this is mostly a matter of pointing it at one.
+    """
+    from npkg import Repository
+
+    seeds: list[str] = []
+    for name in sets:
+        seeds += SETS.get(name, [])
+    seeds = sorted(set(seeds))
+    say(f"\n== NETHOS repository ==")
+    say(f"  {repo_url}")
+
+    # Written before anything is installed, so the finished system can install
+    # packages from the same place it was built from.
+    conf_dir = os.path.join(root, "etc", "npkg")
+    os.makedirs(conf_dir, exist_ok=True)
+    with open(os.path.join(conf_dir, "repos.json"), "w") as fh:
+        json.dump({"repos": [{"name": "nethos", "url": repo_url}]}, fh, indent=2)
+
+    db = Database(root)
+    repository = Repository("nethos", repo_url, root)
+    repository.fetch_index(refresh=True)
+    say(f"  index: {sum(len(v) for v in repository.packages.values())} packages available")
+
+    say(f"\n== resolving {len(seeds)} seed packages ==")
+    tx = Transaction(db, [repository], verbose=False)
+    missing = [n for n in seeds if not repository.best(n)]
+    if missing:
+        say(f"  note: {len(missing)} not in the repository: {' '.join(missing[:6])}"
+            + (" ..." if len(missing) > 6 else ""))
+    wanted = [n for n in seeds if n not in missing]
+
+    say("\n== installing ==")
+    installed = tx.install(wanted)
+    say(f"  installed {len(installed)} packages")
+
+
+def _finish_root(root: str, username: str, password: str,
+                 root_password: str, hostname: str, arch: str,
+                 sets: list[str], keep: bool, debs: str) -> None:
+    """Everything after the packages land: users, /etc, services, the desktop.
+
+    Shared by both bootstrap paths. Converting Debian packages and downloading
+    prebuilt ones differ only in how the files arrive; what turns a directory
+    of packages into a system is the same either way.
+    """
     say("\n== users, sudo, /etc ==")
     setup_etc(root, hostname)
     setup_users(root, username, password, root_password)
@@ -1509,13 +1578,16 @@ def main(argv=None):
     parser.add_argument("--hostname", default="nethos")
     parser.add_argument("--work", default="./bootstrap-work")
     parser.add_argument("--keep-debs", action="store_true")
+    parser.add_argument("--repo", default="",
+                        help="build from a prebuilt npkg repository instead of "
+                             "converting Debian packages on this machine")
     args = parser.parse_args(argv)
 
     try:
         bootstrap(os.path.abspath(args.root), args.sets or ["base"], args.arch,
                   args.user, args.password, args.root_password, args.hostname,
                   os.path.abspath(args.work), args.mirror, args.suite,
-                  keep=args.keep_debs)
+                  keep=args.keep_debs, repo=args.repo)
     except NpkgError as exc:
         say(f"error: {exc}", file=sys.stderr)
         return 1
