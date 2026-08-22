@@ -162,6 +162,12 @@ SETS = {
         "busybox", "python3-minimal", "libpython3-stdlib",
         "parted", "e2fsprogs", "dosfstools", "util-linux",
         "curl", "ca-certificates", "openssl",
+        # npkg shells out to these to unpack a .deb, and trixie ships
+        # data.tar.zst. Without them the installer downloads packages
+        # perfectly and cannot open a single one -- zstd lives in the kernel
+        # set, which an installer image has no reason to pull, and xz-utils
+        # was in no set at all.
+        "zstd", "xz-utils",
         "kmod", "pciutils", "usbutils",
         # The installer writes a bootloader to the disk it installs, so it has
         # to carry one. These are also what build-installer.sh builds the
