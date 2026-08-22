@@ -185,6 +185,28 @@ if [ -f /etc/nethos/slots.conf ] && grep -q '^layout=ab' /etc/nethos/slots.conf 
     command -v grub-mkconfig >/dev/null 2>&1 && grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1 || true
 fi
 
+# Point npkg at the NETHOS repository.
+#
+# Without this a machine has nowhere to install anything from: npkg says "no
+# repositories are configured, so there is nowhere to find <name>". The
+# repository is Debian packages already converted to npkg format, published
+# once, so that no machine ever repeats that work -- which on a two-core 2012
+# laptop is the difference between a download and the better part of an hour.
+install -d -m 0755 /etc/npkg
+if [ ! -s /etc/npkg/repos.json ]; then
+    cat > /etc/npkg/repos.json <<'REPOS'
+{
+  "repos": [
+    {
+      "name": "nethos",
+      "url": "https://github.com/Caleb22589/nethos/releases/download/repo-x86_64"
+    }
+  ]
+}
+REPOS
+    log "configured the nethos package repository"
+fi
+
 # GSettings schemas, compiled by libglib2.0-0's postinst, which never runs.
 #
 # They ship as .gschema.xml and are useless until compiled into a single
