@@ -1,148 +1,225 @@
 #!/bin/sh
-# The thing you see when you boot the stick.
+# The NETHOS installer: connect, choose a disk, install.
 #
-# Text, on whatever framebuffer UEFI handed over, because an installer that
-# needs a working GPU cannot install the driver for that GPU. It runs before
-# the desktop and offers to start it, rather than the other way round.
+# A wizard, in that order, because that is the order the machine needs them in.
+# The first version was a menu whose first item refused to run until you had
+# used its second item, which is a puzzle rather than an installer.
 #
-# Everything it installs is already on this stick: nethos-install rsyncs the
-# running system to the disk, so an install works with no network at all.
-# Network is offered because firmware for a device this machine has and this
-# image lacks can only come from the archive.
+# No NetworkManager. There is no systemd in this initramfs -- the installer is
+# started directly by init -- so nmcli has no daemon to talk to and fails with
+# "could not create NMClient". wpa_supplicant and udhcpc are driven here
+# directly, which is fewer moving parts than a service manager anyway.
 set -eu
 
-BOLD=$(printf '\033[1m'); DIM=$(printf '\033[2m'); RST=$(printf '\033[0m')
-CYAN=$(printf '\033[1;36m'); RED=$(printf '\033[1;31m'); GRN=$(printf '\033[1;32m')
+B=$(printf '\033[1m'); D=$(printf '\033[2m'); R=$(printf '\033[0m')
+C=$(printf '\033[1;36m'); RD=$(printf '\033[1;31m'); G=$(printf '\033[1;32m')
 
-rule() { printf '%s%s%s\n' "$DIM" "----------------------------------------------------------------------" "$RST"; }
-head() { clear 2>/dev/null || true; printf '\n  %sNETHOS%s  installer\n\n' "$CYAN" "$RST"; rule; printf '\n'; }
-ask()  { printf '  %s ' "$1"; read -r REPLY || REPLY=""; }
-
-need_root() {
-    [ "$(id -u)" = 0 ] || exec sudo -- "$0" "$@"
+head() {
+    clear 2>/dev/null || true
+    printf '\n  %sNETHOS%s\n  %s%s%s\n\n' "$C" "$R" "$D" "${1:-}" "$R"
 }
-need_root "$@"
+say()  { printf '  %s\n' "$*"; }
+warn() { printf '  %s%s%s\n' "$RD" "$*" "$R"; }
+ok()   { printf '  %s%s%s\n' "$G" "$*" "$R"; }
+ask()  { printf '  %s ' "$1"; read -r REPLY || REPLY=""; }
+askpw() {
+    printf '  %s ' "$1"
+    stty -echo 2>/dev/null || true
+    read -r PW || PW=""
+    stty echo 2>/dev/null || true
+    printf '\n'
+}
+pause() { printf '\n'; ask "press enter"; }
+
+[ "$(id -u)" = 0 ] || exec sudo -- "$0" "$@"
 
 online() { ip route 2>/dev/null | grep -q '^default'; }
+ifaces()  { ls /sys/class/net 2>/dev/null | grep -v '^lo$'; }
+is_wifi() { [ -d "/sys/class/net/$1/wireless" ] || [ -e "/sys/class/net/$1/phy80211" ]; }
+has_carrier() { [ "$(cat "/sys/class/net/$1/carrier" 2>/dev/null || echo 0)" = 1 ]; }
 
-# This image carries no system to install -- it is a hundred megabytes of
-# kernel, busybox and enough firmware to get online. The system is downloaded.
-# So the network is not a convenience here, it is the install.
-require_network() {
-    online && return 0
-    head
-    printf '  %sA network is required.%s\n\n' "$RED" "$RST"
-    printf '  This installer is 97MB. It does not contain NETHOS -- it downloads\n'
-    printf '  it, so the machine ends up with a current system rather than\n'
-    printf '  whatever this stick was built with. About 700MB.\n\n'
-    printf '  %sAnything that works without firmware:%s\n\n' "$BOLD" "$RST"
-    printf '    Ethernet          plug it in; nothing else needed\n'
-    printf '    USB-C adapter     the same\n'
-    printf '    Phone over USB    plug in, enable USB tethering, no firmware\n'
-    printf '                      needed on any Android or iPhone\n\n'
-    printf '  Wifi needs firmware for your exact chip. This image carries some\n'
-    printf '  (Intel, Realtek, Broadcom, Atheros) but not all of them.\n\n'
-    ip -br addr 2>/dev/null | sed 's/^/    /'
+dhcp_on() {
+    ip link set "$1" up 2>/dev/null || true
+    # busybox udhcpc first: it is always here and needs no lease database.
+    if command -v udhcpc >/dev/null 2>&1; then
+        udhcpc -i "$1" -n -q -t 6 -T 2 >/dev/null 2>&1 && return 0
+    fi
+    command -v dhclient >/dev/null 2>&1 && dhclient -1 -timeout 15 "$1" >/dev/null 2>&1 && return 0
+    return 1
+}
+
+# ------------------------------------------------------------------ network
+wifi_connect() {   # $1 interface
+    dev=$1
+    ip link set "$dev" up 2>/dev/null || true
+    say "Scanning..."
+    scan=$(iw dev "$dev" scan 2>/dev/null | awk '
+        /^BSS /            { sig=""; ssid="" }
+        /signal:/          { sig=$2 }
+        /SSID: /           { $1=""; sub(/^ /,""); ssid=$0;
+                             if (ssid != "" && !(ssid in seen)) {
+                                 seen[ssid]=1; printf "%s\t%s\n", sig, ssid } }
+    ' | sort -rn | head -18)
+    if [ -z "$scan" ]; then
+        warn "No networks found on $dev."
+        say "If this machine needs firmware for its wifi chip, it may not be"
+        say "in this 98MB image. Ethernet or a phone over USB needs none."
+        return 1
+    fi
     printf '\n'
-    ask "press enter to re-check, or type a command to run:"
-    [ -n "$REPLY" ] && { printf '\n'; sh -c "$REPLY" || true; printf '\n'; ask "enter:"; }
+    i=0
+    printf '%s\n' "$scan" | while IFS="$(printf '\t')" read -r sig ssid; do
+        i=$((i+1)); printf '   %s%2d%s  %-32s %sdBm\n' "$B" "$i" "$R" "$ssid" "$sig"
+    done
+    printf '\n'
+    ask "network number (or blank to go back):"
+    [ -n "$REPLY" ] || return 1
+    ssid=$(printf '%s\n' "$scan" | sed -n "${REPLY}p" | cut -f2)
+    [ -n "$ssid" ] || { warn "no such number"; return 1; }
+    askpw "password for \"$ssid\" (blank if open):"
+
+    conf=/tmp/wpa.conf
+    if [ -n "$PW" ]; then
+        wpa_passphrase "$ssid" "$PW" > "$conf" 2>/dev/null \
+            || { warn "wpa_passphrase failed (password must be 8-63 characters)"; return 1; }
+    else
+        printf 'network={\n  ssid="%s"\n  key_mgmt=NONE\n}\n' "$ssid" > "$conf"
+    fi
+    pkill wpa_supplicant 2>/dev/null || true
+    say "Connecting to $ssid..."
+    wpa_supplicant -B -i "$dev" -c "$conf" >/dev/null 2>&1 \
+        || { warn "wpa_supplicant would not start"; return 1; }
+    n=0
+    while [ $n -lt 15 ]; do
+        iw dev "$dev" link 2>/dev/null | grep -q "Connected to" && break
+        n=$((n+1)); sleep 1
+    done
+    iw dev "$dev" link 2>/dev/null | grep -q "Connected to" \
+        || { warn "could not associate -- wrong password, or out of range"; return 1; }
+    say "Getting an address..."
+    dhcp_on "$dev" || { warn "associated, but no address from DHCP"; return 1; }
     online
 }
 
-# --------------------------------------------------------------- main menu
-while :; do
-    head
-    nethos-hwscan 2>/dev/null | sed 's/^/  /'
-    printf '\n'; rule; printf '\n'
-    if online; then
-        printf '   network: %sconnected%s\n\n' "$GRN" "$RST"
-    else
-        printf '   network: %snot connected%s  (required -- the system is downloaded)\n\n' "$RED" "$RST"
-    fi
-    printf '   %s1%s  Install NETHOS to a disk   %s(downloads ~700MB)%s\n' "$BOLD" "$RST" "$DIM" "$RST"
-    printf '   %s2%s  Connect to a network\n' "$BOLD" "$RST"
-    printf '   %s3%s  Fetch firmware for a device that has none\n' "$BOLD" "$RST"
-    printf '   %s4%s  Shell\n' "$BOLD" "$RST"
-    printf '   %s5%s  Reboot\n' "$BOLD" "$RST"
-    printf '\n'
-    ask "choice:"
-    case "$REPLY" in
-
-    1)  # ---------------------------------------------------------- install
-        require_network || continue
-        head
-        printf '  %sDisks%s\n\n' "$BOLD" "$RST"
-        nethos-install --list 2>/dev/null | sed 's/^/  /' || {
-            printf '  %scould not list disks%s\n' "$RED" "$RST"; ask "enter:"; continue; }
-        printf '\n'
-        ask "target disk (e.g. nvme0n1, or blank to go back):"
-        [ -n "$REPLY" ] || continue
-        target="/dev/${REPLY#/dev/}"
-        [ -b "$target" ] || { printf '\n  %s%s is not a block device%s\n' "$RED" "$target" "$RST"; ask "enter:"; continue; }
-
-        head
-        printf '  %sThis erases %s completely.%s\n\n' "$RED" "$target" "$RST"
-        printf '  Everything on it goes: partition table, filesystems, other\n'
-        printf '  operating systems, all data. There is no undo.\n\n'
-        # nethos-install asks for a typed confirmation of its own; this is the
-        # last point where going back costs nothing.
-        ask "type the disk name again to continue:"
-        [ "/dev/${REPLY#/dev/}" = "$target" ] || { printf '\n  did not match; nothing done\n'; ask "enter:"; continue; }
-
-        printf '\n'
-        if nethos-install --online --target "$target"; then
-            printf '\n  %sInstalled.%s\n' "$GRN" "$RST"
-            printf '  Remove the stick and reboot.\n\n'
-        else
-            printf '\n  %sInstall failed -- nothing was changed after the error.%s\n\n' "$RED" "$RST"
-        fi
-        ask "enter:"
-        ;;
-
-    2)  # ---------------------------------------------------------- network
-        head
-        printf '  %sNetwork%s\n\n' "$BOLD" "$RST"
-        ip -br addr 2>/dev/null | sed 's/^/  /'
-        printf '\n  Wired usually needs nothing. For wifi:\n\n'
-        printf '    %snmcli device wifi list%s\n' "$DIM" "$RST"
-        printf '    %snmcli device wifi connect "SSID" password "..."%s\n\n' "$DIM" "$RST"
-        ask "run a command (blank to go back):"
-        [ -n "$REPLY" ] && { printf '\n'; sh -c "$REPLY" || true; printf '\n'; ask "enter:"; }
-        ;;
-
-    3)  # --------------------------------------------------------- firmware
-        head
-        printf '  %sFirmware%s\n\n' "$BOLD" "$RST"
-        missing=$(nethos-hwscan --unbound 2>/dev/null || true)
-        if [ -z "$missing" ]; then
-            printf '  Every device with a driver has one attached. Nothing to do.\n\n'
-            ask "enter:"; continue
-        fi
-        pkgs=""
-        printf '%s\n' "$missing" | while IFS="$(printf '\t')" read -r mod pkg dev; do
-            printf '  %s\n    driver %s, wants %s\n' \
-                "$(printf '%s' "$dev" | sed 's/^[0-9a-f:.]* //' | cut -c1-60)" "$mod" "${pkg:-unknown}"
-        done
-        pkgs=$(printf '%s\n' "$missing" | cut -f2 | grep -v '^$' | sort -u | tr '\n' ' ')
-        printf '\n  Would install: %s\n\n' "$pkgs"
-        if ! ip route 2>/dev/null | grep -q default; then
-            printf '  %sNo network. Connect one first (option 2).%s\n\n' "$RED" "$RST"
-            ask "enter:"; continue
-        fi
-        ask "fetch these now? [y/N]:"
-        case "$REPLY" in [yY]*)
+step_network() {
+    while :; do
+        head "Step 1 of 3   Network"
+        if online; then
+            ok "Connected."
+            ip -br addr 2>/dev/null | grep -v '^lo' | sed 's/^/    /'
             printf '\n'
-            npkg fetch $pkgs || printf '\n  %ssome packages could not be fetched%s\n' "$RED" "$RST"
-            # The kernel only reads /lib/firmware, and a kernel tarball unpack
-            # can have replaced it with a real directory.
-            [ -d /usr/lib/firmware ] && [ ! -e /lib/firmware ] && ln -s ../usr/lib/firmware /lib/firmware
-            printf '\n  Reload the drivers or reboot for these to take effect.\n\n' ;;
-        esac
-        ask "enter:"
-        ;;
+            say "NETHOS is downloaded during the install, about 700MB."
+            pause
+            return 0
+        fi
 
-    4)  head; printf '  Exit the shell to come back.\n\n'; ${SHELL:-/bin/sh} || true ;;
-    5)  reboot ;;
-    *)  ;;
-    esac
+        say "NETHOS is downloaded during the install, so a connection is needed."
+        printf '\n'
+
+        # Wired first, silently: it needs no firmware and no questions.
+        for i in $(ifaces); do
+            is_wifi "$i" && continue
+            has_carrier "$i" || continue
+            say "Trying $i..."
+            if dhcp_on "$i" && online; then break; fi
+        done
+        online && continue
+
+        wifis=$(for i in $(ifaces); do is_wifi "$i" && echo "$i"; done)
+        wired=$(for i in $(ifaces); do is_wifi "$i" || echo "$i"; done)
+
+        printf '\n'
+        n=1
+        if [ -n "$wifis" ]; then
+            printf '   %s1%s  Connect to wifi\n' "$B" "$R"; n=2
+        fi
+        printf '   %s%d%s  Retry wired  %s(plug in ethernet, a USB-C adapter, or a\n' "$B" "$n" "$R" "$D"
+        printf '        phone with USB tethering on -- none need firmware)%s\n' "$R"
+        printf '   %s%d%s  Shell\n' "$B" "$((n+1))" "$R"
+        printf '   %s%d%s  Reboot\n' "$B" "$((n+2))" "$R"
+        printf '\n'
+        if [ -z "$wifis" ] && [ -z "$wired" ]; then
+            warn "No network interfaces at all -- this machine's driver may need"
+            warn "firmware that is not in this image."
+        fi
+        ask "choice:"
+        case "$REPLY" in
+            1) if [ -n "$wifis" ]; then
+                   dev=$(printf '%s\n' "$wifis" | head -1)
+                   wifi_connect "$dev" || pause
+               fi ;;
+            2) [ -n "$wifis" ] || : ;;   # retry wired: the loop does it
+            3) ${SHELL:-/bin/sh} || true ;;
+            4) reboot ;;
+            *) ;;
+        esac
+    done
+}
+
+# --------------------------------------------------------------------- disk
+step_disk() {
+    while :; do
+        head "Step 2 of 3   Disk"
+        say "NETHOS will be installed to one disk, erasing everything on it."
+        printf '\n'
+        disks=$(lsblk -dno NAME,SIZE,MODEL 2>/dev/null | grep -vE '^(loop|sr|ram)' || true)
+        [ -n "$disks" ] || { warn "No disks found."; pause; return 1; }
+        i=0
+        printf '%s\n' "$disks" | while read -r line; do
+            i=$((i+1)); printf '   %s%2d%s  /dev/%s\n' "$B" "$i" "$R" "$line"
+        done
+        printf '\n'
+        ask "disk number (or r to reboot):"
+        [ "$REPLY" = r ] && reboot
+        line=$(printf '%s\n' "$disks" | sed -n "${REPLY}p" 2>/dev/null || true)
+        [ -n "$line" ] || { warn "no such number"; pause; continue; }
+        TARGET="/dev/$(printf '%s' "$line" | awk '{print $1}')"
+        [ -b "$TARGET" ] || { warn "$TARGET is not a disk"; pause; continue; }
+        return 0
+    done
+}
+
+# ------------------------------------------------------------------ confirm
+step_confirm() {
+    head "Step 3 of 3   Confirm"
+    warn "This erases $TARGET completely."
+    printf '\n'
+    say "Everything on it goes: partitions, filesystems, other operating"
+    say "systems, all data. There is no undo."
+    printf '\n'
+    lsblk "$TARGET" 2>/dev/null | sed 's/^/    /'
+    printf '\n'
+    say "About 700MB is downloaded. On a slow connection this takes a while."
+    printf '\n'
+    ask "type ERASE to continue, anything else to go back:"
+    [ "$REPLY" = "ERASE" ]
+}
+
+# --------------------------------------------------------------------- main
+while :; do
+    head "Installer"
+    nethos-hwscan 2>/dev/null | sed 's/^/  /' || say "(hardware scan unavailable)"
+    printf '\n'
+    ask "press enter to begin, or s for a shell:"
+    [ "$REPLY" = s ] && { ${SHELL:-/bin/sh} || true; continue; }
+
+    step_network || continue
+    step_disk    || continue
+    step_confirm || continue
+
+    head "Installing"
+    say "Building NETHOS on $TARGET. Do not power off."
+    printf '\n'
+    if nethos-install --online --no-confirm --target "$TARGET"; then
+        printf '\n'; ok "NETHOS is installed."
+        say "Remove the installer and reboot."
+        printf '\n'
+        ask "reboot now? [Y/n]:"
+        case "$REPLY" in [nN]*) ;; *) reboot ;; esac
+    else
+        printf '\n'; warn "The install did not finish."
+        say "Nothing was written to the bootloader, so the disk is not"
+        say "half-installed -- it is simply not installed."
+        pause
+    fi
 done
