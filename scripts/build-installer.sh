@@ -137,6 +137,128 @@ du -sm "$R"/usr/lib/firmware "$R"/usr/lib/python3* "$R"/usr/share/nethos \
        "$R"/usr/lib/x86_64-linux-gnu "$R"/usr/bin "$R"/usr/sbin "$R"/lib/modules 2>/dev/null \
   | sort -rn | head -8 | sed "s|$R|  |"
 
+echo "--- busybox applets ---"
+# Debian ships busybox as one binary and creates almost no applet symlinks, so
+# udhcpc exists inside it and cannot be called by name. It decides which applet
+# to be from argv[0], so a symlink is all it needs. dhclient would be the
+# alternative and pulls a daemon and a lease database to get an address once.
+if [ -x "$R/bin/busybox" ] || [ -x "$R/usr/bin/busybox" ]; then
+    bb=/bin/busybox; [ -x "$R/usr/bin/busybox" ] && bb=/usr/bin/busybox
+    for applet in udhcpc; do
+        [ -e "$R/usr/sbin/$applet" ] || ln -sf "$bb" "$R/usr/sbin/$applet"
+    done
+    # udhcpc does nothing with a lease unless a script applies it, and Debian
+    # puts one here. Without it the address is negotiated and never set.
+    if [ ! -x "$R/usr/share/udhcpc/default.script" ]; then
+        mkdir -p "$R/usr/share/udhcpc"
+        cat > "$R/usr/share/udhcpc/default.script" <<'"'"'DHCP'"'"'
+#!/bin/sh
+[ -n "$1" ] || exit 1
+case "$1" in
+    deconfig) ip addr flush dev "$interface" 2>/dev/null; ip link set "$interface" up ;;
+    bound|renew)
+        ip addr add "$ip/$mask" dev "$interface" 2>/dev/null
+        ip link set "$interface" up
+        [ -n "$router" ] && ip route add default via "${router%% *}" dev "$interface" 2>/dev/null
+        : > /etc/resolv.conf
+        for s in $dns; do echo "nameserver $s" >> /etc/resolv.conf; done
+        ;;
+esac
+exit 0
+DHCP
+        chmod 755 "$R/usr/share/udhcpc/default.script"
+    fi
+    echo "    udhcpc linked to busybox"
+fi
+
+echo "--- alternatives ---"
+# awk, vi, sh and friends are symlinks Debian creates in a maintainer script,
+# and npkg runs none -- so gawk is installed and /usr/bin/awk does not exist.
+# This is the whole class of bug that CLAUDE.md warns about, and it presents
+# here as an installer whose every awk pipeline silently produces nothing.
+# Follow a symlink chain inside the root. Absolute links resolve against the
+# host from out here, and Debian points /usr/bin/awk at /etc/alternatives/awk
+# which points at /usr/bin/gawk -- two hops, either of which can dangle when no
+# maintainer script has run.
+# Does this program exist and point at something real, inside the root?
+#
+# Chasing the symlink chain does not work here: /usr/bin/busybox links to
+# /bin/busybox and /bin links back to usr/bin, so following it bounces between
+# the two until any hop limit is reached and reports a program that is present
+# and working as missing. Absolute links resolve against the host as well.
+#
+# So do not chase it. A name is satisfied if a real executable file of that
+# name exists in any of the bin directories, or if the name is a symlink whose
+# target basename is such a file. That answers the only question that
+# matters -- will the shell find something to run -- without walking a graph
+# that contains a cycle by design.
+resolve_in_root() {   # $1 path relative to $R
+    _n=$(basename "$1")
+    for _d in usr/bin usr/sbin bin sbin; do
+        [ -f "$R/$_d/$_n" ] && [ ! -L "$R/$_d/$_n" ] && [ -x "$R/$_d/$_n" ] && return 0
+    done
+    for _d in usr/bin usr/sbin bin sbin; do
+        [ -L "$R/$_d/$_n" ] || continue
+        _t=$(basename "$(readlink "$R/$_d/$_n")")
+        for _e in usr/bin usr/sbin bin sbin; do
+            [ -f "$R/$_e/$_t" ] && [ ! -L "$R/$_e/$_t" ] && [ -x "$R/$_e/$_t" ] && return 0
+        done
+    done
+    return 1
+}
+
+link_alt() {   # $1 name, then candidates
+    n=$1; shift
+    # Present and working is fine; present and dangling is worse than absent,
+    # because it looks installed.
+    if [ -e "$R/usr/bin/$n" ] && resolve_in_root "usr/bin/$n" >/dev/null; then
+        return 0
+    fi
+    [ -e "$R/usr/bin/$n" ] && { rm -f "$R/usr/bin/$n"; echo "    $n was dangling"; }
+    for c in "$@"; do
+        if [ -x "$R/usr/bin/$c" ]; then
+            ln -sf "$c" "$R/usr/bin/$n"
+            echo "    $n -> $c"
+            return 0
+        fi
+    done
+}
+
+link_alt awk gawk mawk original-awk busybox
+[ -e "$R/usr/bin/awk" ] && : || echo "    no awk candidate; have:" $(ls "$R"/usr/bin/*awk* "$R"/bin/*awk* 2>/dev/null)
+link_alt vi vim.tiny vim busybox
+link_alt pager less more
+
+echo "--- checking the installer can actually run ---"
+# Every one of these is called by nethos-installer or nethos-install, and a
+# missing one does not announce itself: "ip: not found" scrolled past inside a
+# diagnostic and the installer reported a wifi card whose firmware had loaded
+# perfectly as refusing to come up. Cheaper to assert here than to flash a
+# stick and read it off a photograph.
+missing=""
+for prog in ip iw wpa_supplicant udhcpc lsblk sgdisk mkfs.ext4 mkfs.fat \
+            lspci dmesg awk sed nl sort cut python3 tar zstd xz curl \
+            grub-install chroot rsync; do
+    found=""
+    for d in usr/bin usr/sbin bin sbin; do
+        resolve_in_root "$d/$prog" >/dev/null 2>&1 && found=1 && break
+    done
+    [ -n "$found" ] || missing="$missing $prog"
+done
+if [ -n "$missing" ]; then
+    echo "FATAL: the installer image is missing:$missing"
+    for prog in $missing; do
+        echo "  $prog:"
+        ls -l "$R"/usr/bin/"$prog" "$R"/usr/sbin/"$prog" "$R"/bin/"$prog" "$R"/sbin/"$prog" 2>/dev/null | sed "s|$R||;s|^|    |"
+    done
+    echo "  busybox is at:" $(ls "$R"/bin/busybox "$R"/usr/bin/busybox 2>/dev/null | sed "s|$R||")
+    echo "  Add the package that provides each to the installer set in"
+    echo "  pkg/npkg_bootstrap.py. An installer that cannot run its own tools"
+    echo "  fails on the machine, where the error is hardest to read."
+    exit 1
+fi
+echo "    all present"
+
 echo "--- init ---"
 # No systemd. An installer has one job and running it directly removes every
 # unit-ordering problem between power-on and a prompt.

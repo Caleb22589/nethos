@@ -168,6 +168,12 @@ SETS = {
         # set, which an installer image has no reason to pull, and xz-utils
         # was in no set at all.
         "zstd", "xz-utils",
+        # iproute2. Every "ip" call in the installer failed with "ip: not
+        # found", including the one that decides whether there is a network at
+        # all -- so a machine with working ethernet was told it had none, and a
+        # wifi card whose firmware had loaded perfectly was reported as refusing
+        # to come up.
+        "iproute2", "rfkill", "iputils-ping",
         "kmod", "pciutils", "usbutils",
         # The installer writes a bootloader to the disk it installs, so it has
         # to carry one. These are also what build-installer.sh builds the
