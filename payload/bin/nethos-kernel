@@ -372,18 +372,25 @@ cmd_build() {
         # complained, and the result was a kernel missing drivers that the
         # fragment plainly asked for -- discovered, if at all, on the machine
         # it was built for.
+        # Every lookup here is allowed to fail -- that is the whole point --
+        # so nothing in this loop may return non-zero to set -e. It did:
+        # got=$(grep ...) carries grep's status when the symbol is absent, and
+        # the build died having printed the header and not one finding.
         dropped=0
         while IFS= read -r line; do
             case "$line" in CONFIG_*=*) ;; *) continue ;; esac
             sym="${line%%=*}"; want="${line#*=}"
-            if ! grep -q "^$sym=$want\$" .config; then
-                [ "$dropped" = 0 ] && say "  these fragment options did not take:"
-                got=$(grep -E "^$sym=" .config | head -1)
-                printf '    %-32s want=%-4s got=%s\n' \
-                    "$sym" "$want" "${got#*=}${got:+}${got:-(absent)}"
-                dropped=$((dropped + 1))
+            if grep -q "^$sym=$want\$" .config 2>/dev/null; then
+                continue
             fi
-        done < "$frag"
+            if [ "$dropped" = 0 ]; then
+                say "  these fragment options did not take:"
+            fi
+            got=$(grep -E "^$sym=" .config 2>/dev/null | head -1 || true)
+            if [ -n "$got" ]; then got="${got#*=}"; else got="(absent)"; fi
+            printf '    %-30s want=%-4s got=%s\n' "$sym" "$want" "$got"
+            dropped=$((dropped + 1))
+        done < "$frag" || true
         if [ "$dropped" -gt 0 ]; then
             say "  $dropped option(s) above are NOT in this kernel."
             say "  An absent one is usually a wrong symbol name or a missing"
