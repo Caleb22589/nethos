@@ -277,6 +277,13 @@ mount -t sysfs sys /sys 2>/dev/null
 mount -t devtmpfs dev /dev 2>/dev/null
 mount -t tmpfs tmp /tmp 2>/dev/null
 mkdir -p /run /var/run && mount -t tmpfs run /run 2>/dev/null
+# Python multiprocessing creates its semaphores in /dev/shm, and npkg converts
+# packages in parallel. Without it: "parallel conversion unavailable: no such
+# file or directory, using one core" -- the install still works and takes
+# several times longer than it needs to.
+mkdir -p /dev/shm && mount -t tmpfs -o mode=1777,nosuid,nodev shm /dev/shm 2>/dev/null
+# devpts, so anything wanting a pty inside the install has one.
+mkdir -p /dev/pts && mount -t devpts -o gid=5,mode=620 devpts /dev/pts 2>/dev/null
 # Bring interfaces up and try DHCP on anything wired; the installer offers wifi.
 for i in \$(ls /sys/class/net 2>/dev/null); do
     [ "\$i" = lo ] && continue
