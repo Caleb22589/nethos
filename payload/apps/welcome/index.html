@@ -218,7 +218,11 @@
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ settings: { onboarded: true } }),
     }).catch(() => {});
-    window.close();
+    // Not window.close(): WebKit only honours that for a window script
+    // opened with window.open(), and refuses it (silently -- no error, the
+    // button just does nothing) for one nethos-view launched natively. The
+    // SDK's version asks nethosd to close it the same way the taskbar does.
+    nethos.window.close();
   });
 
   render();

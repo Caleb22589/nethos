@@ -237,6 +237,20 @@ if command -v fc-cache >/dev/null 2>&1; then
     fc-cache -f >/dev/null 2>&1 || true
 fi
 
+# System users a package's own postinst would normally create with
+# systemd-sysusers, one call for whatever is already on disk in
+# /usr/lib/sysusers.d rather than naming them individually here -- the netdev
+# and polkitd cases the image build already knows about, and, found later on
+# a real install, systemd-timesyncd: its .conf ships and describes the user,
+# nothing ever runs it, and the service fails to start with "status=217/USER"
+# (systemd's code for "the configured User= does not exist"), silently --
+# `systemctl enable --now` reports success even though the start itself then
+# fails and backs off into a restart loop. The symptom was a clock that never
+# synced and no error a user would see without checking `timedatectl`.
+if command -v systemd-sysusers >/dev/null 2>&1; then
+    systemd-sysusers >/dev/null 2>&1 || true
+fi
+
 # ca-certificates builds its trust store in a postinst too, and without it
 # every https client reports zero trusted certificates.
 if [ -d /usr/share/ca-certificates ] && [ ! -s /etc/ssl/certs/ca-certificates.crt ]; then

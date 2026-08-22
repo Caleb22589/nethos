@@ -165,6 +165,23 @@ def _window_action(action, app_name):
               file=sys.stderr)
 
 
+def _compositor_decorates():
+    """True when the compositor itself puts a real title bar on a window --
+    Wayfire with firedecor loaded (see wayfire.ini), or Hyprland. Both give
+    rounding and working close/minimise/maximise on every window, including
+    foreign ones; sway does not (no rounded-corner option, no buttons), which
+    is why Surface still draws its own frame for that case.
+
+    Same detection _install_bridge already uses for the compositor-blur CSS
+    class -- WAYFIRE_SOCKET is what Wayfire actually exports; the others
+    cover Hyprland and an overridden config path.
+    """
+    return bool(os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+                or os.environ.get("WAYFIRE_SOCKET")
+                or os.environ.get("WAYFIRE_CONFIG_FILE")
+                or "wayfire" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower())
+
+
 def apphost_socket_path():
     base = os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~/.cache/nethos")
     return os.path.join(base, "nethos-apphost.sock")
@@ -281,6 +298,13 @@ class Surface:
         self.role = spec.get("role", "window")
         self.name = spec.get("name") or self.role
         self._maximized = False
+        # Only sway needs the frame Surface draws by hand below -- Wayfire
+        # (firedecor) and Hyprland decorate the window themselves, and doing
+        # both put a firedecor bar around a window that already had its own,
+        # closing and maximising whichever one nethosd's click handlers were
+        # not wired to and leaving a square firedecor edge outside the
+        # rounded frame drawn inside it.
+        self._own_chrome = self.role == "window" and not _compositor_decorates()
 
         self.window = Gtk.ApplicationWindow(application=app)
         self.window.set_title(spec.get("title", self.name))
@@ -296,19 +320,18 @@ class Surface:
         # surfaces use the namespace set below instead.
         self.window.set_default_size(int(spec.get("width", 800)),
                                      int(spec.get("height", 600)))
-        # Undecorated everywhere, windows included.
+        # Undecorated everywhere, windows included -- this is GTK's own
+        # client-side decoration, which nothing here has ever wanted, not a
+        # request to the compositor for no decoration at all. Under Wayfire,
+        # firedecor decorates an undecorated xdg_toplevel on its own; sway
+        # does not, which is what self._own_chrome is for below.
         #
-        # Wayfire's decorator cannot round a corner -- its entire option set is
-        # font, title_height, border_size, button_order, active_color,
-        # inactive_color and ignore_views, and there is no rounded-corner
-        # plugin packaged for it. Its bar is also square, full width, and puts
-        # its buttons on the right. So NETHOS draws its own: see _titlebar().
-        #
-        # Built in GTK rather than in the page because dragging and resizing
-        # have to be real. A title bar drawn in HTML can only ask the
-        # compositor to move a window by recomputing its geometry on every
-        # pointer event, which lags behind the cursor; GtkWindowHandle hands
-        # the drag to the compositor and it tracks perfectly.
+        # When _own_chrome does build a frame, it is GTK rather than the
+        # page because dragging and resizing have to be real. A title bar
+        # drawn in HTML can only ask the compositor to move a window by
+        # recomputing its geometry on every pointer event, which lags behind
+        # the cursor; GtkWindowHandle hands the drag to the compositor and it
+        # tracks perfectly.
         self.window.set_decorated(False)
 
         # Make the window itself transparent.
@@ -418,7 +441,7 @@ class Surface:
 
         self._install_bridge()
 
-        if self.role == "window":
+        if self._own_chrome:
             frame = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
             frame.add_css_class("nethos-frame")
             frame.append(self._titlebar(spec.get("title", self.name)))
@@ -505,8 +528,11 @@ class Surface:
                           or os.environ.get("WAYFIRE_CONFIG_FILE")
                           or "wayfire" in os.environ.get(
                               "XDG_CURRENT_DESKTOP", "").lower()) else "false",
-               # 5th: only plain windows clip themselves to the frame.
-               "true" if self.role == "window" else "false")
+               # 5th: only when this process is drawing its own frame does
+               # the page need to clip its own corners to match it. Under
+               # Wayfire, firedecor's own rounding wraps the whole surface --
+               # the page has no bottom corners of its own to clip.
+               "true" if self._own_chrome else "false")
         manager.add_script(WebKit.UserScript.new(
             shim,
             WebKit.UserContentInjectedFrames.TOP_FRAME,
