@@ -333,18 +333,25 @@ step_network() {
 # --------------------------------------------------------------------- disk
 step_disk() {
     while :; do
-        head "Step 2 of 3   Disk"
-        say "NETHOS will be installed to one disk, erasing everything on it."
-        printf '\n'
-        disks=$(lsblk -dno NAME,SIZE,MODEL 2>/dev/null | grep -vE '^(loop|sr|ram)' || true)
-        [ -n "$disks" ] || { warn "No disks found."; pause; return 1; }
-        i=0
-        printf '%s\n' "$disks" | while read -r line; do
-            i=$((i+1)); printf '   %s%2d%s  /dev/%s\n' "$B" "$i" "$R" "$line"
-        done
-        printf '\n'
+        ui_head "Installer" 2
+        say "Choose the disk to install to. Everything on it is erased."
+        gap
+        lsblk -dno NAME,SIZE,MODEL 2>/dev/null | grep -vE '^(loop|sr|ram)' \
+            | nl -w3 -s'  ' > /tmp/disk.list || true
+        [ -s /tmp/disk.list ] || { warn "No disks found."; pause; return 1; }
+        # Printed from the same file the selection is read from. They were two
+        # different things: the list came from a variable and the choice was
+        # looked up in a file nothing had written, so every number was refused.
+        while IFS= read -r l; do
+            num=$(printf '%s' "$l" | awk '{print $1}')
+            dev=$(printf '%s' "$l" | awk '{print $2}')
+            sz=$(printf  '%s' "$l" | awk '{print $3}')
+            model=$(printf '%s' "$l" | awk '{$1=""; $2=""; $3=""; sub(/^ +/,""); print}')
+            itemd "$num" "/dev/$dev   $sz" "$model"
+        done < /tmp/disk.list
         ask "disk number (or r to reboot):"
         [ "$REPLY" = r ] && reboot
+        case "$REPLY" in ''|*[!0-9]*) warn "not a number"; pause; continue ;; esac
         row=$(sed -n "${REPLY}p" /tmp/disk.list 2>/dev/null || true)
         [ -n "$row" ] || { warn "no such number"; pause; continue; }
         TARGET="/dev/$(printf '%s' "$row" | awk '{print $2}')"
@@ -355,16 +362,16 @@ step_disk() {
 
 # ------------------------------------------------------------------ confirm
 step_confirm() {
-    head "Step 3 of 3   Confirm"
-    warn "This erases $TARGET completely."
-    printf '\n'
-    say "Everything on it goes: partitions, filesystems, other operating"
-    say "systems, all data. There is no undo."
-    printf '\n'
-    lsblk "$TARGET" 2>/dev/null | sed 's/^/    /'
-    printf '\n'
-    say "About 700MB is downloaded. On a slow connection this takes a while."
-    printf '\n'
+    ui_head "Installer" 3
+    warn "$TARGET will be erased completely."
+    gap
+    dim "Partitions, filesystems, other operating systems, all data."
+    dim "There is no undo."
+    gap
+    lsblk -o NAME,SIZE,FSTYPE,LABEL "$TARGET" 2>/dev/null | sed 's/^/    /'
+    gap
+    line
+    dim "About 700MB is downloaded. On a slow link this takes a while."
     ask "type ERASE to continue, anything else to go back:"
     [ "$REPLY" = "ERASE" ]
 }
@@ -382,13 +389,17 @@ while :; do
     step_disk    || continue
     step_confirm || continue
 
-    head "Installing"
-    say "Building NETHOS on $TARGET. Do not power off."
-    printf '\n'
+    ui_head "Installing" 3
+    say "Building NETHOS on $TARGET."
+    dim "Do not power the machine off."
+    gap
+    line
+    gap
     if nethos-install --online --no-confirm --target "$TARGET"; then
-        printf '\n'; ok "NETHOS is installed."
-        say "Remove the installer and reboot."
-        printf '\n'
+        gap; line; gap
+        ok "NETHOS is installed."
+        dim "Remove the installer stick, then reboot."
+        gap
         ask "reboot now? [Y/n]:"
         case "$REPLY" in [nN]*) ;; *) reboot ;; esac
     else
