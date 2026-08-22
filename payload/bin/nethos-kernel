@@ -171,7 +171,7 @@ cmd_boot_kernel() {
 # Building one
 # --------------------------------------------------------------------------
 cmd_build() {
-    local version=7.2 bore=1 march="" cfg="" jobs="" out="$PWD" cross=auto base=""
+    local version=7.2 bore=1 march="" cfg="" jobs="" out="$PWD" cross=auto base="" profile=system
     while [ $# -gt 0 ]; do
         case "$1" in
             --version)  version="${2:?}"; shift 2 ;;
@@ -183,6 +183,7 @@ cmd_build() {
             --cross)    cross=1; shift ;;
             --native)   cross=0; shift ;;
             --defconfig) base=defconfig; shift ;;
+            --profile)  profile="${2:?}"; shift 2 ;;
             *) die "unknown build option: $1" ;;
         esac
     done
@@ -344,18 +345,37 @@ cmd_build() {
     fi
     make olddefconfig >/dev/null 2>&1
 
+    # The installer is a different kernel with a different job, so it gets a
+    # different fragment and a smaller starting point. It has to boot unknown
+    # hardware, draw a text installer, reach the network and write a disk --
+    # and then never run again. defconfig carries a great deal it will never
+    # touch, so this starts from allnoconfig plus x86 essentials and adds only
+    # what the fragment names.
+    fragname=nethos.config
+    if [ "$profile" = installer ]; then
+        fragname=installer.config
+        bore=0
+        say "Profile: installer (compact; text console, network, storage, input)"
+    fi
+
     # NETHOS's fragment, wherever this was run from.
     frag=""
-    for c in /usr/share/nethos/kernel/nethos.config \
-             "$(dirname "$0")/../kernel/nethos.config" \
-             "$(dirname "$0")/../../payload/kernel/nethos.config" \
-             ./payload/kernel/nethos.config; do
+    for c in "/usr/share/nethos/kernel/$fragname" \
+             "$(dirname "$0")/../kernel/$fragname" \
+             "$(dirname "$0")/../../payload/kernel/$fragname" \
+             ./payload/kernel/$fragname; do
         [ -r "$c" ] && { frag="$c"; break; }
     done
     if [ -n "$frag" ]; then
         say "  applying $frag"
         while IFS= read -r line; do
             case "$line" in
+                # "# CONFIG_X is not set" is how a config file spells off, and
+                # a fragment has to be able to say it: the installer profile is
+                # mostly about what defconfig enables that it does not want.
+                "# CONFIG_"*" is not set")
+                    sym="${line#\# }"; sym="${sym%% is not set}"
+                    scripts/config --disable "$sym" ;;
                 CONFIG_*=y) scripts/config --enable "${line%%=*}" ;;
                 CONFIG_*=m) scripts/config --module "${line%%=*}" ;;
                 CONFIG_*=*) scripts/config --set-val "${line%%=*}" "${line#*=}" ;;
@@ -378,11 +398,19 @@ cmd_build() {
         # the build died having printed the header and not one finding.
         dropped=0
         while IFS= read -r line; do
-            case "$line" in CONFIG_*=*) ;; *) continue ;; esac
-            sym="${line%%=*}"; want="${line#*=}"
-            if grep -q "^$sym=$want\$" .config 2>/dev/null; then
-                continue
-            fi
+            case "$line" in
+                "# CONFIG_"*" is not set")
+                    sym="${line#\# }"; sym="${sym%% is not set}"
+                    # Off is off whether the line is absent or explicit.
+                    grep -q "^$sym=" .config 2>/dev/null || continue
+                    want=n ;;
+                CONFIG_*=*)
+                    sym="${line%%=*}"; want="${line#*=}"
+                    if grep -q "^$sym=$want\$" .config 2>/dev/null; then
+                        continue
+                    fi ;;
+                *) continue ;;
+            esac
             if [ "$dropped" = 0 ]; then
                 say "  these fragment options did not take:"
             fi
