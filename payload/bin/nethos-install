@@ -449,6 +449,24 @@ rm -f /etc/sudoers.d/g_wheel 2>/dev/null || true
 rm -rf /root/{.automated_script.sh,.zlogin} /etc/systemd/logind.conf.d 2>/dev/null || true
 rm -f /usr/local/bin/{Installation_guide,choose-mirror,livecd-sound} 2>/dev/null || true
 
+# systemd-firstboot must never ask anything.
+#
+# It runs when a system looks unconfigured -- no machine-id, no localtime, no
+# locale -- and interrogates whoever is at the console about their timezone
+# and keyboard layout in a text menu, before the desktop starts. On a system
+# whose entire point is a graphical shell that is the worst possible first
+# impression, and it happens on every fresh install.
+#
+# So configure what it looks for, and mask it. The timezone is UTC to begin
+# with and the desktop offers to change it, which is where that question
+# belongs.
+systemd-machine-id-setup >/dev/null 2>&1 || \
+    (: > /etc/machine-id && systemd-machine-id-setup >/dev/null 2>&1) || true
+[ -e /etc/localtime ] || ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+[ -s /etc/locale.conf ] || echo "LANG=C.UTF-8" > /etc/locale.conf
+[ -s /etc/vconsole.conf ] || echo "KEYMAP=us" > /etc/vconsole.conf
+systemctl mask systemd-firstboot.service >/dev/null 2>&1 || true
+
 echo "$HOSTNAME_NEW" > /etc/hostname
 cat > /etc/hosts <<HOSTS
 127.0.0.1   localhost

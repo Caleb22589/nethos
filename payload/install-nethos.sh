@@ -185,6 +185,36 @@ if [ -f /etc/nethos/slots.conf ] && grep -q '^layout=ab' /etc/nethos/slots.conf 
     command -v grub-mkconfig >/dev/null 2>&1 && grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1 || true
 fi
 
+# openssh-server ships no sshd_config; its postinst writes one.
+#
+# npkg runs no maintainer scripts, so sshd starts, says
+# "/etc/ssh/sshd_config: No such file or directory", and systemd restarts it
+# five times before giving up -- on a machine where the only way in was ssh.
+# Host keys come from the same postinst and are missing for the same reason.
+if [ -x /usr/sbin/sshd ] && [ ! -f /etc/ssh/sshd_config ]; then
+    install -d -m 0755 /etc/ssh /etc/ssh/sshd_config.d
+    cat > /etc/ssh/sshd_config <<'SSHD'
+# Debian's default, minus what its postinst would have templated.
+Include /etc/ssh/sshd_config.d/*.conf
+PermitRootLogin prohibit-password
+# Password login is on: NETHOS ships a known default account, so change the
+# password before putting a machine on a network anyone else can reach.
+PasswordAuthentication yes
+KbdInteractiveAuthentication no
+UsePAM yes
+X11Forwarding no
+PrintMotd no
+AcceptEnv LANG LC_*
+Subsystem sftp /usr/lib/openssh/sftp-server
+SSHD
+    chmod 0644 /etc/ssh/sshd_config
+    log "wrote /etc/ssh/sshd_config (openssh-server ships none)"
+fi
+# Host keys, likewise created by a postinst that never runs.
+if [ -x /usr/bin/ssh-keygen ] && [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
+    ssh-keygen -A >/dev/null 2>&1 && log "generated ssh host keys"
+fi
+
 # The kernel only ever looks in /lib/firmware.
 #
 # Debian ships firmware to /usr/lib/firmware and gets away with it because
