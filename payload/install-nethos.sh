@@ -194,7 +194,7 @@ fi
 # laptop is the difference between a download and the better part of an hour.
 # One place. Overridable at install time so a mirror or a local repository can
 # be used without editing the installed system afterwards.
-NETHOS_REPO_URL="${NETHOS_REPO_URL:-https://github.com/Caleb22589/nethos/releases/download/repo-x86_64}"
+NETHOS_REPO_URL="${NETHOS_REPO_URL:-https://moddl.app}"
 install -d -m 0755 /etc/npkg
 if [ ! -s /etc/npkg/repos.json ]; then
     cat > /etc/npkg/repos.json <<REPOS

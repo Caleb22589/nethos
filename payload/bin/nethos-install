@@ -320,7 +320,7 @@ if [ "${ONLINE:-0}" = 1 ]; then
     # Falling back to the Debian path matters: it is the only way to install
     # if the repository is unreachable or does not have this architecture, and
     # it is slow rather than broken.
-    REPO_URL="${NETHOS_REPO_URL:-https://github.com/Caleb22589/nethos/releases/download/repo-x86_64}"
+    REPO_URL="${NETHOS_REPO_URL:-https://moddl.app}"
     say "Building the system on $TARGET"
     if curl -fsL --retry 2 -o /tmp/repo-index.json "$REPO_URL/index.json" 2>/dev/null; then
         say "  from the NETHOS repository (prebuilt; no conversion on this machine)"
