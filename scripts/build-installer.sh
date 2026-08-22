@@ -1,194 +1,174 @@
 #!/bin/bash
-# Build the NETHOS installer image.
+# Build the lightweight NETHOS installer: a kernel and an initramfs, nothing else.
 #
-#     scripts/build-installer.sh              online  (~150MB, downloads)
-#     scripts/build-installer.sh --offline    offline (~800MB, self-contained)
+#   scripts/build-installer.sh
 #
-# Two images, because two situations:
+# The system image is ten gigabytes and takes minutes to flash. Nobody should
+# wait for that to install an operating system that then downloads its packages
+# anyway. This produces something around a hundred megabytes that flashes in
+# seconds, boots on anything with UEFI, and builds the real system onto the
+# disk from the archive.
 #
-#   online    a kernel and an initramfs, nothing else. Boots, fetches packages
-#             from Debian, installs. Small to download, needs a network.
+# Everything lives in the initramfs. No root partition, no squashfs to mount,
+# no root= to get wrong -- GRUB loads two files and the kernel has its whole
+# world in RAM. On unknown hardware that is several fewer ways to fail.
 #
-#   offline   the same installer, plus every package it will need on a second
-#             partition. For a machine with no network interface, or no driver
-#             for the one it has -- which is exactly the machine that cannot
-#             download a driver.
-#
-# Both run the same installer and the same npkg_bootstrap the image build uses,
-# so there is one code path and it cannot drift.
-#
-# Options:
-#   --offline        bake the packages in
-#   --arch amd64     target architecture (default amd64)
-#   --out FILE       where to write the image
+# What it deliberately does not carry: ath11k firmware (63MB on its own) and
+# the full mediatek set (45MB). They are a download away once the machine is
+# online, and carrying them would double the image.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD="$ROOT/build"
-ARCH="amd64"
-OFFLINE=0
-OUT=""
-
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --offline) OFFLINE=1; shift ;;
-        --arch) ARCH="${2:?}"; shift 2 ;;
-        --out) OUT="${2:?}"; shift 2 ;;
-        -h|--help) sed -n '2,26p' "$0" | sed 's/^# \?//'; exit 0 ;;
-        *) echo "unknown option: $1" >&2; exit 2 ;;
-    esac
-done
-
-[ -n "$OUT" ] || OUT="$BUILD/nethos-installer$([ "$OFFLINE" -eq 1 ] && echo -offline).img"
-
-say() { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
+say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+BUILD="$HERE/build"
+OUT="$BUILD/nethos-installer.img"
+KERNEL_TARBALL="${NETHOS_INSTALLER_KERNEL:-$HOME/builds/installer/linux-7.2.0-x86_64.tar.gz}"
+SYSTEM_KERNEL="${NETHOS_SYSTEM_KERNEL:-$HOME/builds/linux-7.2.0-x86_64.tar.gz}"
+
+[ -f "$KERNEL_TARBALL" ] || die "no installer kernel at $KERNEL_TARBALL
+  Build one:  nethos-kernel build --cross --profile installer --out ~/builds/installer"
+command -v docker >/dev/null || die "docker (colima) is needed to assemble a Linux root"
+
 mkdir -p "$BUILD"
-LOG="$BUILD/build-installer.log"
-exec > >(tee "$LOG") 2>&1
+say "Installer kernel: $(basename "$KERNEL_TARBALL") ($(du -h "$KERNEL_TARBALL" | cut -f1))"
 
-command -v qemu-img >/dev/null || die "qemu-img not found"
+# The whole assembly happens in one Linux container: npkg needs a Linux host to
+# unpack into, mksquashfs and cpio are Linux tools, and grub-install writes an
+# EFI binary. macOS can do none of it.
+docker run --rm --privileged \
+    -v "$HERE":/nethos:ro \
+    -v "$BUILD":/out \
+    -v "$KERNEL_TARBALL":/kernel.tgz:ro \
+    -v "$SYSTEM_KERNEL":/system-kernel.tgz:ro \
+    -w /work debian:trixie bash -euo pipefail -c '
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq >/dev/null 2>&1
+apt-get install -y -qq python3 cpio zstd dosfstools mtools grub-efi-amd64-bin \
+    grub-common gdisk curl xz-utils >/dev/null 2>&1
 
-# --------------------------------------------------------------------------
-# The installer root is built with npkg, the same as everything else. It is the
-# "installer" set: busybox, python3-minimal, partitioning tools, curl. No
-# systemd -- the installer is PID 1 and reboots when it is done.
-say "Building the installer root ($ARCH)"
+R=/work/root
+mkdir -p "$R"
 
-STAGE="$(mktemp -d "${TMPDIR:-/tmp}/nethos-inst.XXXXXX")"
-trap 'rm -rf "$STAGE"' EXIT
-IROOT="$STAGE/root"
-mkdir -p "$IROOT"
+echo "--- bootstrapping the installer root ---"
+# Only what an installer uses: partition a disk, reach a network, run npkg.
+# No desktop, no browser, no X, no sound.
+python3 -u /nethos/pkg/npkg_bootstrap.py "$R" \
+    --set base --set installer --set net --arch amd64 --user root --work /work/cache --keep
 
-python3 -u "$ROOT/pkg/npkg_bootstrap.py" "$IROOT" \
-    --set installer --set kernel \
-    --arch "$ARCH" --user root --work "$BUILD/installer-work" --keep \
-    || die "could not build the installer root"
+echo "--- the kernel it boots with ---"
+tar xzf /kernel.tgz -C "$R"
+KVER=$(ls -1 "$R/lib/modules" 2>/dev/null | sort -V | tail -1)
+[ -n "$KVER" ] || { echo "FATAL: no kernel in the tarball"; exit 1; }
+echo "    $KVER"
+cp "$R/boot/vmlinuz-$KVER" /out/installer-vmlinuz
+rm -f "$R/boot/vmlinux-$KVER"
 
-# The installer itself, and npkg, ride along.
-mkdir -p "$IROOT/nethos"
-cp -R "$ROOT/pkg" "$IROOT/nethos/pkg"
-cp -R "$ROOT/payload" "$IROOT/nethos/payload"
-cp "$ROOT/payload/installer/installer.py" "$IROOT/nethos/installer.py"
+echo "--- the kernel it installs ---"
+# Carried, not downloaded: a machine being installed has no kernel yet and no
+# way to build one, and 43MB is worth not depending on the network twice.
+mkdir -p "$R/usr/share/nethos"
+cp /system-kernel.tgz "$R/usr/share/nethos/system-kernel.tgz"
 
-# A console font, so the framebuffer has something to draw text with. Without
-# one the installer still runs and prints to the console instead.
-for f in "$IROOT"/usr/share/consolefonts/*.psf* \
-         "$IROOT"/usr/share/kbd/consolefonts/*.psf*; do
-    [ -f "$f" ] && cp "$f" "$IROOT/nethos/font.psf" && break
-done 2>/dev/null || true
+echo "--- npkg and the payload, so the target can be built and dressed ---"
+mkdir -p "$R/usr/share/nethos/pkg"
+cp -R /nethos/pkg/. "$R/usr/share/nethos/pkg/"
+cp -R /nethos/payload "$R/usr/share/nethos/payload"
+for t in /nethos/payload/bin/*; do
+    [ -f "$t" ] && install -m755 "$t" "$R/usr/bin/$(basename "$t")"
+done
 
-# --------------------------------------------------------------------------
-# /init. PID 1: mount the kernel filesystems, find the packages if this is an
-# offline image, and hand over to the installer.
-cat > "$IROOT/init" <<'INIT'
+echo "--- trimming ---"
+before=$(du -sm "$R" | cut -f1)
+rm -rf "$R"/usr/share/doc "$R"/usr/share/man "$R"/usr/share/info \
+       "$R"/usr/share/locale "$R"/var/cache/* "$R"/usr/share/zoneinfo/right \
+       "$R"/usr/lib/python3*/test "$R"/usr/lib/python3*/lib2to3 2>/dev/null || true
+# Firmware is the single largest thing an installer carries, and most of it is
+# for hardware that cannot be installing anything. Keep what a laptop needs to
+# get online; the rest is a download away once it has.
+FW="$R/usr/lib/firmware"
+if [ -d "$FW" ]; then
+    ( cd "$FW"
+      for d in *; do
+        case "$d" in
+          iwlwifi*|rtw88|rtw89|brcm|ath9k*|ath10k|mediatek|rtl_nic|rtlwifi|intel) ;;
+          *) rm -rf "$d" ;;
+        esac
+      done
+      # ath11k and the bulk of mediatek are enormous; drop the largest files.
+      find . -size +8M -delete 2>/dev/null || true
+    )
+fi
+# The kernel only ever searches /lib/firmware.
+[ -d "$R/usr/lib/firmware" ] && [ ! -e "$R/lib/firmware" ] && ln -s ../usr/lib/firmware "$R/lib/firmware"
+echo "    ${before}MB -> $(du -sm "$R" | cut -f1)MB"
+
+echo "--- init ---"
+# No systemd. An installer has one job and running it directly removes every
+# unit-ordering problem between power-on and a prompt.
+cat > "$R/init" <<INIT
 #!/bin/sh
-# PID 1 in the initramfs. Nothing else is running.
-export PATH=/usr/bin:/usr/sbin:/bin:/sbin
-
-mount -t proc     proc     /proc   2>/dev/null
-mount -t sysfs    sysfs    /sys    2>/dev/null
-mount -t devtmpfs devtmpfs /dev    2>/dev/null
-mount -t tmpfs    tmpfs    /tmp    2>/dev/null
-mkdir -p /dev/pts && mount -t devpts devpts /dev/pts 2>/dev/null
-
-# Drivers for disks, network and display. The installer is useless without the
-# first two and ugly without the third.
-for m in ahci nvme sd_mod usb_storage xhci_pci e1000e r8169 igb virtio_pci \
-         virtio_blk virtio_net i915 amdgpu radeon nouveau simpledrm; do
-    modprobe "$m" 2>/dev/null
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sys /sys 2>/dev/null
+mount -t devtmpfs dev /dev 2>/dev/null
+mount -t tmpfs tmp /tmp 2>/dev/null
+mkdir -p /run /var/run && mount -t tmpfs run /run 2>/dev/null
+# Bring interfaces up and try DHCP on anything wired; the installer offers wifi.
+for i in \$(ls /sys/class/net 2>/dev/null); do
+    [ "\$i" = lo ] && continue
+    ip link set "\$i" up 2>/dev/null
 done
-sleep 2
-
-# Anything passed on the kernel command line, for unattended installs.
-for arg in $(cat /proc/cmdline); do
-    case "$arg" in
-        nethos.disk=*) export NETHOS_DISK="${arg#nethos.disk=}" ;;
-        nethos.user=*) export NETHOS_USER="${arg#nethos.user=}" ;;
-        nethos.pass=*) export NETHOS_PASS="${arg#nethos.pass=}" ;;
-    esac
-done
-
-# Offline images carry their packages on a partition labelled NETHOSPKG. Found
-# by label rather than device name, because which disk the installer lands on
-# is not knowable in advance.
-PKG=$(blkid -L NETHOSPKG 2>/dev/null || true)
-if [ -n "$PKG" ]; then
-    mkdir -p /nethos/packages
-    if mount -o ro "$PKG" /nethos/packages 2>/dev/null; then
-        export NETHOS_OFFLINE=/nethos/packages
-    fi
-fi
-
-# A shell on tty2, so a failed install can be looked at rather than guessed at.
-setsid sh -c 'exec sh </dev/tty2 >/dev/tty2 2>&1' &
-
-exec python3 /nethos/installer.py
+ip link set lo up 2>/dev/null
+(udevd --daemon 2>/dev/null || /lib/systemd/systemd-udevd --daemon 2>/dev/null) || true
+udevadm trigger 2>/dev/null || true
+udevadm settle 2>/dev/null || true
+(dhclient -nw 2>/dev/null || udhcpc -b 2>/dev/null) || true
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export NETHOS_INSTALLER_MEDIA=1
+exec setsid sh -c "exec nethos-installer </dev/tty1 >/dev/tty1 2>&1" || exec sh
 INIT
-chmod +x "$IROOT/init"
+chmod 755 "$R/init"
 
-# --------------------------------------------------------------------------
-say "Packing the initramfs"
-KVER=$(ls "$IROOT/usr/lib/modules" 2>/dev/null | head -1)
-[ -n "$KVER" ] || die "no kernel in the installer root"
+echo "--- initramfs ---"
+( cd "$R" && find . -print0 | cpio --null -o -H newc --quiet ) \
+    | zstd -19 -T0 -q -o /out/installer-initrd.zst
+ls -l /out/installer-initrd.zst | awk "{print \"    initrd: \" \$5 \" bytes\"}"
 
-# The kernel goes beside the initramfs, not inside it.
-cp "$IROOT/boot/vmlinuz-$KVER" "$STAGE/vmlinuz" 2>/dev/null \
-    || cp "$IROOT"/boot/vmlinuz* "$STAGE/vmlinuz"
+echo "--- EFI image ---"
+KB=$(( ( $(stat -c%s /out/installer-vmlinuz) + $(stat -c%s /out/installer-initrd.zst) ) / 1024 + 24576 ))
+rm -f /out/nethos-installer.img
+truncate -s "${KB}K" /out/nethos-installer.img
+mkfs.vfat -F 32 -n NETHOSINST /out/nethos-installer.img >/dev/null
+mmd -i /out/nethos-installer.img ::/EFI ::/EFI/BOOT ::/boot 2>/dev/null || true
+grub-mkimage -O x86_64-efi -o /tmp/bootx64.efi -p /boot/grub \
+    part_gpt part_msdos fat ext2 normal linux echo all_video search \
+    search_label search_fs_uuid configfile loadenv test keystatus
+mmd -i /out/nethos-installer.img ::/boot/grub 2>/dev/null || true
+cat > /tmp/grub.cfg <<GRUBCFG
+set timeout=3
+set default=0
+menuentry "Install NETHOS" {
+    linux /boot/vmlinuz console=tty0 quiet loglevel=3
+    initrd /boot/initrd.zst
+}
+menuentry "Install NETHOS (verbose)" {
+    linux /boot/vmlinuz console=tty0
+    initrd /boot/initrd.zst
+}
+GRUBCFG
+mcopy -i /out/nethos-installer.img /tmp/bootx64.efi ::/EFI/BOOT/BOOTX64.EFI
+mcopy -i /out/nethos-installer.img /tmp/grub.cfg ::/boot/grub/grub.cfg
+mcopy -i /out/nethos-installer.img /out/installer-vmlinuz ::/boot/vmlinuz
+mcopy -i /out/nethos-installer.img /out/installer-initrd.zst ::/boot/initrd.zst
+rm -f /out/installer-vmlinuz /out/installer-initrd.zst
+echo "--- done ---"
+'
 
-( cd "$IROOT" && find . -print0 \
-    | cpio --null -o --format=newc 2>/dev/null ) \
-    | gzip -9 > "$STAGE/initrd.img"
-
-INITRD_MB=$(( $(stat -c%s "$STAGE/initrd.img" 2>/dev/null \
-             || stat -f%z "$STAGE/initrd.img") / 1024 / 1024 ))
-say "initramfs: ${INITRD_MB}MB"
-
-# --------------------------------------------------------------------------
-# Offline: convert every package the target system needs, once, and put them on
-# their own partition. The installer then never touches the network.
-PKG_MB=0
-if [ "$OFFLINE" -eq 1 ]; then
-    say "Fetching and converting packages for the offline image"
-    PKGDIR="$STAGE/packages"
-    mkdir -p "$PKGDIR"
-    python3 -u "$ROOT/pkg/npkg_bootstrap.py" "$STAGE/throwaway" \
-        --set base --set system --set kernel --set desktop --set firmware \
-        --arch "$ARCH" --user neth --work "$PKGDIR-work" --keep --packages-only \
-        2>/dev/null || true
-    # --packages-only is not implemented yet; until it is, reuse the cache the
-    # normal bootstrap leaves behind.
-    cp "$PKGDIR-work"/packages/*.npk "$PKGDIR/" 2>/dev/null || \
-        die "no converted packages found; run a normal build first so the
-cache at $PKGDIR-work is populated"
-    PKG_MB=$(( $(du -sm "$PKGDIR" | cut -f1) ))
-    say "packages: ${PKG_MB}MB"
-fi
-
-# --------------------------------------------------------------------------
-say "Assembling $OUT"
-ESP_MB=$(( INITRD_MB + 40 ))
-TOTAL_MB=$(( ESP_MB + PKG_MB + 40 ))
-
-rm -f "$OUT"
-truncate -s "${TOTAL_MB}M" "$OUT"
-parted -s "$OUT" mklabel gpt
-parted -s "$OUT" mkpart ESP fat32 1MiB "${ESP_MB}MiB"
-parted -s "$OUT" set 1 esp on
-if [ "$OFFLINE" -eq 1 ]; then
-    parted -s "$OUT" mkpart NETHOSPKG ext4 "${ESP_MB}MiB" 100%
-fi
-
-say "Built: $OUT (${TOTAL_MB}MB)"
-cat <<EOF
-
-  NOT YET FINISHED: the partitions exist but are empty. Populating them needs
-  loop devices and root, which means this last step has to run on Linux:
-
-      sudo scripts/build-installer.sh $([ "$OFFLINE" -eq 1 ] && echo --offline)
-
-  Everything before this point -- the installer root, the initramfs, the
-  package set -- is built and is in $STAGE.
-
-EOF
+[ -f "$OUT" ] || die "no image produced"
+say "Built: $OUT  ($(du -h "$OUT" | cut -f1))"
+echo
+echo "Flash it (the whole stick is overwritten):"
+echo "  diskutil list external physical"
+echo "  diskutil unmountDisk /dev/diskN"
+echo "  sudo dd if=$OUT of=/dev/rdiskN bs=4m status=progress"

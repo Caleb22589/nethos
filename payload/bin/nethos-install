@@ -9,6 +9,9 @@
 #   --hostname NAME    system hostname (default nethos)
 #   --no-confirm       skip the typed confirmation (for unattended installs)
 #   --layout ab|single how the disk is carved up (default: ab on >=64G)
+#   --online           build the system from the archive instead of copying
+#                      this one -- what the lightweight installer image uses,
+#                      because there is no full system on it to copy
 #   --slot-size SIZE   size of each system slot, e.g. 24G
 #
 # The default layout reserves the second slot now, empty. It cannot be added
@@ -35,6 +38,7 @@ while [ $# -gt 0 ]; do
         --target|-t) TARGET="${2:?--target needs a device}"; shift 2 ;;
         --hostname) HOSTNAME_NEW="${2:?}"; shift 2 ;;
         --dry-run|-n) DRY_RUN=1; shift ;;
+        --online) ONLINE=1; shift; continue ;;
         --no-confirm) CONFIRM=0; shift ;;
         --layout) LAYOUT="${2:?--layout needs ab or single}"; shift 2 ;;
         --slot-size) SLOT_SIZE="${2:?--slot-size needs a size}"; shift 2 ;;
