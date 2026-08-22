@@ -1024,14 +1024,20 @@ class WayfireIPC:
             # Layer surfaces and Wayfire's own bits are not windows.
             if v.get("role") != "toplevel" or not v.get("mapped", True):
                 continue
+            app_id = v.get("app-id") or v.get("app_id") or ""
             out.append({
                 "id": str(v.get("id")),
                 "title": v.get("title") or "",
-                "app_id": v.get("app-id") or v.get("app_id") or "",
+                "app_id": app_id,
                 "focused": bool(v.get("activated")),
                 "workspace": "1",
                 "floating": True,
-                "nethos_app": "",
+                # Was hardcoded empty. nethos.window.self()/close()/
+                # fullscreen(), the App Store's own relaunch-focuses-instead
+                # guard, and the maximize/minimize titlebar buttons all
+                # resolve "which window is mine" through this field -- all
+                # silently inert under Wayfire until it is real.
+                "nethos_app": nethos_app_for(app_id),
             })
         cls._cache = {"at": now, "views": out}
         return out
@@ -1137,6 +1143,14 @@ class Events:
 
 
 EVENTS = Events()
+
+# wid (str) -> time.time() until which snapper() should ignore that window.
+# window_action()'s maximize/restore set this before moving a window
+# themselves, so the drag-settle detector in snapper() -- which cannot tell
+# "the user just let go of an edge" from "nethosd just resized this" -- does
+# not treat our own command as a fresh drag to react to. See snapper()'s own
+# comment on the maximize/restore race this fixes.
+SNAP_SUPPRESS = {}
 _app_cache = {"at": 0.0, "apps": []}
 
 
@@ -1383,6 +1397,34 @@ def output_size(default=(1440, 900)):
         if rect.get("width") and rect.get("height"):
             return rect["width"], rect["height"]
     return default
+
+
+def workspace_rect(default=(0, 0, 1440, 900)):
+    """The usable area of the focused workspace, in output-absolute pixels --
+    already excluding the panel's exclusive zone and sway's gaps.
+
+    This is not output_size(). The output is the whole physical screen;
+    `move absolute position`, which is what snapping and maximize use to
+    place a floating window precisely, places it in that same absolute
+    space, so a target computed from the output size lands under the panel.
+    Verified on real hardware: output was (0,0,1366,768), the workspace was
+    (6,96,1354,666) -- the gap between the two is exactly the room the panel
+    and sway's `gaps`/`floating_modifier` config reserve, and it is 96px on
+    the top edge alone, nowhere near the snapper's old 24px EDGE threshold.
+    That mismatch is what let a window be dragged to y=59 -- already
+    overlapping the panel -- before anything recognised it as "at the top".
+    """
+    if backend() == "sway":
+        spaces = SWAY.request(SWAY.GET_WORKSPACES)
+        if isinstance(spaces, list):
+            focused = next((w for w in spaces if w.get("focused")), None) \
+                or (spaces[0] if spaces else None)
+            if focused and focused.get("rect"):
+                r = focused["rect"]
+                if r.get("width") and r.get("height"):
+                    return r["x"], r["y"], r["width"], r["height"]
+    ow, oh = output_size(default=(default[2], default[3]))
+    return default[0], default[1], ow, oh
 
 
 def nethos_app_for(app_id):
@@ -1828,6 +1870,9 @@ def window_action(action, wid):
         if action in ("fullscreen", "maximize"):
             return WayfireIPC.call("window-rules/configure-view", id=view,
                                    maximized=True) is not None
+        if action == "restore":
+            return WayfireIPC.call("window-rules/configure-view", id=view,
+                                   maximized=False) is not None
         if action == "minimize":
             return WayfireIPC.call("window-rules/minimize-view", id=view,
                                    state=True) is not None
@@ -1855,8 +1900,63 @@ def window_action(action, wid):
         sel = "[con_id=%d]" % int(wid)
     except (TypeError, ValueError):
         return False
+
+    # sway has no maximized/minimized window state of its own -- there is no
+    # `swaymsg [con_id] maximize`, which is why the titlebar's own buttons
+    # used to call GTK's window.maximize()/.minimize() directly: a plain
+    # xdg_toplevel request wlroots accepts but a floating-window compositor
+    # with no such concept has nothing to do in response to. Built by hand
+    # here instead, the same way snapping is.
+    if action == "maximize":
+        wx, wy, ww, wh = workspace_rect()
+        # Suppressed before sending, not after: snapper() polls every 0.2s
+        # on its own thread, so setting this after the command risked the
+        # exact race it exists to prevent.
+        SNAP_SUPPRESS[str(wid)] = time.time() + 1.0
+        # resize before move: the other order lets sway's resize shift the
+        # position again after the move already placed it -- measured
+        # landing 7-227px off target, worse the more the old and new size
+        # differ on that axis.
+        SWAY.command("%s floating enable, resize set %d px %d px, "
+                     "move absolute position %d %d" % (sel, ww, wh, wx, wy))
+        return True
+    if action == "restore":
+        # "Un-maximize" back to the app's own manifest size, centred --
+        # there is no prior geometry to return to. nethosd does not track
+        # per-window geometry outside of what sway reports live, and sway
+        # itself has nothing resembling a saved pre-maximize rect for a
+        # floating window either.
+        win = next((w for w in list_windows() if w["id"] == str(wid)), None)
+        app = find_app(win["nethos_app"]) if win and win.get("nethos_app") else None
+        w, h = (app.get("width", 900), app.get("height", 650)) if app else (900, 650)
+        wx, wy, ww, wh = workspace_rect()
+        x, y = wx + max(0, (ww - w) // 2), wy + max(0, (wh - h) // 2)
+        # A maximized window fills the workspace and so touches all four
+        # edges at once -- snapper() would otherwise read the settle right
+        # after this restore as a fresh drag to every edge simultaneously
+        # and "snap" it straight back to maximized. Measured: restore ran,
+        # then the window was back to full-workspace size within a second.
+        SNAP_SUPPRESS[str(wid)] = time.time() + 1.0
+        SWAY.command("%s resize set %d px %d px, move absolute position %d %d"
+                     % (sel, w, h, x, y))
+        return True
+    if action == "minimize":
+        # sway's closest equivalent: park it in the scratchpad, which drops
+        # it from view without closing it. "focus" below knows to look there.
+        SWAY.command("%s move scratchpad" % sel)
+        return True
+    if action == "focus":
+        # A minimized window lives in the scratchpad workspace, where plain
+        # `focus` does nothing -- sway requires `scratchpad show` to bring
+        # one back on screen at all.
+        win = next((w for w in list_windows() if w["id"] == str(wid)), None)
+        if win and win.get("workspace") == "__i3_scratch":
+            SWAY.command("%s scratchpad show" % sel)
+        else:
+            SWAY.command("%s focus" % sel)
+        return True
+
     commands = {
-        "focus": "%s focus",
         "close": "%s kill",
         "fullscreen": "%s fullscreen toggle",
         "popout": "%s floating disable, sticky disable, border pixel 2, focus",
@@ -2840,6 +2940,17 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "/api/window":
             action, wid = data.get("action"), str(data.get("id", ""))
+            # nethos-view knows which NETHOS app it is hosting, not the
+            # con_id sway gave that window -- the titlebar buttons call this
+            # by app id instead. Safe because a window is only ever launched
+            # through launch_web_app's own already-open-focuses-instead
+            # guard (see /api/launch), so "the app's window" is unambiguous.
+            if not wid and data.get("app"):
+                match = next((w for w in list_windows()
+                             if w.get("nethos_app") == data["app"]), None)
+                if not match:
+                    return self.send_json({"error": "no such window"}, 404)
+                wid = match["id"]
             if not wid:
                 return self.send_json({"error": "bad id"}, 400)
             if not window_action(action, wid):
@@ -2923,6 +3034,23 @@ def main():
     # the user has just moved to an edge themselves. A snap that fires when you
     # did not ask for it is far more annoying than one that occasionally does
     # not fire.
+    def snap_zone(wx, wy, ww, wh, left, top, right, bottom):
+        """Pixel target for a snap zone, in output-absolute coordinates.
+
+        Percent-based `resize set Nppt, move position` was tried first and
+        dropped: workspace-relative math is fine for filling the whole
+        workspace but not verified for every corner/half combination, and
+        `move absolute position` (which the panel's own placement already
+        relies on -- see sway/config) takes literal output pixels, so
+        computing them here once from the real workspace rect removes any
+        doubt either way.
+        """
+        x = wx if left else (wx + ww // 2 if right else wx)
+        y = wy if top else (wy + wh // 2 if bottom else wy)
+        w = ww if (left and right) or not (left or right) else ww - ww // 2 if left else ww // 2
+        h = wh if (top and bottom) or not (top or bottom) else wh - wh // 2 if top else wh // 2
+        return x, y, w, h
+
     def snapper():
         EDGE = 24            # how close to an edge counts as intent
         last_key = {}        # wid -> geometry seen on the previous tick
@@ -2937,10 +3065,8 @@ def main():
                     time.sleep(2)
                     continue
                 tree = SWAY.request(SWAY.GET_TREE) or {}
-                out = (SWAY.request(SWAY.GET_OUTPUTS) or [{}])[0]
-                ow = out.get("rect", {}).get("width", 0)
-                oh = out.get("rect", {}).get("height", 0)
-                if not ow or not oh:
+                wx, wy, ww, wh = workspace_rect()
+                if not ww or not wh:
                     continue
                 win = _focused_floating(tree)
                 if not win:
@@ -2949,6 +3075,17 @@ def main():
                     last_cmd.clear()
                     continue
                 wid, r = win["id"], win["rect"]
+                # nethosd just moved this window itself (maximize/restore),
+                # not the user -- see window_action(). Drop its tracking
+                # entirely rather than merely skipping this tick, so once the
+                # suppression expires it starts a clean settle count against
+                # wherever that action left it, instead of comparing against
+                # a key from before the action ran.
+                if time.time() < SNAP_SUPPRESS.get(str(wid), 0):
+                    last_key.pop(wid, None)
+                    settled.pop(wid, None)
+                    last_cmd.pop(wid, None)
+                    continue
                 key = (r["x"], r["y"], r["width"], r["height"])
                 # Still moving: remember and wait. Real movement means
                 # whatever we last snapped this window to no longer applies,
@@ -2974,24 +3111,40 @@ def main():
                     # (the branch above) rearms it.
                     continue
 
-                left, top = r["x"] <= EDGE, r["y"] <= EDGE
-                right = r["x"] + r["width"] >= ow - EDGE
-                bottom = r["y"] + r["height"] >= oh - EDGE
+                # Thresholds against the *workspace* rect, not the output.
+                # Measured on real hardware: the workspace top edge sits 96px
+                # below the output's, all reserved for the panel -- against
+                # the output, dragging "to the top" meant dragging under the
+                # panel, past its exclusive zone, before this even noticed.
+                left = r["x"] <= wx + EDGE
+                top = r["y"] <= wy + EDGE
+                right = r["x"] + r["width"] >= wx + ww - EDGE
+                bottom = r["y"] + r["height"] >= wy + wh - EDGE
                 cmd = None
-                if top and not (left or right):
-                    cmd = "resize set 100ppt 100ppt, move position 0 0"
-                elif left and top:
-                    cmd = "resize set 50ppt 50ppt, move position 0 0"
-                elif right and top:
-                    cmd = "resize set 50ppt 50ppt, move position 50ppt 0"
-                elif left and bottom:
-                    cmd = "resize set 50ppt 50ppt, move position 0 50ppt"
-                elif right and bottom:
-                    cmd = "resize set 50ppt 50ppt, move position 50ppt 50ppt"
-                elif left:
-                    cmd = "resize set 50ppt 100ppt, move position 0 0"
-                elif right:
-                    cmd = "resize set 50ppt 100ppt, move position 50ppt 0"
+                if left and top and right and bottom:
+                    # Already exactly fills the workspace -- touches every
+                    # edge at once, so every branch below would agree on a
+                    # target identical to what is already there. Without this
+                    # a window the maximize button just filled the workspace
+                    # with reads as "settled at the top edge" a moment later
+                    # and gets "snapped" to fill the workspace -- a no-op
+                    # against the maximized state, but a race the /api/window
+                    # "restore" action was consistently losing: it would run,
+                    # then this would immediately re-fire and put it right
+                    # back. Measured: maximize, then restore 0.5s later,
+                    # landed maximized both times.
+                    pass
+                elif top and not (left or right):
+                    x, y, w, h = wx, wy, ww, wh
+                    # resize before move: the other order lets sway's resize
+                    # shift the position again after the move already placed
+                    # it, measured landing 7-227px off target depending on
+                    # size -- worst on axes where the new size does not match
+                    # the window's previous size on that axis.
+                    cmd = "resize set %d px %d px, move absolute position %d %d" % (w, h, x, y)
+                elif left or right:
+                    x, y, w, h = snap_zone(wx, wy, ww, wh, left, top, right, bottom)
+                    cmd = "resize set %d px %d px, move absolute position %d %d" % (w, h, x, y)
                 # settled staying stuck above 2 already stops most repeats,
                 # but the tick where sway's reported geometry jumps to match
                 # our own command still counts as "moved" and earns its own

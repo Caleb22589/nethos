@@ -318,7 +318,13 @@ function initDock() {
       setHostRect({ x: 0, y: h - 4, w: window.innerWidth, h: 4 }); // hover strip
     } else {
       nethosHost.exclusive(0);
-      setHostRect({ x: 0, y: h - 92, w: window.innerWidth, h: 92 });
+      // The pill, not the full width. #dock is centred and sized to its
+      // content (display:flex, justify-content:center on the body) -- a
+      // full-width strip here made the entire bottom of the screen
+      // unclickable while the dock was shown, edges included, where there
+      // is nothing but transparent surface to see.
+      const pill = dock.getBoundingClientRect();
+      setHostRect({ x: pill.left, y: pill.top, w: pill.width, h: pill.height });
     }
   }
 

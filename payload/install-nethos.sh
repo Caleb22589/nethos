@@ -416,13 +416,36 @@ if [ -z "${WAYLAND_DISPLAY:-}" ] && [ "$(tty)" = "/dev/tty1" ]; then
     # API explicitly selects a hardware device"), EGL fails, and the compositor
     # exits immediately to a black screen. Let Mesa fall back on its own.
 
-    # Hyprland is the NETHOS look: it is the only one of the two that can round
-    # a corner or blur behind the glass. sway stays as a fallback, and nethosd
-    # speaks both, so NETHOS=sway in the environment gets you the old session.
-    if [ "${NETHOS_COMPOSITOR:-hyprland}" = "hyprland" ] && command -v Hyprland >/dev/null; then
-        export XDG_CURRENT_DESKTOP=Hyprland
-        exec Hyprland
-    fi
+    # Wayfire is the NETHOS look: windows float and stack instead of tiling,
+    # firedecor gives every window -- not just NETHOS's own -- a real rounded
+    # frame with working minimise/maximise/close, and blur is the
+    # compositor's job instead of a per-frame CSS cost (see wayfire.ini).
+    # It also snaps on drag natively, which sway has no concept of and
+    # nethosd used to fake by polling -- badly enough on real hardware to be
+    # worth removing rather than continuing to patch.
+    #
+    # Hyprland was tried first here once, on the theory that it was the only
+    # one of the two that could do this -- it was never actually reachable,
+    # because Debian does not package it, so every session fell through to
+    # sway regardless of that check passing or failing. Wayfire is packaged
+    # (wayfire, reform-firedecor) and is what wayfire.ini is written for.
+    # sway remains the fallback for wherever Wayfire itself will not start;
+    # nethosd speaks both, so NETHOS_COMPOSITOR=sway in the environment gets
+    # you the old session.
+    case "${NETHOS_COMPOSITOR:-wayfire}" in
+        wayfire)
+            if command -v wayfire >/dev/null; then
+                export XDG_CURRENT_DESKTOP=wayfire
+                exec wayfire
+            fi
+            ;;
+        hyprland)
+            if command -v Hyprland >/dev/null; then
+                export XDG_CURRENT_DESKTOP=Hyprland
+                exec Hyprland
+            fi
+            ;;
+    esac
     export XDG_CURRENT_DESKTOP=sway
     exec sway
 fi

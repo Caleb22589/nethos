@@ -146,6 +146,25 @@ def _theme():
         return ""
 
 
+def _window_action(action, app_name):
+    """POST /api/window {action, app}, fire-and-forget.
+
+    By app name rather than a con_id this process has never had a reason to
+    know -- nethosd resolves it via list_windows(), safe because a
+    "window"-mode app never has more than one open window at a time (see the
+    focus-instead-of-relaunch guard in launch_web_app).
+    """
+    url = os.environ.get("NETHOS_API", "http://127.0.0.1:7777") + "/api/window"
+    body = json.dumps({"action": action, "app": app_name}).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req, timeout=1.0).close()
+    except Exception as exc:                    # noqa: BLE001
+        print("nethos-view: %s failed for %r: %s" % (action, app_name, exc),
+              file=sys.stderr)
+
+
 def apphost_socket_path():
     base = os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~/.cache/nethos")
     return os.path.join(base, "nethos-apphost.sock")
@@ -261,6 +280,7 @@ class Surface:
         self.spec = spec
         self.role = spec.get("role", "window")
         self.name = spec.get("name") or self.role
+        self._maximized = False
 
         self.window = Gtk.ApplicationWindow(application=app)
         self.window.set_title(spec.get("title", self.name))
@@ -625,13 +645,19 @@ class Surface:
     def _on_light(self, _button, action):
         if action == "close":
             self.window.close()
-        elif action == "minimize":
-            self.window.minimize()
-        elif action == "maximize":
-            if self.window.is_maximized():
-                self.window.unmaximize()
-            else:
-                self.window.maximize()
+            return
+        if action == "minimize":
+            _window_action("minimize", self.name)
+            return
+        if action == "maximize":
+            # Not window.maximize()/is_maximized(): those are the xdg_toplevel
+            # protocol requests, which wlroots accepts from the client but
+            # sway has no maximized state of its own to honour them with on a
+            # floating window -- the click did nothing, silently, because the
+            # request "succeeded" as far as GTK could tell. nethosd builds
+            # the same effect by hand, the same way it builds snapping.
+            self._maximized = not self._maximized
+            _window_action("maximize" if self._maximized else "restore", self.name)
 
     def _repaint(self):
         """Commit a frame, whatever the page thinks it is doing.
