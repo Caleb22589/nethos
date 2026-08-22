@@ -409,11 +409,29 @@ BINARIES=()
 FILES=()
 HOOKS=(base udev autodetect microcode modconf kms keyboard keymap consolefont block filesystems fsck)
 MKI
+# Create it, do not merely update it.
+#
+# -u updates an initramfs that already exists, and a root built from the
+# archive has none -- so this did nothing at all, GRUB booted a kernel with no
+# initrd, and the machine panicked with "VFS: Unable to mount root fs on
+# unknown-block(0,0)" because nothing had loaded the NVMe driver. The install
+# had gone perfectly right up to that point.
 if command -v update-initramfs >/dev/null 2>&1; then
-    update-initramfs -u -k all
+    update-initramfs -c -k all || update-initramfs -u -k all || true
 elif command -v mkinitcpio >/dev/null 2>&1; then
     mkinitcpio -P
 fi
+
+# And prove it, because a missing initrd is only discovered at the panic.
+kver=$(ls -1 /lib/modules 2>/dev/null | sort -V | tail -1)
+if [ -n "$kver" ] && [ ! -e "/boot/initrd.img-$kver" ] && [ ! -e "/boot/initramfs-$kver.img" ]; then
+    echo "FATAL: no initramfs for $kver."
+    echo "  The kernel cannot reach the root filesystem without one and would"
+    echo "  panic on the first boot. Refusing to install a bootloader for it."
+    ls -la /boot | sed 's/^/    /'
+    exit 1
+fi
+echo "initramfs: $(ls -1 /boot/initrd.img-* /boot/initramfs-*.img 2>/dev/null | tr "\n" " ")"
 
 systemctl enable systemd-networkd systemd-resolved 2>/dev/null || true
 systemctl enable NetworkManager 2>/dev/null || true

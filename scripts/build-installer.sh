@@ -144,7 +144,10 @@ echo "--- busybox applets ---"
 # alternative and pulls a daemon and a lease database to get an address once.
 if [ -x "$R/bin/busybox" ] || [ -x "$R/usr/bin/busybox" ]; then
     bb=/bin/busybox; [ -x "$R/usr/bin/busybox" ] && bb=/usr/bin/busybox
-    for applet in udhcpc; do
+    # reboot, poweroff and halt are applets too, and the installer offers to
+    # reboot when it finishes. "reboot: not found" at the end of a successful
+    # install is a poor last impression.
+    for applet in udhcpc reboot poweroff halt shutdown; do
         [ -e "$R/usr/sbin/$applet" ] || ln -sf "$bb" "$R/usr/sbin/$applet"
     done
     # udhcpc does nothing with a lease unless a script applies it, and Debian
@@ -244,7 +247,7 @@ echo "--- checking the installer can actually run ---"
 # perfectly as refusing to come up. Cheaper to assert here than to flash a
 # stick and read it off a photograph.
 missing=""
-for prog in ip iw wpa_supplicant udhcpc lsblk sgdisk mkfs.ext4 mkfs.fat \
+for prog in ip iw wpa_supplicant udhcpc reboot lsblk sgdisk mkfs.ext4 mkfs.fat \
             lspci dmesg awk sed nl sort cut python3 tar zstd xz curl \
             grub-install chroot rsync; do
     found=""
