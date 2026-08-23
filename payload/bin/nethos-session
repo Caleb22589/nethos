@@ -26,56 +26,20 @@ if ! systemctl --user restart nethosd.service 2>/dev/null; then
     fi
 fi
 
-# Wait for the compositor to have settled, not just to exist.
-#
-# Surfaces created in the first moments of a Wayfire session come up
-# permanently one frame behind: what is drawn appears only after the *next*
-# commit, so closing the launcher shows the launcher and opening the control
-# centre shows what was there before it. Measured, on a cold boot: launcher
-# region 0.0% of the screen with the launcher open and 77.8% after closing it
-# -- the states inverted. Restarting the shell at any later point fixes it
-# completely and permanently (83.6% open, 0.0% closed), which is what says the
-# problem is when the surfaces are created rather than what they contain.
-#
-# The root cause is below us -- wlroots damage tracking against amdgpu, most
-# likely, and nethos-session already carries a note about wlroots giving up on
-# repaint scheduling when a page flip does not complete. This is not that fix.
-# It is the cheap half: create the surfaces a few seconds later, once the
-# compositor has finished bringing up outputs, and the bad state does not
-# happen. Measured from the compositor's own start rather than slept blindly,
-# so a fast machine waits less and this does not become a fixed tax on boot.
-SETTLE=${NETHOS_SETTLE:-4}
+# The compositor-settle wait that used to live here (surfaces created in
+# Wayfire's first moments come up permanently one frame behind -- closing
+# the launcher shows the launcher, opening the control centre shows what was
+# there before it) moved into nethos-view itself, run right before it
+# creates the shell's surfaces rather than here before nethos-view even
+# starts. Waiting there instead of here means this process's own Python/GTK/
+# WebKit cold start -- 2.76s just to import gi, GTK and WebKit, measured,
+# before a single surface exists -- happens *during* the wait instead of
+# strictly after it. By the time those imports finish the compositor has
+# usually already been up long enough that nethos-view finds nothing left to
+# wait for. See nethos-view's _settle_wait() for the mechanism and the
+# original measurements this wait exists for at all.
 SESSION_LOG="$HOME/.cache/nethos/session.log"
 mkdir -p "$(dirname "$SESSION_LOG")" 2>/dev/null || true
-
-# Find the compositor without pgrep. autostart runs with whatever PATH the
-# compositor inherited, which is not the login shell's -- and when pgrep was
-# not on it this whole block was skipped silently, so the wait never happened
-# and a boot that was supposed to test the delay tested nothing. /proc is
-# always there.
-wf_pid=""
-for c in /proc/[0-9]*/comm; do
-    if [ -r "$c" ] && [ "$(cat "$c" 2>/dev/null)" = "wayfire" ]; then
-        wf_pid=${c#/proc/}; wf_pid=${wf_pid%/comm}; break
-    fi
-done
-printf '%s settle: wayfire pid=%s settle=%s\n' "$(date +%H:%M:%S)" "${wf_pid:-none}" "$SETTLE" >> "$SESSION_LOG" 2>/dev/null || true
-if [ -n "$wf_pid" ] && [ -r "/proc/$wf_pid/stat" ]; then
-    # Field 22 is starttime in clock ticks since boot.
-    start_ticks=$(awk '{print $22}' "/proc/$wf_pid/stat" 2>/dev/null)
-    hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
-    now_s=$(awk '{print int($1)}' /proc/uptime 2>/dev/null || echo 0)
-    up_s=$(( now_s - start_ticks / hz ))
-    printf '%s settle: compositor up %ss, waiting for %ss\n' \
-        "$(date +%H:%M:%S)" "$up_s" "$SETTLE" >> "$SESSION_LOG" 2>/dev/null || true
-    while [ "$up_s" -lt "$SETTLE" ]; do
-        sleep 0.5
-        now_s=$(awk '{print int($1)}' /proc/uptime 2>/dev/null || echo 0)
-        up_s=$(( now_s - start_ticks / hz ))
-    done
-    printf '%s settle: done, compositor up %ss\n' \
-        "$(date +%H:%M:%S)" "$up_s" >> "$SESSION_LOG" 2>/dev/null || true
-fi
 
 # Wait for the API rather than racing it.
 i=0
@@ -189,7 +153,14 @@ printf '%s gpu: drm=%s renderer=%s\n' "$(date +%H:%M:%S)" \
 # except a keybind. foot and VLC are unaffected by this specific setting --
 # neither is GTK3 -- but they have the same visible symptom for a different
 # reason: `border pixel` genuinely has no title bar on any app, GTK or not.
-[ -n "$wf_pid" ] && export GTK_CSD=0
+#
+# wf_pid used to answer this (found above, for the settle wait that lived
+# here before moving into nethos-view) -- WAYFIRE_SOCKET instead now, since
+# nethos-session no longer scans /proc for the compositor itself. Wayfire
+# sets this in its own environment, which every child of its autostart
+# -- this script included -- inherits directly, no import-environment
+# needed the way the systemd user service manager does below.
+[ -n "${WAYFIRE_SOCKET:-}" ] && export GTK_CSD=0
 
 # LIBGL_ALWAYS_SOFTWARE is *not* forced here. It used to be, on the assumption
 # that a VM has no GPU -- but virtio_gpu is a real DRM device, and Mesa rejects

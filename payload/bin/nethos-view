@@ -165,6 +165,80 @@ def _window_action(action, app_name):
               file=sys.stderr)
 
 
+def _session_log(line):
+    path = os.path.expanduser("~/.cache/nethos/session.log")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a") as fh:
+            fh.write("%s %s\n" % (time.strftime("%H:%M:%S"), line))
+    except OSError:
+        pass
+
+
+def _settle_wait():
+    """Block until the compositor has been up for NETHOS_SETTLE seconds.
+
+    Ported from nethos-session, which used to run this in bash *before*
+    exec'ing this process at all -- so the ~4s it typically waits and this
+    process's own Python/GTK/WebKit cold start (import gi alone measured at
+    2.76s on an idle machine, before WebKitWebContext or a single surface)
+    happened strictly back to back. Doing it here instead means the imports
+    that already ran to reach this point overlap with the wait rather than
+    follow it, and that part is confirmed: on a real reboot this found the
+    compositor already past NETHOS_SETTLE and added no wait at all, where it
+    used to cost the full ~4s every time.
+
+    It did not move the needle on total boot time, though, measured the same
+    way: nethosd's own cold start turned out to already be gating
+    nethos-session's *next* wait (for nethosd's API) by almost exactly the
+    same few seconds this removed, so the critical path just shifted to a
+    different wait instead of getting shorter. Left in anyway -- it is a
+    real, verified fix on its own terms, and the next place to look for
+    actual savings is nethosd's own startup, not this one.
+
+    Why the wait exists at all, unchanged from nethos-session's version:
+    surfaces created in the first moments of a Wayfire session come up
+    permanently one frame behind -- closing the launcher shows the launcher,
+    opening the control centre shows what was there before it. Waiting for
+    the compositor's own uptime rather than sleeping blindly means a fast
+    machine waits less and this never becomes a fixed tax on boot.
+    """
+    settle = float(os.environ.get("NETHOS_SETTLE", "4"))
+    wf_pid = None
+    import glob                              # noqa: PLC0415
+    for entry in glob.glob("/proc/[0-9]*/comm"):
+        try:
+            with open(entry) as fh:
+                if fh.read().strip() == "wayfire":
+                    wf_pid = int(entry.split("/")[2])
+                    break
+        except (OSError, ValueError):
+            continue
+    _session_log("settle: wayfire pid=%s settle=%g" % (wf_pid or "none", settle))
+    if wf_pid is None:
+        return
+    try:
+        with open("/proc/%d/stat" % wf_pid) as fh:
+            stat = fh.read()
+        # comm can itself contain "(" or ")"; only the *last* ")" ends it.
+        fields = stat.rsplit(")", 1)[1].split()
+        start_ticks = int(fields[19])        # starttime, field 22 overall
+        hz = os.sysconf("SC_CLK_TCK")
+
+        def uptime():
+            with open("/proc/uptime") as f:
+                return float(f.read().split()[0]) - start_ticks / hz
+
+        up_s = uptime()
+        _session_log("settle: compositor up %.1fs, waiting for %gs" % (up_s, settle))
+        while up_s < settle:
+            time.sleep(0.2)
+            up_s = uptime()
+        _session_log("settle: done, compositor up %.1fs" % up_s)
+    except (OSError, ValueError, IndexError):
+        pass
+
+
 def _compositor_decorates():
     """True when the compositor itself puts a real title bar on a window --
     Wayfire with firedecor loaded (see wayfire.ini), or Hyprland. Both give
@@ -320,19 +394,25 @@ class Surface:
         # surfaces use the namespace set below instead.
         self.window.set_default_size(int(spec.get("width", 800)),
                                      int(spec.get("height", 600)))
-        # Undecorated everywhere, windows included -- this is GTK's own
-        # client-side decoration, which nothing here has ever wanted, not a
-        # request to the compositor for no decoration at all. Under Wayfire,
-        # firedecor decorates an undecorated xdg_toplevel on its own; sway
-        # does not, which is what self._own_chrome is for below.
+        # gtk_window_set_decorated(FALSE) is not just "GTK, do not draw a
+        # header bar" -- on Wayland it is also how GTK negotiates the
+        # xdg-decoration protocol, and it asks for CLIENT_SIDE (i.e. "the
+        # compositor should not decorate this window either"). That is
+        # exactly wrong for a window relying on firedecor: the assumption
+        # here used to be "an undecorated xdg_toplevel gets decorated by
+        # Wayfire on its own", unverified, and it was backwards -- decorated
+        # windows on Wayfire got a real title bar; ones told explicitly not
+        # to ask for one got none at all, from either side. That is the
+        # "window buttons are gone" regression the previous fix introduced.
         #
-        # When _own_chrome does build a frame, it is GTK rather than the
-        # page because dragging and resizing have to be real. A title bar
-        # drawn in HTML can only ask the compositor to move a window by
-        # recomputing its geometry on every pointer event, which lags behind
-        # the cursor; GtkWindowHandle hands the drag to the compositor and it
-        # tracks perfectly.
-        self.window.set_decorated(False)
+        # So: undecorated only where something else is drawing the chrome --
+        # every layer-shell surface (it draws none, GTK4 layer-shell owns
+        # the surface role and this protocol does not apply to it anyway)
+        # and window-role surfaces on sway, which get Surface's own frame
+        # below. Where firedecor is the chrome, leave GTK's default
+        # (decorated=True) so the SERVER_SIDE request actually goes out.
+        if self.role != "window" or self._own_chrome:
+            self.window.set_decorated(False)
 
         # Make the window itself transparent.
         #
@@ -814,13 +894,21 @@ class App(Gtk.Application):
         self.apphost = apphost
 
     def do_activate(self):
+        # Identifies the shell the same way nethos-reload finds it to
+        # restart it: the role=panel surface. Checked before any surface is
+        # created, not after, so _settle_wait() runs (and this process's own
+        # import cost has already overlapped with the compositor settling --
+        # see _settle_wait's own comment) before the surfaces it protects
+        # exist at all.
+        is_shell = any(s.get("role") == "panel" for s in self.specs)
+        if is_shell:
+            _settle_wait()
         for spec in self.specs:
             self.surfaces.append(Surface(self, spec))
-        # The shell process (identified the same way nethos-reload finds it
-        # to restart it: the role=panel surface) also serves the apphost
-        # socket, in addition to --apphost's own standalone mode. App windows
-        # become related WebViews of the shell's *already warm* WebProcess
-        # instead of paying for a second full WebKit engine alongside it.
+        # The shell process also serves the apphost socket, in addition to
+        # --apphost's own standalone mode. App windows become related
+        # WebViews of the shell's *already warm* WebProcess instead of
+        # paying for a second full WebKit engine alongside it.
         #
         # Measured on real hardware: the shell (4 layer-shell surfaces
         # sharing one engine) and a separate apphost with a single Settings
@@ -833,7 +921,6 @@ class App(Gtk.Application):
         #
         # The standalone --apphost mode stays as ensure_apphost()'s fallback
         # for the (rare) case the shell itself is not answering.
-        is_shell = any(s.get("role") == "panel" for s in self.specs)
         if self.apphost or is_shell:
             # hold() keeps the process running with zero *extra* windows
             # between app launches -- GApplication would otherwise treat
