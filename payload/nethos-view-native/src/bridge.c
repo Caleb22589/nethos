@@ -41,14 +41,22 @@ static const char *read_theme(char *buf, size_t n) {
 }
 
 static void set_input_region(struct nethos_surface *s, int x, int y, int w, int h) {
-    if (w <= 0 || h <= 0) {
-        wl_surface_set_input_region(s->wl_surface, NULL); /* NULL = whole surface */
-    } else {
-        struct wl_region *region = wl_compositor_create_region(g_compositor);
-        wl_region_add(region, x, y, w, h);
-        wl_surface_set_input_region(s->wl_surface, region);
-        wl_region_destroy(region);
-    }
+    /* A NULL region means "no restriction, whole surface" per the wl_surface
+     * protocol -- the opposite of what shell.js means by inputRect(0,0,0,0).
+     * shell.js calls that specifically to make an idle overlay fully
+     * click-through (menu.html, splash.html -- see its own comments on
+     * overlayMapped()/nethosHost.inputRect(0,0,0,0)). Passing NULL here
+     * left those two full-screen, always-on-top ZWLR_LAYER_SHELL_V1_LAYER_
+     * OVERLAY surfaces capturing every click across the whole screen
+     * indefinitely -- confirmed live: real hardware clicks aimed at a
+     * window (Settings) never arrived, because ptr_enter/ptr_button always
+     * matched splash or menu first. An *empty* region (a real wl_region
+     * object with zero rectangles added to it) is what actually makes a
+     * surface pass every click through to whatever is beneath it. */
+    struct wl_region *region = wl_compositor_create_region(g_compositor);
+    if (w > 0 && h > 0) wl_region_add(region, x, y, w, h);
+    wl_surface_set_input_region(s->wl_surface, region);
+    wl_region_destroy(region);
     s->has_input_rect = true;
     s->input_x = x; s->input_y = y; s->input_w = w; s->input_h = h;
     /* Region changes are queued until the next commit -- same reason

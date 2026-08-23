@@ -203,15 +203,52 @@ the field-22-via-rsplit arithmetic is easy to get wrong by exactly the amount th
 a slightly-wrong wait, not a crash -- worth double-checking against the Python original's own comment
 rather than re-deriving it).
 
-**Not yet exercised**: the full 5-surface shell running as the actual session (deliberately not
-tested against the live laptop, which was mid-session as the user's real desktop -- doing so would
-mean binding the same apphost socket path the live Python shell already serves, and colliding
-`exclusive` zones with the real panel/dock while the test ran). The `xdg_toplevel` + decoration path
-was exercised standalone (a real window opened via the apphost socket, sharing the same
-`nethos_surface_create()` path as everything else) but firedecor's actual frame has not been
-confirmed by a human looking at the screen. Boot-time itself -- the entire reason for this rewrite --
-has not been re-measured; that needs a full image rebuild and reboot cycle, not an SSH session into
-an already-running one.
+**Update, same day: the full shell was run as the actual live session, with the user at the physical
+machine.** With explicit sign-off (this is someone's real desktop), the live Python `nethos-view` was
+killed and `nethos-view-native` launched in its place with the identical five-surface spec, then
+restored afterward -- three times, chasing three findings below. Confirmed visually by the user,
+something no earlier testing in this document could do:
+
+- **`related-view` sharing holds at full scale, not just two views.** All five shell surfaces plus a
+  `settings` window opened through nethosd's real `/api/launch` -> `ensure_apphost()` ->
+  `apphost_send()` path -- the actual production flow, not a hand-built test client -- shared exactly
+  one `WPEWebProcess`/`WPENetworkProcess` pair throughout. Total RSS for the whole shell plus one app
+  window: ~394MB, against the Python build's own ~613MB baseline for the shell alone (measured earlier
+  the same session) -- consistent with the doc's original ~500MB-saved framing, on the real number
+  this time rather than an estimate.
+
+- **A real, confirmed, now-fixed bug: `nethosHost.inputRect(0,0,0,0)` was making things click-through
+  proof instead of click-through.** `shell.js` calls that specifically to make an idle full-screen
+  overlay (`splash.html`, `menu.html`) stop capturing clicks -- see its own `overlayMapped()`
+  comments. `bridge.c`'s `set_input_region()` treated `w<=0 || h<=0` as "pass `NULL` to
+  `wl_surface_set_input_region`", which the protocol defines as *resetting to the whole surface*, the
+  opposite of the intent. Because `splash` and `menu` are both `ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY`
+  (always on top, full-screen), this meant they silently captured every click across the entire
+  screen for the surface's whole lifetime -- nothing under them, including a freshly opened app
+  window, was ever clickable. Found by tracing real `wl_pointer` events live while the user clicked:
+  `ptr_enter` kept matching `splash`/`menu` no matter where the cursor was. Fixed: always allocate a
+  real `wl_region` and only add a rectangle to it when `w>0 && h>0`; an empty region (zero rectangles)
+  is what the protocol actually means by click-through. Confirmed fixed the same way it was found --
+  live tracing showed the pointer correctly reaching a `role=window` surface afterward, and real
+  hardware clicks (not a synthetic dispatch) produced correct `ptr_button` events with the right
+  button code and coordinates.
+
+- **A second, still-open finding: at least one `role=window` surface rendered with only firedecor's
+  title bar and no visible content.** Reported directly by the user looking at the screen ("your click
+  me window has no window just top bar"). The one clean counterexample in the same session --
+  `settings`, opened via the real apphost path -- rendered real content, confirmed by the user
+  ("actual content!"). The window that failed was opened via a throwaway local `http.server` whose
+  first connection attempt failed (`Connection refused`, the server hadn't finished starting) before a
+  second attempt against the same URL succeeded and produced exactly one `render_surface` call in the
+  log. Two live surfaces is not enough to separate "something about a failed-then-retried initial
+  load leaves the EGL/xdg_toplevel state wrong" from "something else entirely" -- that is the leading
+  hypothesis, not a confirmed cause. Reproduce without guessing at the mechanism: open a `role=window`
+  surface whose first `webkit_web_view_load_uri` genuinely fails to connect and watch whether the
+  *retry's* successful load still fails to present, against a control window that loads cleanly on the
+  first attempt.
+
+Boot-time itself -- the entire reason for this rewrite -- has still not been re-measured; that needs
+a full image rebuild and reboot cycle, not a live swap on an already-running session.
 
 ## What still needs doing before this is real
 
@@ -230,6 +267,9 @@ an already-running one.
 - **`docs/SYSTEM.md`'s "no compiled code" policy note** still needs updating once (if) this actually
   ships as more than an opt-in experiment -- deliberately not touched yet, per this document's own
   original wording.
-- The full 5-surface shell, `repaint()`'s exact ghost-frame behaviour, and a human confirming
-  firedecor actually frames a native `role=window` surface all remain to be checked, ideally in a
-  maintenance window rather than against someone's live session.
+- **Open bug: some `role=window` surfaces render decoration-only, no content.** See the finding
+  above -- reproduce deliberately (a window whose first load genuinely fails and retries) rather than
+  by chance, ideally on a disposable test session rather than someone's live one now that the full
+  shell has proven itself safe to swap in and back out of once a fix is ready to verify.
+- `repaint()`'s exact ghost-frame behaviour (the specific scenario `shell.js`'s own comments describe)
+  has only log-level verification, not a visual one.

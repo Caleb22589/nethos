@@ -275,6 +275,15 @@ static gboolean on_context_menu(WebKitWebView *v, WebKitContextMenu *menu, gpoin
     return getenv("NETHOS_INSPECTOR") && !strcmp(getenv("NETHOS_INSPECTOR"), "1") ? FALSE : TRUE;
 }
 
+/* Not silent about a failed load -- a blank surface with no explanation
+ * anywhere is exactly the kind of failure this project's own conventions
+ * (docs/HANDOFF.md) warn costs a debugging session each time it happens. */
+static gboolean on_load_failed(WebKitWebView *v, WebKitLoadEvent e, gchar *uri, GError *err, gpointer d) {
+    struct nethos_surface *s = d;
+    fprintf(stderr, "nethos-view-native: '%s' failed to load %s: %s\n", s->spec.name, uri, err->message);
+    return FALSE;
+}
+
 struct nethos_surface *nethos_surface_create(const struct nethos_spec *spec) {
     if (g_surface_count >= NETHOS_MAX_SURFACES) {
         fprintf(stderr, "nethos-view-native: too many surfaces, dropping %s\n", spec->name);
@@ -305,6 +314,7 @@ struct nethos_surface *nethos_surface_create(const struct nethos_spec *spec) {
 
     apply_settings(s->webview);
     g_signal_connect(s->webview, "context-menu", G_CALLBACK(on_context_menu), NULL);
+    g_signal_connect(s->webview, "load-failed", G_CALLBACK(on_load_failed), s);
 
     if (spec->transparent) {
         WebKitColor transparent = { 0.0, 0.0, 0.0, 0.0 };
