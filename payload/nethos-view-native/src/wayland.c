@@ -265,6 +265,13 @@ void nethos_gl_setup(void) {
     glAttachShader(g_gl_prog, fs);
     glBindAttribLocation(g_gl_prog, 0, "pos");
     glLinkProgram(g_gl_prog);
+    GLint link_ok = 0;
+    glGetProgramiv(g_gl_prog, GL_LINK_STATUS, &link_ok);
+    if (!link_ok) {
+        char buf[512];
+        glGetProgramInfoLog(g_gl_prog, sizeof(buf), NULL, buf);
+        fprintf(stderr, "nethos-view-native: shader LINK FAILED: %s\n", buf);
+    }
     static const GLfloat quad[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
     glGenBuffers(1, &g_gl_vbo);
     glBindBuffer(GL_ARRAY_BUFFER, g_gl_vbo);

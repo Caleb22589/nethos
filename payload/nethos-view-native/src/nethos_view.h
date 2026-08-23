@@ -20,7 +20,30 @@
 
 #include <wpe/webkit.h>
 #include <wpe/fdo.h>
-#include <wpe/fdo-egl.h>
+#include <wpe/unstable/fdo-shm.h>
+
+/* wl_shm_buffer_get_data/_get_stride/_get_format/_begin_access/_end_access
+ * are declared here, not in wayland-client.h -- WPE's exportable_fdo
+ * backend runs its own tiny internal Wayland *server* role for the
+ * WebProcess<->UI-process buffer handoff (the same internal mechanism a
+ * dangling-pointer bug crashed inside of once already, see surface.c),
+ * and these are the server-side buffer-inspection helpers, needed here
+ * purely to read pixels out of an already-received SHM buffer. */
+#include <wayland-server-core.h>
+
+/* Switched from the dma-buf/EGLImage import path (wpe/fdo-egl.h,
+ * wpe_fdo_initialize_for_egl_display) to WPE's plain SHM export path.
+ * Confirmed live on the laptop (docs/NETHOS-VIEW-REWRITE.md): a
+ * self-contained EGL client with no cross-process buffer sharing at all
+ * presents perfectly, proving EGL/GL presentation itself is fine on this
+ * hardware; every dma-buf-backed WPE surface -- across three different
+ * binaries including the untouched Phase 0 spike -- renders nothing, with
+ * every EGL/GL/Wayland call along the way reporting success. That is the
+ * signature of a dma-buf import that succeeds at the API level without the
+ * memory ever actually mapping. SHM sidesteps cross-process GPU buffer
+ * sharing entirely: WPE hands over real pixel bytes, this process uploads
+ * them with glTexImage2D, and the only thing shared across the process
+ * boundary is a memory-mapped file, not a GPU buffer handle. */
 
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
@@ -92,6 +115,7 @@ bool nethos_parse_spec(const char *text, struct nethos_spec *out);
 struct nethos_surface *nethos_surface_create(const struct nethos_spec *spec);
 void nethos_surface_render(struct nethos_surface *s);
 void nethos_surface_repaint(struct nethos_surface *s);
+void nethos_surface_destroy(struct nethos_surface *s);
 
 /* -- bridge.c -- */
 void nethos_bridge_install(struct nethos_surface *s);

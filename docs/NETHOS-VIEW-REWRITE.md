@@ -267,9 +267,95 @@ a full image rebuild and reboot cycle, not a live swap on an already-running ses
 - **`docs/SYSTEM.md`'s "no compiled code" policy note** still needs updating once (if) this actually
   ships as more than an opt-in experiment -- deliberately not touched yet, per this document's own
   original wording.
-- **Open bug: some `role=window` surfaces render decoration-only, no content.** See the finding
-  above -- reproduce deliberately (a window whose first load genuinely fails and retries) rather than
-  by chance, ideally on a disposable test session rather than someone's live one now that the full
-  shell has proven itself safe to swap in and back out of once a fix is ready to verify.
 - `repaint()`'s exact ghost-frame behaviour (the specific scenario `shell.js`'s own comments describe)
   has only log-level verification, not a visual one.
+
+## The white-window bug: root cause found (the WebProcess sandbox), not yet fixed
+
+A second overnight session chased the "some windows render decoration-only, no content" finding
+above all the way to ground, using `grim` (installed via `npkg fetch grim -y` -- not previously
+in this repo's package set, worth adding if this becomes a standing dev tool) to screenshot the
+real screen directly rather than relying on someone physically looking at it each time. That
+turned out to be essential: it let dozens of hypotheses get tested and discarded in the time a
+single round of "does this look right?" would have taken.
+
+**What got ruled out, in order, each with a real test against the live laptop:**
+
+1. **Not a code regression.** The exact last-committed binary (`1e8177c`), rebuilt fresh from a
+   clean `git clone`, reproduces the same blank rendering. So does the untouched Phase 0 spike
+   (`~/nethview-spike/spike.c` on the laptop, never modified since Phase 0) -- and its own log shows
+   the identical "real image exported, WEBKIT_LOAD_FINISHED" sequence the doc originally recorded as
+   a success, just with nothing appearing on screen this time.
+2. **Not GPU/driver resource exhaustion from repeated process restarts.** A full reboot (twice) did
+   not fix it; the very first `nethos-view-native` launch after a clean boot, before any other
+   process in this session had touched the GPU at all, still rendered nothing.
+3. **Not a screenshot-tool artifact.** Confirmed by a human looking at the physical screen at the
+   time -- genuinely blank, not a `grim` bug.
+4. **Not atomic-vs-legacy KMS.** `nethos-session`'s existing `WLR_DRM_NO_ATOMIC` mechanism turned out
+   to have never worked in the first place -- it sets the variable in *its own* environment, which is
+   a child of Wayfire's autostart and therefore runs strictly after Wayfire has already initialised
+   its DRM backend with whatever it inherited from `.bash_profile`'s `exec wayfire`. Set correctly
+   (in `.bash_profile`, before `exec wayfire`, confirmed present in Wayfire's own `/proc/PID/environ`
+   afterward) and tested with a real reboot: no change. `nethos-session`'s own copy of this mechanism
+   is a latent, separate, real bug worth fixing on its own merits, independent of this one.
+5. **Not "Wayfire stops compositing new surfaces".** A brand-new `foot` terminal window, launched in
+   the same session moments after the native shell failed, rendered perfectly -- real content, real
+   firedecor frame. New surfaces reaching the screen at all is not the problem.
+6. **Not EGL/GL presentation itself.** A from-scratch, self-contained test client
+   (`pure_egl_test.c`, written and run live on the laptop, no WPE and no cross-process buffer of any
+   kind involved) presented a plain glClear'd red rectangle via the exact same
+   `wl_egl_window`/`eglSwapBuffers` mechanism `nethos-view-native` uses for its own output --
+   and it worked, immediately, screenshot-confirmed.
+7. **Not dma-buf/EGLImage import specifically.** Since (6) narrowed it to "importing WPE's exported
+   buffer" rather than "presenting at all", the exportable_fdo backend was switched from the
+   dma-buf/EGLImage path (`wpe/fdo-egl.h`) to WPE's plain SHM export path (`wpe/unstable/fdo-shm.h`,
+   `wpe_fdo_initialize_shm()`) -- CPU-side pixel upload via `glTexImage2D`, sharing nothing but a
+   memory-mapped file across the process boundary. Still blank. Sampling the actual SHM buffer bytes
+   (`wl_shm_buffer_get_data()`, real pixel values, not just "did the API call report success") showed
+   why: the buffer WPE handed over was genuinely, entirely zero -- every byte, every surface, every
+   run. Not a bug in this process's rendering at all; WPE's own WebProcess was not painting anything.
+8. **Not the shader pipeline.** Checked directly -- link status, `glUseProgram`, `glDrawArrays` all
+   report success with zero GL errors. (No verification code existed for this before tonight; adding
+   it is a real, permanent improvement, kept regardless of the outcome here.)
+9. **Not WPE's activity-state suspension.** `wpe_view_backend_add_activity_state(visible|focused|
+   in_window)`, called right after backend creation, was removed early in this rewrite's history
+   after appearing to cause a crash -- but the real cause of that crash, found later the same night,
+   was the unrelated dangling-pointer bug in the callback struct (see the `s_client`/`s_egl_client`
+   history above), now long since fixed. Added back on that basis; made no difference to this bug
+   either way, but is being kept -- there is no reason not to tell WPE a surface is actually visible.
+
+**What it actually is:** `payload/bin/nethos-view` (Python/WebKitGTK) and every one of the
+elimination tests above that worked share one thing every failing `nethos-view-native` run does not:
+none of them run WebKit's own `WPEWebProcess`/`WPENetworkProcess` inside its `bwrap` sandbox and then
+try to read real output from it. Confirmed directly: launching `nethos-view-native` with
+`WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1` set -- the real WPE env var for exactly this kind of
+diagnosis, not something this project invented -- produced real, correct, screenshot-confirmed
+content (App Store's title bar, search field, everything) on the very first try, with no other
+change. `ps` confirmed no `bwrap` process existed for that run at all, where every other run had one
+wrapping `WPEWebProcess`. The `bwrap` sandbox around the WebProcess is silently preventing it from
+painting anything at all on this machine -- not crashing, not erroring, just producing a WebProcess
+that runs, loads pages, responds to JS, and paints nothing, ever, into any buffer it hands back,
+regardless of whether that buffer is dma-buf or plain SHM. This is a sandbox-vs-this-system
+compatibility problem (most likely a missing bind-mount, device node, or syscall the sandbox denies
+that this particular npkg-converted install lacks something Debian's own postinst scripts would
+normally have set up -- see `docs/HANDOFF.md`'s whole table of exactly this failure class for
+unrelated things), not a bug in `nethos-view-native`'s own code.
+
+**Why this is not fixed yet, deliberately:** running the WebProcess unsandboxed is a real security
+regression -- the sandbox exists specifically to contain a compromised web renderer, and WPE's own
+naming (`_THIS_IS_DANGEROUS`) is not decoration. Disabling it was the right diagnostic, not a
+shippable fix. What's actually needed is finding *what* the sandbox is denying that breaks painting
+specifically (fonts? a `/dev/dri` render node bind-mount? a seccomp-denied syscall the software
+rasterizer needs?) and either fixing that one thing or, if this really is an environment-specific gap
+`npkg`'s conversion should be closing, treating it the same way every other entry in `docs/HANDOFF.md`
+was: a missing step, not a reason to weaken the sandbox everywhere. Concretely, next session:
+compare this system's bwrap invocation/profile against a stock Debian WebKitGTK install's (the
+Python build's WebKitGTK path uses the *same* `bwrap`, and *it* renders fine -- meaning whatever is
+missing is either specific to the WPE package's own sandbox profile, or specific to something
+`nethos-view-native` does differently in how it launches the WebProcess that the Python/WebKitGTK
+path does not).
+
+The SHM rendering path from step 7 is being kept regardless of this outcome -- it is a real
+simplification (no dma-buf/modifier negotiation, no cross-process GPU buffer sharing question to ever
+re-litigate) independent of the sandbox question, and the elimination above only worked *because* it
+existed to test against.
