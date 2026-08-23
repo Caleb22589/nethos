@@ -114,11 +114,17 @@ system, so it will need vendoring into the repo -- see below) and `xdg-shell.xml
 requires also generating and linking `xdg-shell`'s protocol code, even though this spike never
 creates an `xdg_popup` itself -- the symbol reference is unconditional in the generated bindings.
 
-**Not yet confirmed: whether anything actually renders on screen.** The build succeeds; runtime
-verification against the real Wayfire session on the laptop is the next step. If this doesn't paint
-cleanly, everything downstream of it (the full rewrite) is blocked on finding another way to bridge
-WPE's exported buffers into a compositor-presented surface -- no other part of the plan carries this
-much risk.
+**Confirmed against the real Wayfire session on the laptop.** Run over SSH with `WAYLAND_DISPLAY`
+pointed at the live session: the layer surface configured to the real output width (1366x40, not
+the 1200 fallback), WPE loaded the App Store page (`WEBKIT_LOAD_FINISHED` at t=2.9s) and exported
+exactly one real `EGLImageKHR`, which was bound as a texture and blitted into the layer-shell
+surface via `eglSwapBuffers`. Only one export arrived over a 15s run -- consistent with WPE only
+repainting on invalidation and the App Store page having no continuous animation, not a bug; this
+is the same "WebKit suspends a surface with nothing driving repaints" behaviour the existing
+tick/events fan-out (see above) already exists to work around, and the rewrite will need that same
+mechanism. Not yet confirmed by a human looking at the physical screen -- the evidence so far is
+program-level (a real exported image was captured and swapped), not a visual check. That's the
+next thing to do, then Phase 1 (the actual surface-hosting host process) can start.
 
 ## What still needs doing before this is real
 
