@@ -1,0 +1,21 @@
+{
+  "id": "bob-notes",
+  "name": "Bob Notes",
+  "description": "A simple saved note, built with Bob instead of hand-written HTML/JS",
+  "icon": "BN",
+  "version": "1.0.0",
+  "categories": [
+    "NETHOS",
+    "Development"
+  ],
+  "entry": "index.html",
+  "permissions": [
+    "system",
+    "storage"
+  ],
+  "mode": "window",
+  "position": "top-right",
+  "floating": false,
+  "width": 760,
+  "height": 560
+}
