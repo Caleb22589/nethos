@@ -902,9 +902,20 @@ class App(Gtk.Application):
         # exist at all.
         is_shell = any(s.get("role") == "panel" for s in self.specs)
         if is_shell:
+            _session_log("do_activate: entered (imports already done by this point)")
             _settle_wait()
         for spec in self.specs:
+            # Timed only for the shell: this is boot-time diagnostic, not
+            # something worth a log line every time an app window opens.
+            # Measuring which surface actually costs the ~11s+ this process
+            # spends past its own imports and WebContext creation, rather
+            # than continuing to guess at it.
+            t0 = time.monotonic() if is_shell else None
             self.surfaces.append(Surface(self, spec))
+            if t0 is not None:
+                _session_log("surface: %s (%s) took %.2fs" %
+                             (spec.get("name", "?"), spec.get("role", "?"),
+                              time.monotonic() - t0))
         # The shell process also serves the apphost socket, in addition to
         # --apphost's own standalone mode. App windows become related
         # WebViews of the shell's *already warm* WebProcess instead of
