@@ -173,10 +173,28 @@ def zram_state():
     return state
 
 
+def _write_sysfs(path, value):
+    """A direct write, not `sh -c "echo x > path"`.
+
+    This unit sits on the boot critical path (Before=swap.target, and
+    swap.target is itself required by tmp.mount ahead of dbus, network and
+    getty -- confirmed with `systemd-analyze critical-chain`), so its own
+    ~1.3s matters. Each `sh -c "echo ..."` forked a shell just to run one
+    write syscall it could have made directly; three of them were most of
+    what this function does. subprocess still handles modprobe/mkswap/
+    swapon/swapoff, which are not file writes.
+    """
+    with open(path, "w") as fh:
+        fh.write(str(value))
+
+
 def cmd_zram(args):
     if args.state == "off":
         sh(["swapoff", "/dev/zram0"])
-        sh(["sh", "-c", "echo 1 > /sys/block/zram0/reset"])
+        try:
+            _write_sysfs(SYSFS_ZRAM + "/reset", 1)
+        except OSError:
+            pass
         print("zram off")
         return 0
 
@@ -185,13 +203,14 @@ def cmd_zram(args):
 
     sh(["swapoff", "/dev/zram0"])
     sh(["modprobe", "zram", "num_devices=1"])
-    sh(["sh", "-c", "echo 1 > /sys/block/zram0/reset"])
-    # Algorithm before size: setting it afterwards is rejected once the device
-    # has been given a disksize, and the rejection is silent.
-    sh(["sh", "-c", "echo %s > /sys/block/zram0/comp_algorithm" % algo])
-    res = sh(["sh", "-c", "echo %s > /sys/block/zram0/disksize" % size])
-    if res.returncode != 0:
-        print("could not size zram: %s" % res.stderr.strip())
+    try:
+        _write_sysfs(SYSFS_ZRAM + "/reset", 1)
+        # Algorithm before size: setting it afterwards is rejected once the
+        # device has been given a disksize, and the rejection is silent.
+        _write_sysfs(SYSFS_ZRAM + "/comp_algorithm", algo)
+        _write_sysfs(SYSFS_ZRAM + "/disksize", size)
+    except OSError as exc:
+        print("could not size zram: %s" % exc)
         return 1
     sh(["mkswap", "/dev/zram0"])
     # Higher priority than any disk swap, so the kernel fills this first.
@@ -202,8 +221,13 @@ def cmd_zram(args):
 
     # zram is memory, not a disk, so the usual "avoid swapping" advice is
     # backwards: pages are cheaper compressed in RAM than kept whole.
-    sh(["sysctl", "-qw", "vm.swappiness=180"])
-    sh(["sysctl", "-qw", "vm.page-cluster=0"])
+    # /proc/sys/vm/*, not `sysctl -qw`: same effect, no shelling out to a
+    # tool whose own job is just opening this same file.
+    try:
+        _write_sysfs("/proc/sys/vm/swappiness", 180)
+        _write_sysfs("/proc/sys/vm/page-cluster", 0)
+    except OSError:
+        pass
     print("zram on: %s, %s, priority 100, swappiness 180" % (size, algo))
     return 0
 

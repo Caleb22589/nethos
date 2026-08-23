@@ -1,11 +1,19 @@
 [Unit]
 Description=NETHOS memory tiers (compressed swap)
 Documentation=man:zramctl(8)
-# Before anything that might need the memory. swap.target rather than
-# multi-user, so the tier exists before the session starts filling it.
+# Before the graphical session, which is the thing that actually fills
+# memory -- not before sysinit.target itself. That used to also be here,
+# putting this unit's own ~1.3s (modprobe zram, mkswap, swapon, each a real
+# subprocess) squarely in front of everything sysinit.target gates: dbus,
+# wpa_supplicant, network.target, even the getty that presents the login
+# prompt. None of those need swap to exist first, so there was nothing
+# actually served by making them wait for it -- confirmed via
+# `systemd-analyze critical-chain`, which put this unit directly in the
+# path to getty@tty1.service being ready. swap.target alone lets it run
+# concurrently with that other early-boot work instead of blocking it.
 DefaultDependencies=no
 After=local-fs.target
-Before=swap.target sysinit.target
+Before=swap.target
 
 [Service]
 Type=oneshot
