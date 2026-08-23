@@ -270,7 +270,24 @@ nethos_first_run &
 # this command, so a `#` line in the middle comments out every argument after
 # it. Doing exactly that silently reduced the shell to its desktop layer --
 # no panel, no dock, no launcher, and no error anywhere.
-exec nethos-view \
+#
+# NETHOS_VIEW_IMPL selects the surface host, the same way NETHOS_COMPOSITOR
+# (see install-nethos.sh) selects the compositor. Python is the default --
+# it runs on both sway and Wayfire and is the one with real hours behind it.
+# NETHOS_VIEW_IMPL=native switches to the C/WPE rewrite in
+# payload/nethos-view-native/ (docs/NETHOS-VIEW-REWRITE.md), Wayfire only: it
+# has no _own_chrome fallback for sway, so this falls through to the Python
+# path there regardless of the variable. A broken native build must never
+# leave a machine with no shell at all, which is also why this is opt-in
+# rather than switched automatically off WAYFIRE_SOCKET the way GTK_CSD is
+# above -- that failure mode is silent right up until someone actually
+# reboots into it.
+NETHOS_VIEW_BIN=nethos-view
+if [ "${NETHOS_VIEW_IMPL:-python}" = "native" ] && [ -n "${WAYFIRE_SOCKET:-}" ] \
+        && command -v nethos-view-native >/dev/null 2>&1; then
+    NETHOS_VIEW_BIN=nethos-view-native
+fi
+exec "$NETHOS_VIEW_BIN" \
     "url=$API/splash.html,role=overlay,name=splash,exclusive=0" \
     "url=$API/desktop.html,role=widget,name=desktop,layer=bottom,anchor=top,exclusive=-1" \
     "url=$API/panel.html,role=panel,name=panel,height=360,anchor=top,exclusive=46" \

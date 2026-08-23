@@ -292,6 +292,13 @@ SETS = {
         "libspa-0.2-bluetooth", "alsa-utils",
         "gir1.2-gtk4layershell-1.0", "libgtk4-layer-shell0",
         "gir1.2-webkit-6.0", "libwebkitgtk-6.0-4",
+        # WPE WebKit runtime -- payload/nethos-view-native/, the native
+        # Wayfire-only rewrite of nethos-view (docs/NETHOS-VIEW-REWRITE.md).
+        # Not the default (NETHOS_VIEW_IMPL=native opts in; Python/WebKitGTK
+        # above is what every machine still boots into), so this is a
+        # runtime-only addition -- no -dev packages, those stay a build-host
+        # concern, not something a real install needs.
+        "libwpe-1.0-1", "libwpebackend-fdo-1.0-1", "libwpewebkit-2.0-1",
 
         # Mesa, named rather than left to arrive as somebody's dependency.
         # These carry the guest half of virgl: with QEMU's virtio-vga-gl and

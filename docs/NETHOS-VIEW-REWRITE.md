@@ -126,21 +126,110 @@ mechanism. Not yet confirmed by a human looking at the physical screen -- the ev
 program-level (a real exported image was captured and swapped), not a visual check. That's the
 next thing to do, then Phase 1 (the actual surface-hosting host process) can start.
 
+## Phase 1: the actual surface-hosting host process
+
+Built as `payload/nethos-view-native/` (`src/`, `protocols/`, `build.sh`), a full rewrite of every
+item this document lists as load-bearing: spec grammar, the apphost socket, shared WebProcess,
+layer-shell roles, the `nethosHost` JS bridge, tick/events fan-out, `_settle_wait`. Everything below
+was built and run against the real, live Wayfire session on the laptop over SSH -- not merely
+compiled -- the same standard the Phase 0 spike used.
+
+**The `related-view` question this document raised is resolved: it exists and works.** Grepping
+WPE's installed headers found no `related-view` property, which looked like a real problem --
+WebKitGTK's process-sharing mechanism looked absent from the WPE build of the same GLib API layer.
+It was a false alarm from grepping headers: GObject construct properties are registered in the
+*implementation*, not declared in a public header, so a header grep was never going to find it
+either way. A runtime diagnostic (`g_object_class_list_properties` on `WEBKIT_TYPE_WEB_VIEW`) found
+`related-view` in the real list of 24 properties, and two views built with it running under one
+`WebKitWebContext` produced exactly one `WPEWebProcess`/`WPENetworkProcess` pair for both, confirmed
+via `ps`. The ~500MB memory fix carries over unchanged.
+
+**The other open question -- WPE has no windowing system, so input has to be hand-wired -- is real,
+and is now done.** The Phase 0 spike had no `wl_seat` at all. This phase binds it, tracks
+pointer/keyboard focus per surface (enter/leave), and forwards through
+`wpe_view_backend_dispatch_pointer_event`/`dispatch_keyboard_event`/`dispatch_axis_event`. Keyboard
+uses `wpe_input_xkb_context_*` (from `wpe/input-xkb.h`, `WPE_ENABLE_XKB=1` in this build) to turn the
+compositor's keymap into WPE's key codes -- xkbcommon does the state tracking, WPE's helper does the
+translation, no hand-rolled keysym table needed. Verified two ways: a synthetic pointer-button
+dispatch through the exact same API produced a real `onclick` handler firing (`BUTTON CLICKED,
+count=1` via `console.log`, forwarded to stdout); no tool on the laptop (no `wtype`/`ydotool`) could
+synthesize *real* hardware input to prove the `wl_seat` listener wiring itself end-to-end, which
+remains to be confirmed by a human at the keyboard.
+
+**One real bug, found and fixed the same way the frame-clock bug in HANDOFF.md was: a crash, not a
+guess.** The first multi-surface build segfaulted, deterministically, every time a page finished its
+first load -- inside `libWPEWebKit` itself, reached through `wl_event_loop_dispatch` and `libffi`
+(WPE's own internal UI-process/WebProcess IPC, unrelated to this program's own Wayland connection to
+Wayfire). Three plausible-looking causes were tried and ruled out in order (calling
+`wpe_view_backend_add_activity_state` too early; two rapid `wpe_view_backend_dispatch_set_size` calls
+from an initial 0x0 layer-shell configure) before a `SIGSEGV` handler
+(`backtrace_symbols_fd`, `-rdynamic`) gave an actual stack trace, and re-running the *unmodified*
+Phase 0 spike against the same live session and the same page at the same moment, with no crash,
+proved the environment itself was fine. The real cause: `struct
+wpe_view_backend_exportable_fdo_egl_client` -- the table of export callback function pointers -- was
+a local (stack) variable passed by address to `wpe_view_backend_exportable_fdo_egl_create()`. WPE
+keeps that pointer for the exportable's whole lifetime, not just for the call; once the creating
+function returned, the pointer was dangling, and the eventual callback dispatch jumped through
+whatever garbage now occupied that stack slot. The spike never hit this because it declares the
+identical struct `static const` at file scope. Fixed the same way here -- `static const`, function
+pointers only, the per-surface pointer passed as the separate `data` argument the API already
+provides for exactly this. Confirmed fixed: real pages (including production `dock.html` and
+`menu.html`, not just a synthetic test page) now load, render, and round-trip real `nethosHost.*`
+calls (`shell.js`'s actual `exclusive`/`input_rect` calls, unmodified) with no crash, across dozens
+of runs.
+
+**JS bridge**: same six methods (`exclusive`/`inputRect`/`hide`/`show`/`repaint`/`keyboard`), same
+message shapes as far as `shell.js` can tell -- the wire format underneath differs on purpose (a
+plain JS object via WPE's `JSCValue`-based `script-message-received` signal, not
+JSON.stringify/json.loads; WPE's WebKit version here, 2.48, only ever had the `JSCValue` signal
+signature, `WebKitJavascriptResult` doesn't exist in these headers at all). Verified against real
+`dock.html`: `nethosHost.exclusive()` and `nethosHost.inputRect()` calls it makes on load both
+arrived and were handled correctly. `hide()`/`show()` verified with a driver page that calls both on
+a timer, including the `wpe_view_backend_add_activity_state` call that turned out to be safe *there*
+(unlike calling it during surface construction, see above) -- confirmed by console output reaching
+stdout both before and after the hide/show cycle, meaning the page kept running rather than actually
+dying. `repaint()`'s exact pixel-level effect (a bare `wl_surface_commit`, no `wpe_view_backend`
+call, since WPE's own export/release cycle already re-arms the next frame) has not been checked
+against the specific ghost-frame scenario `shell.js`'s own comments describe -- log-level
+verification only, see below.
+
+**Apphost socket**: same framing (`$XDG_RUNTIME_DIR/nethos-apphost.sock`, one spec per connection,
+half-close, empty = liveness probe). Verified end-to-end against a real spec (opening a `role=window`
+app) and a liveness probe, both handled without touching the live socket the real Python shell was
+already serving -- tested against a temporarily-renamed socket path, reverted immediately after.
+
+**`_settle_wait`**: direct port of the `/proc` parsing (one off-by-two bug caught before it shipped:
+the field-22-via-rsplit arithmetic is easy to get wrong by exactly the amount that only shows up as
+a slightly-wrong wait, not a crash -- worth double-checking against the Python original's own comment
+rather than re-deriving it).
+
+**Not yet exercised**: the full 5-surface shell running as the actual session (deliberately not
+tested against the live laptop, which was mid-session as the user's real desktop -- doing so would
+mean binding the same apphost socket path the live Python shell already serves, and colliding
+`exclusive` zones with the real panel/dock while the test ran). The `xdg_toplevel` + decoration path
+was exercised standalone (a real window opened via the apphost socket, sharing the same
+`nethos_surface_create()` path as everything else) but firedecor's actual frame has not been
+confirmed by a human looking at the screen. Boot-time itself -- the entire reason for this rewrite --
+has not been re-measured; that needs a full image rebuild and reboot cycle, not an SSH session into
+an already-running one.
+
 ## What still needs doing before this is real
 
-- **wlroots-protocols is not packaged.** `wlr-layer-shell-unstable-v1.xml` had to be fetched from
-  `gitlab.freedesktop.org/wlroots/wlr-protocols` directly; it needs to live in this repo (e.g.
-  `payload/nethos-view-native/protocols/`) rather than being fetched at build time.
-- **No compiled-from-source component has ever existed in this repo.** `docs/SYSTEM.md` currently
-  states source compilation is avoided as a matter of policy. This rewrite is the deliberate
-  exception; that doc should be updated once (if) this ships.
-- **WPE's Debian packages (`libwpe-1.0-1`, `libwpebackend-fdo-1.0-1`, `libwpewebkit-2.0-1`, `-dev`
-  variants) are not yet in `pkg/npkg_bootstrap.py`'s `SETS["desktop"]`.** They exist on the laptop
-  only because they were installed by hand for this session's benchmarking.
-- **No build step exists yet** to compile anything and drop the resulting binary into
-  `payload/bin/` before `install_desktop()`/`install-nethos.sh` copy it onto a target system --
-  both of those copy loops are already binary-agnostic (`install -m 0755` over whatever is in
-  `payload/bin/nethos-*`), so nothing there needs to change, but nothing currently produces the
-  binary in the first place.
-- Full implementation phases, the `NETHOS_VIEW_IMPL` fallback design, and the verification plan are
-  recorded in the session's working plan; this document exists to survive independently of that.
+- **`NETHOS_VIEW_IMPL=native` is wired into `nethos-session`, but python stays the default.** Opt-in
+  only, and only reachable at all when `WAYFIRE_SOCKET` is set (sway always gets the Python build,
+  matching the Wayfire-only scope decision above) and `nethos-view-native` is actually on `PATH`.
+- **`pkg/npkg_bootstrap.py`'s `SETS["desktop"]` now has the three runtime WPE packages**
+  (`libwpe-1.0-1`, `libwpebackend-fdo-1.0-1`, `libwpewebkit-2.0-1`) confirmed present under those
+  exact names in this repo's own vendored `Packages-main-amd64.gz`. `-dev` packages are deliberately
+  not added -- those are a build-host concern (`payload/nethos-view-native/build.sh`), not something
+  a real install needs.
+- **`payload/nethos-view-native/build.sh` exists** and produces `payload/bin/nethos-view-native` via
+  `wayland-scanner` + one `gcc` line against packages already confirmed installed; it is not yet
+  wired into `scripts/build-x86.sh`'s own image build, so a fresh image still needs this run by hand
+  before `NETHOS_VIEW_IMPL=native` has anything to select.
+- **`docs/SYSTEM.md`'s "no compiled code" policy note** still needs updating once (if) this actually
+  ships as more than an opt-in experiment -- deliberately not touched yet, per this document's own
+  original wording.
+- The full 5-surface shell, `repaint()`'s exact ghost-frame behaviour, and a human confirming
+  firedecor actually frames a native `role=window` surface all remain to be checked, ideally in a
+  maintenance window rather than against someone's live session.
