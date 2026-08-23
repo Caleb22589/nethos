@@ -13,6 +13,8 @@
 set -eu
 
 API="http://127.0.0.1:7777"
+SESSION_LOG="$HOME/.cache/nethos/session.log"
+mkdir -p "$(dirname "$SESSION_LOG")" 2>/dev/null || true
 
 # Hand the compositor's environment to the user service manager, otherwise
 # nethosd starts without WAYLAND_DISPLAY and cannot talk to the compositor.
@@ -20,7 +22,37 @@ systemctl --user import-environment \
     WAYLAND_DISPLAY SWAYSOCK HYPRLAND_INSTANCE_SIGNATURE \
     XDG_CURRENT_DESKTOP XDG_SESSION_TYPE 2>/dev/null || true
 
-if ! systemctl --user restart nethosd.service 2>/dev/null; then
+# Wayfire's own autostart already starts nethosd (nethosd = systemctl
+# --user start nethosd in wayfire.ini), often before this script's own
+# import-environment above has actually run -- so unconditionally
+# restarting here used to be the safe fix: without it, that early instance
+# could be missing WAYLAND_DISPLAY/SWAYSOCK, and every swaymsg-based
+# feature (snap, focus, close) would fail silently with no error anywhere
+# a person would think to look.
+#
+# Restarting unconditionally paid for that safety on every single boot,
+# though, including the -- likely common -- case where the early instance
+# already has the right environment. And it does so at almost exactly the
+# moment nethos-view starts its own cold GTK/WebKit import, competing for
+# the same two cores on this hardware. Measured: nethos-view's own ~2.76s
+# import cost (idle-machine number) was taking closer to 8s at this point
+# in a real boot, and this restart landing at the same instant is why.
+#
+# So: only restart if the already-running instance's own environment
+# actually lacks what it needs, checked directly against /proc rather than
+# assumed either way.
+nethosd_pid=$(pgrep -f '^python3 /usr/bin/nethosd$' 2>/dev/null | head -n1)
+nethosd_env_ok=0
+if [ -n "$nethosd_pid" ] && [ -r "/proc/$nethosd_pid/environ" ]; then
+    if tr '\0' '\n' < "/proc/$nethosd_pid/environ" 2>/dev/null \
+            | grep -qx "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-}"; then
+        nethosd_env_ok=1
+    fi
+fi
+if [ "$nethosd_env_ok" = 1 ]; then
+    printf '%s nethosd: already running (pid %s) with the right environment, not restarting\n' \
+        "$(date +%H:%M:%S)" "$nethosd_pid" >> "$SESSION_LOG" 2>/dev/null || true
+elif ! systemctl --user restart nethosd.service 2>/dev/null; then
     if ! curl -sf -o /dev/null --max-time 2 "$API/api/status" 2>/dev/null; then
         /usr/bin/nethosd &
     fi
@@ -32,14 +64,11 @@ fi
 # there before it) moved into nethos-view itself, run right before it
 # creates the shell's surfaces rather than here before nethos-view even
 # starts. Waiting there instead of here means this process's own Python/GTK/
-# WebKit cold start -- 2.76s just to import gi, GTK and WebKit, measured,
-# before a single surface exists -- happens *during* the wait instead of
-# strictly after it. By the time those imports finish the compositor has
-# usually already been up long enough that nethos-view finds nothing left to
-# wait for. See nethos-view's _settle_wait() for the mechanism and the
-# original measurements this wait exists for at all.
-SESSION_LOG="$HOME/.cache/nethos/session.log"
-mkdir -p "$(dirname "$SESSION_LOG")" 2>/dev/null || true
+# WebKit cold start happens *during* the wait instead of strictly after it.
+# By the time those imports finish the compositor has usually already been
+# up long enough that nethos-view finds nothing left to wait for. See
+# nethos-view's _settle_wait() for the mechanism and the original
+# measurements this wait exists for at all.
 
 # Wait for the API rather than racing it.
 i=0
