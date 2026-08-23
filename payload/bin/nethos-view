@@ -816,18 +816,30 @@ class App(Gtk.Application):
     def do_activate(self):
         for spec in self.specs:
             self.surfaces.append(Surface(self, spec))
-        if self.apphost:
-            # Every "window"-mode app used to be its own nethos-view process:
-            # its own Python startup, GTK init, WebKitNetworkProcess and
-            # bwrap-sandboxed WebKitWebProcess, paid cold on every launch.
-            # Measured on real (not VM) hardware -- a 2013 dual-core Haswell
-            # laptop -- that cold start is the delay the user sees opening an
-            # app, and clicking again before it finishes doubles the cost
-            # instead of doing nothing. This process stays alive for the
-            # whole session and opens app windows as related WebViews, the
-            # same trick that already made the shell one renderer instead of
-            # four. hold() keeps it running with zero windows between
-            # launches -- GApplication would otherwise treat that as "done".
+        # The shell process (identified the same way nethos-reload finds it
+        # to restart it: the role=panel surface) also serves the apphost
+        # socket, in addition to --apphost's own standalone mode. App windows
+        # become related WebViews of the shell's *already warm* WebProcess
+        # instead of paying for a second full WebKit engine alongside it.
+        #
+        # Measured on real hardware: the shell (4 layer-shell surfaces
+        # sharing one engine) and a separate apphost with a single Settings
+        # window open cost about the same, ~500-600MB each, because that
+        # cost is almost entirely WebKit's own fixed baseline -- the JS and
+        # layout engine -- not the handful of small pages either one draws.
+        # Running both at once was paying that baseline twice for no reason
+        # once the apphost existed only to avoid a cold process per launch,
+        # which sharing the shell's engine already does just as well.
+        #
+        # The standalone --apphost mode stays as ensure_apphost()'s fallback
+        # for the (rare) case the shell itself is not answering.
+        is_shell = any(s.get("role") == "panel" for s in self.specs)
+        if self.apphost or is_shell:
+            # hold() keeps the process running with zero *extra* windows
+            # between app launches -- GApplication would otherwise treat
+            # that as "done" once --apphost's own empty spec list finishes
+            # activating. Harmless, if redundant, for the shell, which
+            # always has real surfaces of its own.
             self.hold()
             threading.Thread(target=self._apphost_listen, daemon=True).start()
         # Wake the pages from out here.
