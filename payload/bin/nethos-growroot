@@ -43,6 +43,28 @@ if [ -z "$part" ] || [ -z "$disk" ]; then
 fi
 disk="/dev/$disk"
 
+# Is root even the last partition on the disk? "Free space to the end of
+# the disk", computed below from partition geometry alone, cannot tell the
+# difference between genuinely free space and space some *other* partition
+# already occupies -- an installer that lays down more than one partition
+# (this one does: boot, root, a spare, and /home after root) always has
+# something following root, so that arithmetic always comes out looking
+# like room to grow. growpart already refuses that case correctly every
+# time; the bug was not the refusal, it was that a decline (line below,
+# "growpart declined") never wrote the stamp, so the exact same failing
+# attempt -- and its own real cost, not nothing -- ran again on every
+# single boot forever. Measured on real hardware with a /home partition
+# after root: 6.267s, every boot, permanently, for a resize that was never
+# going to happen. Checked here instead of attempted: cheap, and it is the
+# one case growpart's own decline could never turn into a stamp on its own,
+# since from growpart's side every boot looks like the first attempt.
+last_part=$(lsblk -nlo NAME "$disk" 2>/dev/null | tail -n1)
+if [ "$last_part" != "$(basename "$src")" ]; then
+    say "not the last partition on $disk (something follows it); nothing safe to grow into"
+    mkdir -p "$(dirname "$STAMP")" && : > "$STAMP"
+    exit 0
+fi
+
 # Is there anything worth claiming? Compare the end of the partition with the
 # end of the disk, and do not bother for less than 64MB.
 disk_sectors=$(blockdev --getsz "$disk" 2>/dev/null || echo 0)
