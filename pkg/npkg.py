@@ -56,6 +56,34 @@ DB_DIR = "var/lib/npkg"
 CACHE_DIR = "var/cache/npkg"
 CONFIG_PATH = "etc/npkg/repos.json"
 
+# The NETHOS desktop's own runtime -- nethosd, nethos-view, the session
+# scripts -- is not itself a package npkg tracks, so ordinary dependency
+# resolution (remove()'s `needed_by` below) cannot see that it needs any of
+# these. Most of them happen to survive anyway, incidentally, because some
+# *other* installed package's own Depends: keeps them around -- python3 is
+# pulled in by python3-gi, libgtk-4-1 by libwebkitgtk-6.0-4, and so on. That
+# protection is real but accidental: it would vanish the moment those
+# intermediate packages changed, and it never covered the packages nothing
+# else depends on at all. Verified live: `npkg remove wayfire`,
+# `npkg remove sway` and `npkg remove libgtk4-layer-shell0` all currently
+# succeed with no warning whatsoever, on hardware where wayfire is the
+# actual running compositor -- removing it does not just misbehave, it takes
+# the graphical session down outright, mid-package-remove, before the
+# transaction that removed it has even printed "done".
+#
+# This list exists to make that protection explicit and independent of
+# which other package happens to declare it as a dependency this week, for
+# exactly the packages ordinary dependency tracking cannot reach: nothing
+# else installed needs a compositor to run, so nothing else's Depends: was
+# ever going to protect one.
+SYSTEM_CRITICAL = frozenset({
+    "python3", "python3-gi", "python3-gi-cairo",
+    "libgtk-4-1", "libwebkitgtk-6.0-4",
+    "gir1.2-gtk-4.0", "gir1.2-webkit-6.0",
+    "libgtk4-layer-shell0",
+    "sway", "wayfire", "reform-firedecor",
+})
+
 
 # ---------------------------------------------------------------------------
 # errors
@@ -993,6 +1021,17 @@ class Transaction:
         for name in names:
             if not self.db.is_installed(name):
                 raise NpkgError(f"not installed: {name}")
+            # Checked before the ordinary dependency scan below, and worded
+            # differently on purpose: "required by" names an installed
+            # package, which is not what is true here. Nothing installed
+            # necessarily depends on your compositor -- the desktop itself
+            # does, and that is a fact about NETHOS, not about your system.
+            if name in SYSTEM_CRITICAL and not force:
+                raise DependencyError(
+                    f"{name} is part of the NETHOS desktop's own runtime, "
+                    f"not just another installed package's dependency -- "
+                    f"removing it can break the graphical session outright.\n"
+                    f"  use --force to remove it anyway")
             needed_by = [d for d in self.solver.dependents(name) if d not in names]
             if needed_by and not force:
                 raise DependencyError(
