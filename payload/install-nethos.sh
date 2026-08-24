@@ -87,7 +87,16 @@ fi
 if [ "$FILES_ONLY" -eq 0 ]; then
     log "Creating the ${NETH_USER} user"
     if ! id "$NETH_USER" >/dev/null 2>&1; then
-        useradd -m -G wheel,video,input,audio -s /bin/bash "$NETH_USER"
+        # render, not just video: a stock Debian desktop install's own
+        # postinst/adduser flow puts the desktop user in both, and the
+        # sandboxed WPEWebProcess nethos-view-native's WPE build launches
+        # under bwrap only ever gets a bind-mount of the restricted
+        # /dev/dri/renderD128 render node, not /dev/dri/card*. Missing this
+        # produced a silent, un-erroring blank WebProcess -- no crash, no
+        # log line, every GL/EGL call reporting success -- confirmed live
+        # against real hardware and the reason it took an overnight
+        # elimination chain to find (docs/NETHOS-VIEW-REWRITE.md).
+        useradd -m -G wheel,video,render,input,audio -s /bin/bash "$NETH_USER"
         echo "${NETH_USER}:nethos" | chpasswd
     fi
     sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers

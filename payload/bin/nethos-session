@@ -272,18 +272,19 @@ nethos_first_run &
 # no panel, no dock, no launcher, and no error anywhere.
 #
 # NETHOS_VIEW_IMPL selects the surface host, the same way NETHOS_COMPOSITOR
-# (see install-nethos.sh) selects the compositor. Python is the default --
-# it runs on both sway and Wayfire and is the one with real hours behind it.
-# NETHOS_VIEW_IMPL=native switches to the C/WPE rewrite in
-# payload/nethos-view-native/ (docs/NETHOS-VIEW-REWRITE.md), Wayfire only: it
-# has no _own_chrome fallback for sway, so this falls through to the Python
-# path there regardless of the variable. A broken native build must never
-# leave a machine with no shell at all, which is also why this is opt-in
-# rather than switched automatically off WAYFIRE_SOCKET the way GTK_CSD is
-# above -- that failure mode is silent right up until someone actually
-# reboots into it.
+# (see install-nethos.sh) selects the compositor. native -- the C/WPE rewrite
+# in payload/nethos-view-native/ (docs/NETHOS-VIEW-REWRITE.md) -- is now the
+# default on Wayfire (the default compositor): the four bugs that made it
+# render blank are fixed and it has been screenshot-confirmed end to end
+# (splash/desktop/panel/dock/menu, live widgets, the app launcher) against
+# real hardware. It has no _own_chrome fallback for sway, so this falls
+# through to Python there regardless of the variable, and NETHOS_VIEW_IMPL=
+# python opts back out on Wayfire too -- a broken native build must never
+# leave a machine with no shell at all, which is also why the fallback is
+# automatic (missing binary) as well as explicit (the env var), not just one
+# or the other.
 NETHOS_VIEW_BIN=nethos-view
-if [ "${NETHOS_VIEW_IMPL:-python}" = "native" ] && [ -n "${WAYFIRE_SOCKET:-}" ] \
+if [ "${NETHOS_VIEW_IMPL:-native}" != "python" ] && [ -n "${WAYFIRE_SOCKET:-}" ] \
         && command -v nethos-view-native >/dev/null 2>&1; then
     NETHOS_VIEW_BIN=nethos-view-native
 fi
