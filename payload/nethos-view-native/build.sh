@@ -28,11 +28,7 @@ gen wlr-layer-shell-unstable-v1 "$ROOT/protocols/wlr-layer-shell-unstable-v1.xml
 gen xdg-shell "$ROOT/protocols/xdg-shell.xml"
 gen xdg-decoration-unstable-v1 "$ROOT/protocols/xdg-decoration-unstable-v1.xml"
 
-# wayland-server: not because this process has a server role of its own --
-# it doesn't -- but wl_shm_buffer_get_data() and friends (reading pixels out
-# of a WPE SHM export) are declared in wayland-server-core.h, the same
-# buffer-inspection helpers a compositor would use. See nethos_view.h.
-PKGS="wayland-client wayland-server wayland-egl egl glesv2 wpe-webkit-2.0 wpe-1.0 wpebackend-fdo-1.0 glib-2.0 xkbcommon"
+PKGS="wayland-client wayland-egl egl glesv2 wpe-webkit-2.0 wpe-1.0 wpebackend-fdo-1.0 glib-2.0 xkbcommon"
 
 CFLAGS="-std=c11 -Wall -Wextra -Wno-unused-parameter -O2 -g -I$BUILD -I$ROOT/src $(pkg-config --cflags $PKGS)"
 LIBS="$(pkg-config --libs $PKGS) -lpthread -rdynamic"

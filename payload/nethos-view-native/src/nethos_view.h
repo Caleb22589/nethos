@@ -20,30 +20,29 @@
 
 #include <wpe/webkit.h>
 #include <wpe/fdo.h>
-#include <wpe/unstable/fdo-shm.h>
+#include <wpe/fdo-egl.h>
 
-/* wl_shm_buffer_get_data/_get_stride/_get_format/_begin_access/_end_access
- * are declared here, not in wayland-client.h -- WPE's exportable_fdo
- * backend runs its own tiny internal Wayland *server* role for the
- * WebProcess<->UI-process buffer handoff (the same internal mechanism a
- * dangling-pointer bug crashed inside of once already, see surface.c),
- * and these are the server-side buffer-inspection helpers, needed here
- * purely to read pixels out of an already-received SHM buffer. */
-#include <wayland-server-core.h>
-
-/* Switched from the dma-buf/EGLImage import path (wpe/fdo-egl.h,
- * wpe_fdo_initialize_for_egl_display) to WPE's plain SHM export path.
- * Confirmed live on the laptop (docs/NETHOS-VIEW-REWRITE.md): a
- * self-contained EGL client with no cross-process buffer sharing at all
- * presents perfectly, proving EGL/GL presentation itself is fine on this
- * hardware; every dma-buf-backed WPE surface -- across three different
- * binaries including the untouched Phase 0 spike -- renders nothing, with
- * every EGL/GL/Wayland call along the way reporting success. That is the
- * signature of a dma-buf import that succeeds at the API level without the
- * memory ever actually mapping. SHM sidesteps cross-process GPU buffer
- * sharing entirely: WPE hands over real pixel bytes, this process uploads
- * them with glTexImage2D, and the only thing shared across the process
- * boundary is a memory-mapped file, not a GPU buffer handle. */
+/* Back on the dma-buf/EGLImage import path -- zero-copy, GPU to GPU -- after
+ * a detour through WPE's plain SHM export path for most of a night's
+ * debugging (see docs/NETHOS-VIEW-REWRITE.md's "white-window bug" sections).
+ * SHM looked necessary at the time: every dma-buf-backed WPE surface, across
+ * three different binaries including the untouched Phase 0 spike, rendered
+ * nothing, with every EGL/GL/Wayland call along the way reporting success --
+ * switching to SHM (real pixel bytes, no cross-process GPU buffer handle at
+ * all) was what proved EGL/GL presentation itself was fine on this hardware
+ * and let the elimination chain continue. It turned out dma-buf was never
+ * actually the problem: the real causes (missing `render` group membership,
+ * two missing WPE frame-pacing acks, no eglSwapInterval, three Wayland
+ * protocol races) applied identically to both paths and were fixed without
+ * ever touching the import mechanism. SHM's real cost only showed up after
+ * the desktop was usable enough to interact with: every frame requires
+ * WebKit to read its own GPU-composited output back into a CPU-side
+ * shared-memory buffer, and this process to re-upload that back into a GPU
+ * texture with glTexImage2D -- a full GPU->CPU->GPU round trip of the whole
+ * surface, every frame, confirmed to be the actual lag once the rest of the
+ * pipeline was correct. dma-buf/EGLImage shares the composited buffer's GPU
+ * memory directly; the only thing that crosses the process boundary is a
+ * handle, not the pixels themselves. */
 
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"

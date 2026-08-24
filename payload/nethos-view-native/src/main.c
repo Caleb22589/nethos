@@ -74,8 +74,8 @@ int main(int argc, char **argv) {
     }
 
     if (nethos_wayland_init() != 0) return 1;
-    if (!wpe_fdo_initialize_shm()) {
-        fprintf(stderr, "nethos-view-native: wpe_fdo_initialize_shm failed\n");
+    if (!wpe_fdo_initialize_for_egl_display(g_egl_display)) {
+        fprintf(stderr, "nethos-view-native: wpe_fdo_initialize_for_egl_display failed\n");
         return 1;
     }
 
