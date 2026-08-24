@@ -536,3 +536,48 @@ acks and `s->visible`/`s->configured` guards being correct, which they still are
 unconditionally from all three EGL exportable callbacks, not just the one SHM used, closing the same
 class of permanent-stall bug for the unlikely case WPE hands back an SHM buffer anyway under the EGL
 backend).
+
+## Still laggy after dma-buf: `eglSwapInterval(1)` was blocking the whole event loop
+
+dma-buf fixed CPU cost -- a plain scroll test dropped from spiking `WPEWebProcess` to 45-127% down to
+near zero -- but the report that followed was specific: every cursor hover/focus change and dragging
+the volume slider in Control Center still felt slow. Low CPU and low *latency* are different claims,
+and this was a latency bug.
+
+Timing instrumentation wrapped directly around `eglSwapBuffers()` (a `clock_gettime()` pair, logged
+whenever a single call took more than 3ms) found the cause immediately: 3-19ms per swap, clustered
+right around one vsync period (16.67ms at this panel's 60Hz). That is exactly what `eglSwapInterval(1)`
+(added earlier, see the frame-pacing section above, to stop WPE re-exporting faster than the CPU could
+keep up) is supposed to do -- except Mesa's own implementation of that block, in its Wayland EGL
+platform, works by registering a `wl_surface.frame` callback and blocking the *calling thread* until
+the compositor fires it. `nethos-view-native` is single-threaded: one GLib main loop handles Wayland
+dispatch (every surface's input, not just the one currently swapping) and every surface's rendering,
+all on the same thread. One surface's blocking swap therefore stalled reading the *next* pointer-motion
+event for every surface on screen, for up to a full vsync period, on every single swap. With several
+surfaces capable of animating in the same tick -- the panel clock, a widget's periodic refresh, a
+slider actively being dragged -- those blocks stack, which is what turned into "everything feels
+slightly laggy" rather than one clearly broken interaction: a plain discrete scroll (my own first test)
+happens to generate few enough events, spaced widely enough, not to expose it; continuous pointer
+motion during a hover or a drag generates far more.
+
+The fix does explicitly and non-blockingly, only for the one surface that actually needs it, what
+`eglSwapInterval(1)` was doing implicitly and expensively for every surface at once: back to
+`eglSwapInterval(0)` (swap returns immediately, never blocks), and `render_surface()` now calls
+`wl_surface_frame(s->wl_surface)` itself right before each swap, registering a `wl_callback` that rides
+along on the same commit. WPE's `frame_complete`/`frame_displayed` acks -- which must still eventually
+fire for every export or WPE withholds all further ones (the menu/ask/control-center bug above) -- are
+now dispatched from that callback's `done()` handler once the compositor actually confirms presentation
+(non-blocking, event-driven, arrives through the same `wl_display_dispatch()` already reading every
+other Wayland event), instead of unconditionally right after the swap call returns. `render_surface()`
+now returns whether it actually painted, so the three `on_export_*` callbacks in `surface.c` can still
+ack immediately, with nothing to wait for, on the frame it declines to paint (hidden or not yet
+configured) -- the same distinction bug 5 needed, just routed through a callback instead of an
+immediate call for the frame it *does* paint. `nethos_surface_destroy()` destroys a still-pending
+`frame_cb` before freeing its surface, since an orphaned callback would otherwise still fire into freed
+memory once the compositor eventually got around to it.
+
+Confirmed live: idle CPU stays at 0%, a sustained scroll's CPU stays in the same low range dma-buf
+already established, and Ask still opens with keyboard focus and closes clean through the real
+production trigger path -- none of the hide/show or protocol-race fixes depended on which pacing
+mechanism was active. Whether hover and slider-drag now actually *feel* smooth needs a person's own
+hands on the trackpad to confirm; that part of the report is with the user.
