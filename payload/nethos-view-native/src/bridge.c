@@ -1,18 +1,13 @@
-/* The nethosHost JS bridge -- direct behavioural port of _install_bridge()/
- * _on_message() in payload/bin/nethos-view. shell.js (unmodified, 1670
- * lines) calls window.nethosHost.exclusive/inputRect/hide/show/repaint/
- * keyboard from many places; every one of those call sites is load-bearing
- * (see the grep of shell.js recorded in docs/NETHOS-VIEW-REWRITE.md's
- * Phase 1 notes) and none of it changes here.
- *
- * Wire format differs from the Python version on purpose: that code
- * JSON.stringifies the message and json.loads()s it back because PyGObject
- * only exposes WebKitJavascriptResult as a JSON string. WPE's JSC API
- * (jsc.h) hands the script-message-received signal a real JSCValue*, so
- * this posts a plain JS object and reads its properties directly -- no
- * hand-rolled JSON parser needed. shell.js never sees the difference; it
- * only ever calls the nethosHost.* functions below, never touches the wire
- * shape itself.
+/* The nethosHost JS bridge -- direct port of _install_bridge()/_on_message()
+ * in payload/bin/nethos-view. shell.js (unmodified) calls
+ * window.nethosHost.exclusive/inputRect/hide/show/repaint/keyboard from many
+ * places; every one of those call sites is load-bearing and none of it
+ * changes here. Wire format matches the Python version exactly (a
+ * JSON-stringified postMessage) rather than Phase 1's plain-object shim,
+ * since WebKitGTK's script-message-received handler hands this process the
+ * same JSCValue* either way and there is no reason to diverge from the
+ * reference implementation now that nothing about the message path is
+ * WPE-specific any more.
  */
 #include <stdio.h>
 #include <string.h>
@@ -22,159 +17,131 @@
 
 #include "nethos_view.h"
 
-/* Same file the Python _theme() reads, same "before first paint" reasoning:
- * a theme applied after the page has already rendered shows as a flash of
- * the wrong one. */
-static const char *read_theme(char *buf, size_t n) {
-    const char *home = getenv("HOME");
-    if (!home) return "";
-    char path[1024];
-    snprintf(path, sizeof(path), "%s/.config/nethos/theme", home);
-    FILE *f = fopen(path, "r");
-    if (!f) return "";
-    size_t len = fread(buf, 1, n - 1, f);
-    fclose(f);
-    buf[len] = '\0';
-    while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == ' ')) buf[--len] = '\0';
-    if (strcmp(buf, "light") == 0 || strcmp(buf, "dark") == 0) return buf;
-    return "";
+extern const char *nethos_read_theme(char *buf, size_t n); /* surface.c */
+
+/* Commit a frame, whatever the page thinks it is doing -- direct port of
+ * Surface._repaint(). Both halves of what a page changes without an
+ * explicit draw -- pixels and input region -- only reach the compositor on
+ * a commit, and GTK/gtk4-layer-shell only commits one when something
+ * actually draws. queue_draw on both the window and the view is what
+ * nethos-view calls after every input-region change and after show(), for
+ * exactly this reason: an overlay surface is deliberately never unmapped
+ * (an unmapped surface's page is suspended and stops hearing events), so
+ * dismissing something by hiding a div and releasing the input region does
+ * nothing to the compositor at all unless something forces a repaint. */
+static void repaint(struct nethos_surface *s) {
+    gtk_widget_queue_draw(GTK_WIDGET(s->window));
+    gtk_widget_queue_draw(GTK_WIDGET(s->webview));
 }
 
-static void set_input_region(struct nethos_surface *s, int x, int y, int w, int h) {
-    /* A NULL region means "no restriction, whole surface" per the wl_surface
-     * protocol -- the opposite of what shell.js means by inputRect(0,0,0,0).
-     * shell.js calls that specifically to make an idle overlay fully
-     * click-through (menu.html, splash.html -- see its own comments on
-     * overlayMapped()/nethosHost.inputRect(0,0,0,0)). Passing NULL here
-     * left those two full-screen, always-on-top ZWLR_LAYER_SHELL_V1_LAYER_
-     * OVERLAY surfaces capturing every click across the whole screen
-     * indefinitely -- confirmed live: real hardware clicks aimed at a
-     * window (Settings) never arrived, because ptr_enter/ptr_button always
-     * matched splash or menu first. An *empty* region (a real wl_region
-     * object with zero rectangles added to it) is what actually makes a
-     * surface pass every click through to whatever is beneath it. */
-    struct wl_region *region = wl_compositor_create_region(g_compositor);
-    if (w > 0 && h > 0) wl_region_add(region, x, y, w, h);
-    wl_surface_set_input_region(s->wl_surface, region);
-    wl_region_destroy(region);
-    s->has_input_rect = true;
-    s->input_x = x; s->input_y = y; s->input_w = w; s->input_h = h;
+/* Limit clicks to part of the surface -- direct port of
+ * Surface._set_input_rect(). An auto-hiding dock is a full-size transparent
+ * surface most of the time; without this it swallows every click aimed at
+ * the window underneath it. w<=0 or h<=0 means an empty (not NULL) region:
+ * NULL means "no restriction, whole surface" per GDK, the opposite of what
+ * shell.js means by inputRect(0,0,0,0) -- see the region-vs-NULL history in
+ * docs/NETHOS-VIEW-REWRITE.md, the same distinction that mattered under raw
+ * Wayland matters here too, cairo_region_create() with nothing added to it
+ * being the "genuinely empty, click-through" shape rather than a NULL that
+ * would mean the opposite. */
+static void set_input_rect(struct nethos_surface *s, int x, int y, int w, int h) {
+    GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(s->window));
+    if (!surface) return;
+    cairo_region_t *region = cairo_region_create();
+    if (w > 0 && h > 0) {
+        cairo_rectangle_int_t rect = { x, y, w, h };
+        cairo_region_union_rectangle(region, &rect);
+    }
+    gdk_surface_set_input_region(surface, region);
+    cairo_region_destroy(region);
     /* Region changes are queued until the next commit -- same reason
      * _set_input_rect() in nethos-view calls _repaint() at the end. */
-    nethos_surface_repaint(s);
+    repaint(s);
 }
 
+/* Keep drawing for a moment after show() -- direct port of the Python
+ * version's _wake() nested function and its own long comment on why: a
+ * surface keeps its last buffer while unmapped and presents it again on
+ * map, so what appears first is whatever was on screen when it went away,
+ * not the new content -- the launcher, when the control centre is what is
+ * being opened. The frame that replaces it does not damage the output on
+ * its own (the same "ghost" bug elsewhere in this project), so a single
+ * queue_draw here loses the race. Twelve redraws at 25ms, cheap and
+ * bounded, gives the page and the compositor several chances instead of
+ * one and then stops on its own. */
+static gboolean wake_tick(gpointer data) {
+    struct nethos_surface *s = data;
+    if (s->wake_frames <= 0) { s->wake_source = 0; return G_SOURCE_REMOVE; }
+    s->wake_frames--;
+    repaint(s);
+    return G_SOURCE_CONTINUE;
+}
+
+/* WebKitGTK hands script-message-received the same real JSCValue* WPE did --
+ * JSC bindings are shared WebKit infrastructure, not port-specific -- so
+ * direct property access works exactly the way it did in Phase 1's bridge.c,
+ * no JSON round-trip (and no new json-glib dependency) needed just because
+ * the wire shape above now matches the Python version's JSON.stringify
+ * rather than Phase 1's plain object. jsc_value_to_json() decodes what the
+ * page already encoded back into a real JS object WebKit hands over as a
+ * JSCValue either way. */
 static void on_message(WebKitUserContentManager *mgr, JSCValue *value, gpointer data) {
     struct nethos_surface *s = data;
-    if (!jsc_value_is_object(value)) return;
+    char *json_text = jsc_value_to_string(value);
+    JSCValue *parsed = jsc_value_new_from_json(jsc_value_get_context(value), json_text);
+    free(json_text);
+    if (!jsc_value_is_object(parsed)) { g_object_unref(parsed); return; }
 
-    JSCValue *type_v = jsc_value_object_get_property(value, "type");
-    if (!type_v || !jsc_value_is_string(type_v)) { if (type_v) g_object_unref(type_v); return; }
+    JSCValue *type_v = jsc_value_object_get_property(parsed, "type");
+    if (!type_v || !jsc_value_is_string(type_v)) {
+        if (type_v) g_object_unref(type_v);
+        g_object_unref(parsed);
+        return;
+    }
     char *type = jsc_value_to_string(type_v);
     g_object_unref(type_v);
 
-    if (strcmp(type, "exclusive") == 0 && s->spec.role != ROLE_WINDOW && s->layer_surface) {
-        JSCValue *v = jsc_value_object_get_property(value, "value");
+    if (!strcmp(type, "exclusive") && s->spec.role != ROLE_WINDOW) {
+        JSCValue *v = jsc_value_object_get_property(parsed, "value");
         int n = v ? (int)jsc_value_to_double(v) : 0;
         if (v) g_object_unref(v);
-        zwlr_layer_surface_v1_set_exclusive_zone(s->layer_surface, n);
-        /* nethos_surface_repaint(), not a direct commit -- it is the one
-         * that already checks s->configured (see input_rect below). shell.js
-         * calls nethosHost.exclusive() as soon as it has measured its own
-         * content, which easily races ahead of this surface's first
-         * layer_surface configure/ack round-trip. A commit that lands before
-         * that ack is a *fatal* Wayland protocol error under Wayfire
-         * ("layer_surface has never been configured"), and a fatal error on
-         * one surface tears down the whole wl_display connection -- every
-         * other surface on the same connection goes down with it, which is
-         * why the entire native shell (not just the panel) stayed an inert
-         * void colour with the UI process spinning near 100% CPU (retrying
-         * dispatch on a socket that had already been killed) even after the
-         * frame-pacing fix below made a single ordinary window render
-         * correctly. Confirmed live via the exact error text in the
-         * process's own stderr log. */
-        nethos_surface_repaint(s);
-    } else if (strcmp(type, "input_rect") == 0) {
-        JSCValue *vx = jsc_value_object_get_property(value, "x");
-        JSCValue *vy = jsc_value_object_get_property(value, "y");
-        JSCValue *vw = jsc_value_object_get_property(value, "w");
-        JSCValue *vh = jsc_value_object_get_property(value, "h");
-        set_input_region(s,
+        gtk_layer_set_exclusive_zone(s->window, n);
+    } else if (!strcmp(type, "input_rect")) {
+        JSCValue *vx = jsc_value_object_get_property(parsed, "x");
+        JSCValue *vy = jsc_value_object_get_property(parsed, "y");
+        JSCValue *vw = jsc_value_object_get_property(parsed, "w");
+        JSCValue *vh = jsc_value_object_get_property(parsed, "h");
+        set_input_rect(s,
             vx ? (int)jsc_value_to_double(vx) : 0, vy ? (int)jsc_value_to_double(vy) : 0,
             vw ? (int)jsc_value_to_double(vw) : 0, vh ? (int)jsc_value_to_double(vh) : 0);
         if (vx) g_object_unref(vx);
         if (vy) g_object_unref(vy);
         if (vw) g_object_unref(vw);
         if (vh) g_object_unref(vh);
-    } else if (strcmp(type, "keyboard") == 0 && s->spec.role != ROLE_WINDOW && s->layer_surface) {
-        JSCValue *v = jsc_value_object_get_property(value, "on");
-        bool on = v && jsc_value_to_boolean(v);
-        if (v) g_object_unref(v);
+    } else if (!strcmp(type, "keyboard") && s->spec.role != ROLE_WINDOW) {
         /* ON_DEMAND hands the keyboard to a surface only when clicked -- fine
          * for a panel, wrong for a search box. EXCLUSIVE only while
-         * something wants it: this surface is never destroyed, so leaving
-         * it exclusive would starve every application for the session. Same
-         * reasoning as nethos-view's LayerShell.KeyboardMode switch. */
-        zwlr_layer_surface_v1_set_keyboard_interactivity(s->layer_surface,
-            on ? ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE
-               : ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_ON_DEMAND);
-        /* Same race, same fix as "exclusive" above: menu.html (the one
-         * spec'd with keyboard=on) calls nethosHost.keyboard() as early as
-         * nethosHost.exclusive() does, and a raw commit here hit the exact
-         * same fatal "never been configured" protocol error once the
-         * exclusive-zone race above was closed -- confirmed live, this was
-         * the second of two commit sites that needed the guard, not a
-         * theoretical twin. */
-        nethos_surface_repaint(s);
-    } else if (strcmp(type, "repaint") == 0) {
-        nethos_surface_repaint(s);
-    } else if (strcmp(type, "hide") == 0) {
-        s->visible = false;
-        /* A real (fully transparent) painted frame, not a null-buffer
-         * unmap -- see the long comment on nethos_surface_paint_blank() in
-         * surface.c for why: unmapping and later remapping hits a fatal
-         * Wayland protocol error under this Wayfire version, confirmed live
-         * with WAYLAND_DEBUG=1, and payload/bin/nethos-view's own comments
-         * say outright its overlay surface is deliberately never unmapped
-         * for related reasons. This still gets what unmapping was for --
-         * the compositor cannot ignore a real commit, so the region is
-         * genuinely damaged to nothing rather than left showing a stale
-         * frame (the "ghost" bug shell.js's own comments describe) -- and
-         * s->configured never has to be touched, so there is no
-         * reconfiguration to wait for on the way back.
-         *
-         * set_input_region(0,0,0,0) alongside the blank paint, not left to
-         * the caller: unmapping used to make a hidden surface click-through
-         * for free (an unmapped wl_surface simply isn't a hit-test target),
-         * which is exactly why splash.html's own hide() call never bothered
-         * setting an empty input region itself, the way menu.html's close
-         * path already does before every one of its own hide() calls (grep
-         * shell.js for inputRect(0, 0, 0, 0)). A surface kept fully mapped
-         * (see above) has no such free lunch -- confirmed live: every
-         * pointer-motion event aimed at the panel and desktop was instead
-         * reported against splash, full-screen and invisible, still
-         * covering and capturing the entire output. Clearing it here makes
-         * every hide() click-through unconditionally, matching what the old
-         * unmap-based one guaranteed implicitly, instead of depending on
-         * each page remembering to ask for it separately. */
-        wpe_view_backend_remove_activity_state(s->wpe_backend, wpe_view_activity_state_visible);
-        nethos_surface_paint_blank(s);
-        set_input_region(s, 0, 0, 0, 0);
-    } else if (strcmp(type, "show") == 0) {
-        s->visible = true;
-        wpe_view_backend_add_activity_state(s->wpe_backend,
-            wpe_view_activity_state_visible | wpe_view_activity_state_in_window);
-        /* WPE suspends a hidden view's WebProcess (same reason WebKitGTK
-         * does under GTK); marking it visible again should make WPE export
-         * a fresh frame on its own next invalidation. nethos-view's GTK
-         * port needed an extra dozen forced redraws here because GTK's own
-         * frame clock does not always restart itself after being hidden --
-         * an EGL/WPE-specific quirk, not necessarily one this path has, so
-         * this is a smaller safety net rather than a straight copy: one
-         * extra repaint request, not twelve. */
-        nethos_surface_repaint(s);
+         * something wants it: this surface is never unmapped, so leaving it
+         * exclusive would starve every application for the session. */
+        JSCValue *v = jsc_value_object_get_property(parsed, "on");
+        bool on = v && jsc_value_to_boolean(v);
+        if (v) g_object_unref(v);
+        gtk_layer_set_keyboard_mode(s->window,
+            on ? GTK_LAYER_SHELL_KEYBOARD_MODE_EXCLUSIVE : GTK_LAYER_SHELL_KEYBOARD_MODE_ON_DEMAND);
+        if (on) gtk_window_present(s->window);
+    } else if (!strcmp(type, "repaint")) {
+        repaint(s);
+    } else if (!strcmp(type, "hide")) {
+        gtk_widget_set_visible(GTK_WIDGET(s->window), FALSE);
+    } else if (!strcmp(type, "show")) {
+        gtk_widget_set_visible(GTK_WIDGET(s->window), TRUE);
+        repaint(s);
+        gtk_window_present(s->window);
+        s->wake_frames = 12;
+        if (!s->wake_source) s->wake_source = g_timeout_add(25, wake_tick, s);
     }
     free(type);
+    g_object_unref(parsed);
 }
 
 void nethos_bridge_install(struct nethos_surface *s) {
@@ -183,21 +150,25 @@ void nethos_bridge_install(struct nethos_surface *s) {
     webkit_user_content_manager_register_script_message_handler(mgr, "nethosHost", NULL);
 
     char theme_buf[16];
-    const char *theme = read_theme(theme_buf, sizeof(theme_buf));
-    char name_js[160], theme_js[24];
-    snprintf(name_js, sizeof(name_js), "\"%s\"", s->spec.name);
-    if (*theme) snprintf(theme_js, sizeof(theme_js), "\"%s\"", theme);
-    else snprintf(theme_js, sizeof(theme_js), "\"\"");
+    const char *theme = nethos_read_theme(theme_buf, sizeof(theme_buf));
 
-    char shim[2048];
-    snprintf(shim, sizeof(shim),
+    char *name_js = g_strdup_printf("\"%s\"", s->spec.name);
+    char *theme_js = g_strdup_printf("\"%s\"", theme);
+
+    char *shim = g_strdup_printf(
         "window.nethosHost = {\n"
-        "  exclusive: (n) => window.webkit.messageHandlers.nethosHost.postMessage({type:'exclusive', value:n}),\n"
-        "  inputRect: (x,y,w,h) => window.webkit.messageHandlers.nethosHost.postMessage({type:'input_rect', x:x, y:y, w:w, h:h}),\n"
-        "  hide: () => window.webkit.messageHandlers.nethosHost.postMessage({type:'hide'}),\n"
-        "  show: () => window.webkit.messageHandlers.nethosHost.postMessage({type:'show'}),\n"
-        "  repaint: () => window.webkit.messageHandlers.nethosHost.postMessage({type:'repaint'}),\n"
-        "  keyboard: (on) => window.webkit.messageHandlers.nethosHost.postMessage({type:'keyboard', on: !!on}),\n"
+        "  exclusive: (n) => window.webkit.messageHandlers.nethosHost.postMessage(\n"
+        "      JSON.stringify({type: 'exclusive', value: n})),\n"
+        "  inputRect: (x,y,w,h) => window.webkit.messageHandlers.nethosHost.postMessage(\n"
+        "      JSON.stringify({type: 'input_rect', x:x, y:y, w:w, h:h})),\n"
+        "  hide: () => window.webkit.messageHandlers.nethosHost.postMessage(\n"
+        "      JSON.stringify({type: 'hide'})),\n"
+        "  show: () => window.webkit.messageHandlers.nethosHost.postMessage(\n"
+        "      JSON.stringify({type: 'show'})),\n"
+        "  repaint: () => window.webkit.messageHandlers.nethosHost.postMessage(\n"
+        "      JSON.stringify({type: 'repaint'})),\n"
+        "  keyboard: (on) => window.webkit.messageHandlers.nethosHost.postMessage(\n"
+        "      JSON.stringify({type: 'keyboard', on: !!on})),\n"
         "  surface: %s,\n"
         "};\n"
         "if (%s) { document.documentElement.classList.add('neth-gpu'); }\n"
@@ -214,4 +185,8 @@ void nethos_bridge_install(struct nethos_surface *s) {
         NULL, NULL);
     webkit_user_content_manager_add_script(mgr, script);
     webkit_user_script_unref(script);
+
+    g_free(name_js);
+    g_free(theme_js);
+    g_free(shim);
 }

@@ -40,8 +40,18 @@ static gboolean deliver_idle(gpointer data) {
     snprintf(script, sizeof(script), "window.nethosEvent && window.nethosEvent(%s);", payload);
     for (int i = 0; i < g_surface_count; i++) {
         struct nethos_surface *s = g_surfaces[i];
-        if (s && s->webview)
+        if (s && s->webview) {
+            /* Wake the surface before handing it the event -- direct port
+             * of App._deliver()'s own two queue_draw calls, and its own
+             * long comment on why: WebKit suspends a layer-shell surface's
+             * WebProcess once it decides nothing is watching it, and
+             * evaluate_javascript on a suspended process waits for it to be
+             * scheduled again, which without this is the *next tick timer*
+             * firing, up to a second away, not the event itself. */
+            gtk_widget_queue_draw(GTK_WIDGET(s->window));
+            gtk_widget_queue_draw(GTK_WIDGET(s->webview));
             webkit_web_view_evaluate_javascript(s->webview, script, -1, NULL, NULL, NULL, NULL, NULL);
+        }
     }
     free(payload);
     return FALSE;
