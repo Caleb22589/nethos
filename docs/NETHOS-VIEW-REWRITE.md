@@ -439,3 +439,69 @@ wall. `nethos-session`'s own separate, already-documented `WLR_DRM_NO_ATOMIC` bu
 too late in its own process's environment to affect Wayfire's already-initialised DRM backend) is
 still open and unrelated to any of the above. The actual boot-time win this whole rewrite exists for
 still has not been re-measured on a full image rebuild + reboot, only via live-session swaps.
+
+## Menu/Ask/Control Center never opening: two more bugs, found after native became the default
+
+Commit `9cac02c` made the native rewrite the default on Wayfire. The very next report from real use:
+dock and panel window management worked, but Menu, Ask and Control Center would not open at all.
+Shell.js's `overlayMapped()` (the function behind all three) is the only caller of
+`nethosHost.hide()`/`show()` in the whole shell -- panel and dock are never hidden -- so these three
+were the only surfaces it was possible to notice this on.
+
+**Bug 5 -- the frame-pacing acks from the previous fix were themselves conditional on visibility.**
+`render_shm()` dispatched `frame_complete`/`frame_displayed` right after painting, but painting itself
+was guarded on `s->visible` (added at the same time, for a real and separate reason -- see below).
+A frame WPE exported *while a surface was hidden* -- which is every overlay's normal starting state,
+since shell.js hides them the moment nothing is open -- got its buffer released (that call was already
+unconditional) but never acked. WPE then withheld every export after that one, forever, for that
+surface specifically, regardless of any later `nethosHost.show()`. Confirmed with a minimal
+reproduction: a throwaway page (no `nethos.js`, no nethosd) with a `setInterval` counter and two
+`setTimeout`s calling `nethosHost.hide()` then `nethosHost.show()` a few seconds apart, loaded as a
+standalone overlay. It painted its first frame fine, went blank on `hide()`, and never came back on
+`show()` -- reproducing the exact shape of the report with zero app-specific code involved. Fix: moved
+both dispatches out of `render_shm()` into `on_export_shm()`, unconditional, alongside the buffer
+release they already sit next to -- they are WPE's own frame-pipeline bookkeeping (“I got your last
+frame, send the next one”), not a statement about whether this client chose to visually present that
+particular frame.
+
+**Bug 6 -- unmapping a layer-shell surface and later remapping it is fatal under this Wayfire, and
+nothing was requesting the reconfigure that would allow it.** Fixing bug 5 alone was not enough: the
+same reproduction, retested, now hit `wl_display#1.error(zwlr_layer_surface_v1#N, 2, "layer_surface
+has never been configured")` -- confirmed with `WAYLAND_DEBUG=1`, traced to the surface's own real
+content commit landing shortly after `show()`. `hide()`'s implementation attached a `NULL` buffer to
+unmap the `wl_surface` (the standard, protocol-correct way to unmap, and the same technique this
+rewrite's own earlier bug-4 fix relied on to avoid a *different* fatal error -- see the section above).
+The trace showed why this one is different: Wayfire accepted two bufferless commits after the unmap
+(an `input_rect` call and `show()`'s own repaint) without complaint, but rejected the first commit that
+tried to attach a *real* buffer again, as if the surface had reverted to "never configured." Re-issuing
+`zwlr_layer_surface_v1_set_size()` with the surface's own existing size, on the theory that any
+geometry-affecting request might prompt a fresh `configure`, was tried first and confirmed live *not*
+to produce one -- Wayfire simply never sends a new configure just because a client asks nicely after an
+unmap.
+
+The actual fix was to stop unmapping at all. `payload/bin/nethos-view`'s own code says outright, in a
+comment on its `_repaint()`: its equivalent overlay surface "is deliberately never unmapped" -- for
+related reasons, even though its `hide()` still calls GTK's `set_visible(False)`, which does map to an
+underlying Wayland unmap. Whatever GTK/gtk4-layer-shell does internally to make that safe to reverse is
+not something a direct libwayland client gets for free. `nethos_surface_paint_blank()` (`surface.c`) is
+the replacement: on `hide()`, paint one real, fully transparent frame and present it, instead of
+attaching `NULL`. This still gets everything unmapping was for -- a real commit that the compositor
+cannot ignore, genuinely damaging the region to nothing rather than leaving a stale frame on screen
+(the "ghost" bug shell.js's own comments describe at length) -- without the surface ever leaving the
+"configured" state a remap would need to re-earn. `show()` no longer needs the `set_size` nudge either;
+it was never the actual mechanism, just a hypothesis that happened not to cause harm.
+
+**Verified end to end, both after the synthetic reproduction and separately against the real desktop**,
+via the actual production trigger path rather than a direct bridge call -- `curl -X POST
+http://127.0.0.1:7777/api/nethbot/ask -d '{"open":true}'` and `.../api/control/toggle` -- confirmed
+with `grim` screenshots: Ask opens with the search box focused and receiving keystrokes, closes clean
+on a second toggle, reopens clean again, no ghosting, no protocol errors, panel/dock/desktop widgets
+unaffected throughout.
+
+**A build-and-deploy trap worth recording**: `payload/nethos-view-native/build.sh` always writes its
+output to `~/bin/nethos-view-native` on whatever machine it's run on. That path is not on
+`nethos-session`'s `PATH` (`/usr/bin:/usr/local/bin`), so a rebuild during live debugging does nothing
+to the actually-running desktop until it's also `sudo install -m 0755`'d to `/usr/bin/nethos-view-native`
+-- confirmed live, more than once, by chasing a "why didn't my fix change anything" ghost that turned
+out to be testing against a stale binary the whole time. A real image build's `install_desktop()`
+handles this automatically; a hand-built live-debug binary does not.
