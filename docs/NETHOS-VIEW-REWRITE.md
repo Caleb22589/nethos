@@ -611,3 +611,22 @@ gets a `set_input_region` request with a region that has no `add()` call before 
 This one was serious: a full-screen surface silently swallowing every click and hover across the
 entire desktop, invisibly, is not a "feels a bit laggy" bug -- it is "most of the desktop doesn't
 respond to input at all," and was live on the actual running desktop at the time it was found.
+
+## "Control Centre is 0fps" -- three places paying for backdrop-filter blur twice
+
+Not a GPU question -- `eglinfo` on the Wayland platform already confirmed real hardware acceleration
+(Mesa's `crocus` driver, actual Intel HD 4400/Haswell silicon, no software fallback) earlier in this
+investigation. `#panel` and `#dock` in `payload/shell/style.css` already carry their own comment
+describing this exact bug and its fix, found once before: "the compositor already blurs a transparent
+layer surface on the GPU, so a CSS blur on top of that is doubled cost for a worse (over-filtered,
+damage-invalidated) result, not skipped cost." That fix gates the CSS-side `backdrop-filter` behind
+`:not(.neth-compositor-blur)`, a class `bridge.c` sets unconditionally under Wayfire (which always
+blurs behind a transparent layer surface itself, unlike the Python build's sway/Hyprland runtime
+check). `.cc-card` (Control Centre), `#menu` (the app launcher), and `.ask-input`/`.ask-log` (Ask)
+never received that same gate -- each ran its own 30px `backdrop-filter` blur unconditionally, real
+compositor blur behind it or not, paying `nethos.css`'s own documented "by a wide margin the most
+expensive thing this stylesheet can ask for" cost on every single frame regardless of whether it
+bought anything visually. Fixed identically to `#panel`/`#dock`: gated behind the same class. All
+three backgrounds are already 90%+ opaque, so there's effectively no visible difference (confirmed via
+screenshot); a rapid pointer-motion CPU sample over Control Centre went from sustained high spikes to
+brief, small ones.
