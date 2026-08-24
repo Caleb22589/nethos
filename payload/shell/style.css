@@ -249,8 +249,6 @@ body[data-view="menu"].shown { opacity: 1; }
      --menu-fill is denser than --glass-strong for the same reason: a
      launcher is read, not looked through. */
   background: var(--menu-fill, rgba(255, 255, 255, 0.78));
-  -webkit-backdrop-filter: blur(30px) saturate(180%) brightness(1.06);
-  backdrop-filter: blur(30px) saturate(180%) brightness(1.06);
   border-radius: var(--r-xl);
   box-shadow: var(--refract),
               inset 0 1px 0 0 var(--rim), inset 0 0 0 1px var(--rim-soft),
@@ -258,6 +256,19 @@ body[data-view="menu"].shown { opacity: 1; }
   position: relative; isolation: isolate;
   transform: scale(0.97) translateY(6px);
   transition: transform 220ms var(--ease);
+}
+/* Gated the same way #panel/#dock are just below, and for the same reason
+ * their own comment documents finding and fixing: the compositor already
+ * blurs a transparent layer surface on the GPU, so a CSS blur on top of
+ * that is doubled cost for a worse (over-filtered, damage-invalidated)
+ * result, not skipped cost -- this one just hadn't been given the gate yet.
+ * Confirmed live as a real, not just theoretical, source of the launcher
+ * (and Control Centre and Ask, see .cc-card and .ask-input/.ask-log)
+ * feeling unresponsive under Wayfire specifically, where
+ * neth-compositor-blur is always set (see bridge.c). */
+html:not(.neth-compositor-blur) #menu {
+  -webkit-backdrop-filter: blur(30px) saturate(180%) brightness(1.06);
+  backdrop-filter: blur(30px) saturate(180%) brightness(1.06);
 }
 body[data-view="menu"].shown #menu { transform: none; }
 #menu::before {
@@ -622,12 +633,25 @@ body[data-view="menu"]:not(.shown) #menu { display: none; }
      the battery bar -- two interfaces occupying the same pixels. A control
      you are reading numbers off has to sit on something solid. */
   background: var(--cc-fill, rgba(252, 253, 255, 0.95));
-  -webkit-backdrop-filter: blur(30px) saturate(180%);
-  backdrop-filter: blur(30px) saturate(180%);
   box-shadow: var(--refract), inset 0 1px 0 0 var(--rim),
               inset 0 0 0 1px var(--rim-soft), var(--shadow-lg);
   pointer-events: auto;
   animation: cc-in 160ms var(--ease);
+}
+/* This card was never keyed off neth-compositor-blur the way every other
+ * backdrop-filter in this file is (see the .glass-blur rules and their own
+ * comment on doubling the cost for a worse result) -- it ran its own 30px
+ * blur unconditionally, real compositor blur behind it or not. At the
+ * background's own 95% opacity that duplication buys almost nothing
+ * visually (there is barely a sliver of "behind" left to blur) while
+ * paying WebKit's own per-frame cost for it regardless: "by a wide margin
+ * the most expensive thing this stylesheet can ask for" per nethos.css's
+ * own comment on backdrop-filter, and confirmed live as the specific cause
+ * of Control Centre feeling unresponsive while every other panel/menu
+ * surface -- already gated this way -- did not. */
+html:not(.neth-compositor-blur) .cc-card {
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  backdrop-filter: blur(30px) saturate(180%);
 }
 @keyframes cc-in {
   from { opacity: 0; transform: translateY(-8px) scale(0.98); }
@@ -779,10 +803,17 @@ html.no-motion .cc-card { animation: none; }
   width: min(620px, 92vw);
   pointer-events: auto;
   background: var(--cc-fill, rgba(252, 253, 255, 0.95));
-  -webkit-backdrop-filter: blur(30px) saturate(180%);
-  backdrop-filter: blur(30px) saturate(180%);
   box-shadow: var(--refract), inset 0 1px 0 0 var(--rim),
               inset 0 0 0 1px var(--rim-soft), var(--shadow-lg);
+}
+/* Same gate as .cc-card and #menu, same missed spot: see .cc-card's own
+ * comment for why doubling a compositor's own blur is not just wasted, it
+ * is actively worse, and confirmed live as one of the causes of this shell
+ * feeling unresponsive under Wayfire. */
+html:not(.neth-compositor-blur) .ask-input,
+html:not(.neth-compositor-blur) .ask-log {
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  backdrop-filter: blur(30px) saturate(180%);
 }
 .ask-log:empty { display: none; }
 .ask-log {
