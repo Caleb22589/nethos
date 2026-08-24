@@ -78,7 +78,22 @@ static void on_message(WebKitUserContentManager *mgr, JSCValue *value, gpointer 
         int n = v ? (int)jsc_value_to_double(v) : 0;
         if (v) g_object_unref(v);
         zwlr_layer_surface_v1_set_exclusive_zone(s->layer_surface, n);
-        wl_surface_commit(s->wl_surface);
+        /* nethos_surface_repaint(), not a direct commit -- it is the one
+         * that already checks s->configured (see input_rect below). shell.js
+         * calls nethosHost.exclusive() as soon as it has measured its own
+         * content, which easily races ahead of this surface's first
+         * layer_surface configure/ack round-trip. A commit that lands before
+         * that ack is a *fatal* Wayland protocol error under Wayfire
+         * ("layer_surface has never been configured"), and a fatal error on
+         * one surface tears down the whole wl_display connection -- every
+         * other surface on the same connection goes down with it, which is
+         * why the entire native shell (not just the panel) stayed an inert
+         * void colour with the UI process spinning near 100% CPU (retrying
+         * dispatch on a socket that had already been killed) even after the
+         * frame-pacing fix below made a single ordinary window render
+         * correctly. Confirmed live via the exact error text in the
+         * process's own stderr log. */
+        nethos_surface_repaint(s);
     } else if (strcmp(type, "input_rect") == 0) {
         JSCValue *vx = jsc_value_object_get_property(value, "x");
         JSCValue *vy = jsc_value_object_get_property(value, "y");
@@ -103,7 +118,14 @@ static void on_message(WebKitUserContentManager *mgr, JSCValue *value, gpointer 
         zwlr_layer_surface_v1_set_keyboard_interactivity(s->layer_surface,
             on ? ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE
                : ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_ON_DEMAND);
-        wl_surface_commit(s->wl_surface);
+        /* Same race, same fix as "exclusive" above: menu.html (the one
+         * spec'd with keyboard=on) calls nethosHost.keyboard() as early as
+         * nethosHost.exclusive() does, and a raw commit here hit the exact
+         * same fatal "never been configured" protocol error once the
+         * exclusive-zone race above was closed -- confirmed live, this was
+         * the second of two commit sites that needed the guard, not a
+         * theoretical twin. */
+        nethos_surface_repaint(s);
     } else if (strcmp(type, "repaint") == 0) {
         nethos_surface_repaint(s);
     } else if (strcmp(type, "hide") == 0) {
@@ -113,10 +135,17 @@ static void on_message(WebKitUserContentManager *mgr, JSCValue *value, gpointer 
          * screen and its last input region in force (the ghost bug
          * shell.js's own comments describe at length). Attaching a null
          * buffer unmaps a wl_surface per the core protocol; the next
-         * eglSwapBuffers from show() attaches a real one again. */
+         * eglSwapBuffers from show() attaches a real one again.
+         *
+         * Guarded the same way as the two sites above: nothing has ever been
+         * mapped yet if this fires before the first configure, so there is
+         * nothing to unmap, and the commit itself would be the same fatal
+         * protocol error. */
         wpe_view_backend_remove_activity_state(s->wpe_backend, wpe_view_activity_state_visible);
-        wl_surface_attach(s->wl_surface, NULL, 0, 0);
-        wl_surface_commit(s->wl_surface);
+        if (s->configured) {
+            wl_surface_attach(s->wl_surface, NULL, 0, 0);
+            wl_surface_commit(s->wl_surface);
+        }
     } else if (strcmp(type, "show") == 0) {
         s->visible = true;
         wpe_view_backend_add_activity_state(s->wpe_backend,

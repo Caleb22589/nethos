@@ -270,7 +270,7 @@ a full image rebuild and reboot cycle, not a live swap on an already-running ses
 - `repaint()`'s exact ghost-frame behaviour (the specific scenario `shell.js`'s own comments describe)
   has only log-level verification, not a visual one.
 
-## The white-window bug: root cause found (the WebProcess sandbox), not yet fixed
+## The white-window bug: root cause found (the WebProcess sandbox) -- see below, fixed
 
 A second overnight session chased the "some windows render decoration-only, no content" finding
 above all the way to ground, using `grim` (installed via `npkg fetch grim -y` -- not previously
@@ -359,3 +359,83 @@ The SHM rendering path from step 7 is being kept regardless of this outcome -- i
 simplification (no dma-buf/modifier negotiation, no cross-process GPU buffer sharing question to ever
 re-litigate) independent of the sandbox question, and the elimination above only worked *because* it
 existed to test against.
+
+## The white-window bug: fixed -- four bugs, not one
+
+The sandbox theory above was half right and half a dead end. `neth` genuinely was missing from the
+`render` group (`sudo usermod -aG render neth`) -- a real, separate gap, and exactly the class of bug
+`docs/HANDOFF.md` predicts (a Debian postinst a real install would have run and npkg's conversion
+does not) -- but fixing it alone was not enough: swapping to the full shell afterward still showed a
+blank screen. `strace -f -e trace=openat,access,stat,statx` on a sandboxed `WPEWebProcess` after the
+group fix showed `/dev/dri/renderD128` opening fine (`O_RDWR|O_CLOEXEC`, no `EACCES`/`ENOENT`
+anywhere near it) -- so the *sandbox* half of the original diagnosis was already resolved by the
+group fix, and the remaining blank screen was a second, unrelated problem in this process's own
+code, not the sandbox at all. Four separate bugs were actually stacked on top of each other; each one
+individually produced the exact same symptom ("nothing renders"), which is what made this look like
+one problem for so long.
+
+**Bug 1 -- `render` group membership** (system config, not code): fixed live via `usermod`; belongs in
+whatever does this install's user setup (see "Not yet fixed" below).
+
+**Bug 2 -- no frame-pacing handshake at all.** Neither `wpe_view_backend_dispatch_frame_displayed()`
+(the generic WPE vsync-pacing ack) nor `wpe_view_backend_exportable_fdo_dispatch_frame_complete()`
+(the exportable_fdo backend's own, separate "I'm done with that frame" ack -- a different function on
+a different object, `struct wpe_view_backend_exportable_fdo*` not `struct wpe_view_backend*`, see
+`view-backend-exportable.h`) was ever called anywhere in this codebase. Confirmed live with a trivial
+counter page (`setInterval` incrementing a number on screen every 500ms, served from a throwaway
+`python3 -m http.server`, no `nethos.js`/nethosd dependency at all to rule out every other variable):
+first paint appeared, then froze forever -- `on_export_shm` fired exactly once, confirmed by a
+temporary debug counter, no matter how long the process ran. WPE was withholding every export after
+the first because nothing ever told it the first frame had actually been displayed. Dispatching both
+acks in `render_shm()` right after `eglSwapBuffers()` fixed it outright -- the same counter page then
+updated continuously, screenshot-confirmed frame-to-frame.
+
+**Bug 3 -- no `eglSwapInterval`.** Fixing bug 2 immediately exposed this one: with both acks firing
+right after an unthrottled swap, WebKit repainted as fast as the CPU allowed -- `nethos-view-native`
+and `WPEWebProcess` both pegged near/above 100% CPU, `WPEWebProcess` RSS climbing continuously, and
+paradoxically the screen going back to showing nothing (Wayfire's own compositor falling behind an
+unbounded commit rate is indistinguishable from a screenshot of a client that never painted at all).
+`eglSwapInterval` had never been called anywhere either, so the driver's own default (evidently non-
+blocking here) governed every swap. Added `eglSwapInterval(g_egl_display, 1)` once per surface, right
+after that surface's own `eglMakeCurrent` in `ensure_egl_surface()` -- it is a property of the EGL
+*surface*, not the context, so it cannot be set once globally. CPU dropped back to a sane range
+immediately.
+
+**Bug 4 -- three unguarded `wl_surface_commit()` calls, one of them a genuine race, not just a
+missing check.** With frame pacing now correct, a single `role=window` test against the real App
+Store (`/apps/store/index.html`) rendered perfectly end to end -- header, live package list, install
+buttons, real `Installed` state pulled from nethosd. But launching the real 5-surface shell
+(`nethos-session`'s actual `splash`/`desktop`/`panel`/`dock`/`menu` spec set) still went blank, and
+`WAYLAND_DEBUG=1` showed why: `wl_display#1.error(zwlr_layer_surface_v1#12, 2, "layer_surface has
+never been configured")`. That is a *fatal* Wayland protocol error -- it doesn't just drop one
+surface, it tears down the entire `wl_display` connection, killing every other surface on it at once,
+which is exactly why the whole shell looked identically blank whether the bug was "nothing paints" or
+"one thing paints wrong and takes the rest down with it." Three sites in `bridge.c`'s `on_message()`
+called `wl_surface_commit()` directly instead of going through `nethos_surface_repaint()` (which
+already correctly checks `s->configured` first, the way `input_rect`'s handler always did):
+`"exclusive"` and `"keyboard"` both commit as an immediate side effect of a `nethosHost.*()` call from
+shell.js, and shell.js calls both as soon as it has measured its own content -- easily racing ahead of
+this surface's first `layer_surface.configure`/`ack_configure` round-trip, especially under five
+surfaces loading concurrently. Fixing both (route through `nethos_surface_repaint()`) closed that
+race, but object #12 kept erroring identically on every retry -- `WAYLAND_DEBUG=1` traced it to
+*splash* specifically (`zwlr_layer_shell_v1#6.get_layer_surface(new id ...#12, wl_surface#11, nil, 3,
+"nethos-splash")`), which had already configured and acked cleanly multiple times. The actual
+remaining race was in `render_shm()` itself, not `bridge.c`: splash's own `nethosHost.hide()` (called
+once the panel has checked in, see `splash.html`) unmaps the surface with `wl_surface_attach(NULL)` +
+commit, but WPE can still have one frame already in flight from *before* that hide call, and
+`render_shm()` only ever checked `s->configured` -- not `s->visible` -- before painting and
+implicitly committing a *real* buffer via `eglSwapBuffers()`. That trailing frame landed on a surface
+that had just been unmapped, which Wayfire rejects with the same fatal "never configured" error.
+Added `!s->visible` to `render_shm()`'s existing early-return guard. With all four bugs fixed, the
+full 5-surface native shell renders completely and correctly: panel, wallpaper, desktop icons, live
+widgets (Monitor/News/Watchlist, real data), and the app launcher's live search grid (20 real
+results, real icons) all confirmed via `grim` screenshots against the real laptop.
+
+**Not yet fixed, follow-on work:** the `render`-group fix (bug 1) was only ever applied live via
+`usermod` on the test laptop -- it needs to land in whatever this install's own user-provisioning
+step is (`payload/install-nethos.sh` or `pkg/npkg_bootstrap.py`, matching the pattern
+`docs/HANDOFF.md` already documents for PAM/sshd/etc.), or every fresh install will hit this same
+wall. `nethos-session`'s own separate, already-documented `WLR_DRM_NO_ATOMIC` bug (sets the variable
+too late in its own process's environment to affect Wayfire's already-initialised DRM backend) is
+still open and unrelated to any of the above. The actual boot-time win this whole rewrite exists for
+still has not been re-measured on a full image rebuild + reboot, only via live-session swaps.

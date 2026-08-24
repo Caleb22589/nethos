@@ -29,7 +29,21 @@ static enum zwlr_layer_shell_v1_layer layer_from_string(const char *s) {
  * (spike.c and the process-sharing diagnostic used file-scope globals
  * instead, fine for one or two surfaces, not for five-plus). ---- */
 static void render_shm(struct nethos_surface *s, struct wl_shm_buffer *buf) {
-    if (!s->configured || !buf) return;
+    /* !s->visible matters as much as !s->configured: WPE can still have one
+     * frame already in flight -- queued for export before nethosHost.hide()
+     * ran -- and land it here just after hide()'s bridge.c handler has
+     * already unmapped the wl_surface with a null-buffer attach+commit.
+     * Painting and committing a real buffer to a surface that was just
+     * unmapped is exactly the same fatal "layer_surface has never been
+     * configured" Wayland protocol error the exclusive/keyboard bridge
+     * races were (see bridge.c) -- confirmed live with WAYLAND_DEBUG=1,
+     * tracing it to splash's own self-hide (it waits for the panel to check
+     * in, then calls nethosHost.hide()) racing exactly one trailing export.
+     * One dead connection takes every other surface down with it, which is
+     * why this looked identical to "nothing renders at all" from a
+     * screenshot even after the frame-pacing and bridge-commit-race fixes
+     * made every individual piece work. */
+    if (!s->configured || !s->visible || !buf) return;
     nethos_egl_make_current(s);
 
     wl_shm_buffer_begin_access(buf);
@@ -70,6 +84,24 @@ static void render_shm(struct nethos_surface *s, struct wl_shm_buffer *buf) {
     glDisable(GL_BLEND);
 
     eglSwapBuffers(g_egl_display, s->egl_surface);
+
+    /* Two separate acks, to two separate APIs, and WPE withholds the next
+     * export until BOTH have been sent -- confirmed live: dispatching only
+     * frame_displayed (the generic wpe_view_backend one, below) still froze
+     * after exactly one exported frame, on every test page tried, static
+     * content and a bare setInterval() alike. frame_complete is the other
+     * half: it belongs to wpe_view_backend_exportable_fdo specifically (see
+     * view-backend-exportable.h) and is this backend's own "I'm done with
+     * that frame, send the next one" signal, distinct from the
+     * backend-agnostic vsync-pacing one. Neither was ever called anywhere
+     * in this file before -- that gap is what root-caused the
+     * "renders the static header, never the async-populated content below
+     * it" shape of the white-window investigation, once the bwrap/
+     * render-group sandbox fix (see nethos_surface_create's activity_state
+     * comment and docs/NETHOS-VIEW-REWRITE.md) got a first frame painting
+     * at all. */
+    wpe_view_backend_exportable_fdo_dispatch_frame_complete(s->exportable);
+    wpe_view_backend_dispatch_frame_displayed(s->wpe_backend);
 }
 
 /* export_buffer_resource/export_dmabuf_resource are the other two shapes
@@ -183,6 +215,20 @@ static void ensure_egl_surface(struct nethos_surface *s, int w, int h) {
         if (!eglMakeCurrent(g_egl_display, s->egl_surface, s->egl_surface, g_egl_context))
             fprintf(stderr, "nethos-view-native: '%s' eglMakeCurrent failed: 0x%x\n",
                     s->spec.name, eglGetError());
+        /* Without this, eglSwapBuffers returns immediately instead of
+         * blocking for the next vblank -- confirmed live: once render_shm
+         * started dispatching frame_complete/frame_displayed right after an
+         * unthrottled swap (see render_shm), WebKit had nothing pacing it
+         * and repainted as fast as the CPU allowed (96%+ CPU, WPEWebProcess
+         * RSS climbing continuously, and the screen showing a stuck void
+         * colour instead of any surface content -- Wayfire's own compositor
+         * falling behind an unbounded commit rate looks identical to "the
+         * client never painted anything" from a screenshot, which is what
+         * made this easy to mistake for a repeat of the original bug).
+         * eglSwapInterval is a property of the EGL *surface*, not the
+         * context, so it has to be set here per-surface, once, right after
+         * this surface's own eglMakeCurrent. */
+        eglSwapInterval(g_egl_display, 1);
         nethos_gl_setup();
     } else {
         wl_egl_window_resize(s->egl_window, w, h, 0, 0);
