@@ -581,3 +581,33 @@ already established, and Ask still opens with keyboard focus and closes clean th
 production trigger path -- none of the hide/show or protocol-race fixes depended on which pacing
 mechanism was active. Whether hover and slider-drag now actually *feel* smooth needs a person's own
 hands on the trackpad to confirm; that part of the report is with the user.
+
+## A hidden surface was still catching every click across the whole screen
+
+Found while directly instrumenting and testing pointer routing to verify the frame-callback fix above:
+deliberately synthesized pointer motion aimed at the panel and the desktop was instead reported, every
+time, against `splash` -- full-screen, invisible, and still the hit-test target for the entire output.
+
+The cause traces back to the earlier switch from a null-buffer `wl_surface_attach()` unmap to
+`nethos_surface_paint_blank()` for `hide()` (see "The white-window bug: fixed" above, bugs 5-6). That
+switch fixed a real fatal protocol error, but it quietly dropped a guarantee unmapping used to provide
+for free: an unmapped `wl_surface` simply is not a hit-test target for anything, so nothing else ever
+needed to *also* clear its input region on the way out. A surface kept fully mapped, just painted
+blank, has no such free lunch -- it stays exactly as clickable as it ever was, just invisible.
+`menu.html`'s own close path was never caught by this because it already calls
+`nethosHost.inputRect(0, 0, 0, 0)` itself before every one of its own `hide()` calls (grep `shell.js`).
+`splash.html`'s `hide()` never has -- it was written against the old implicit guarantee and had no
+reason to think it needed to ask for click-through separately.
+
+Fixed at the bridge layer, not in `splash.html`: `hide()` (`bridge.c`) now clears the surface's input
+region itself, alongside the blank paint, so every hidden surface is click-through unconditionally
+regardless of whether its own page separately manages `inputRect`. Confirmed at the protocol level
+with `WAYLAND_DEBUG=1` rather than trusting the remote pointer-simulation tooling (`wlrctl`'s absolute
+coordinates turned out not to map onto real screen pixels in any way this session could reliably
+calibrate, which is what motivated checking the wire protocol directly instead): splash's `wl_surface`
+gets a `set_input_region` request with a region that has no `add()` call before it -- genuinely empty
+-- immediately after its own `hide()` fires, exactly matching the fix.
+
+This one was serious: a full-screen surface silently swallowing every click and hover across the
+entire desktop, invisibly, is not a "feels a bit laggy" bug -- it is "most of the desktop doesn't
+respond to input at all," and was live on the actual running desktop at the time it was found.
