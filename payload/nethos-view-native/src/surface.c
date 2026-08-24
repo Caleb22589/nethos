@@ -28,21 +28,45 @@ static enum zwlr_layer_shell_v1_layer layer_from_string(const char *s) {
  * nethos_surface, so multiple surfaces can share the render path safely
  * (spike.c and the process-sharing diagnostic used file-scope globals
  * instead, fine for one or two surfaces, not for five-plus). ---- */
+/* Paint one genuinely transparent frame and present it -- bridge.c's "hide"
+ * calls this, instead of the null-buffer wl_surface_attach() an earlier
+ * version of this fix used. That version was correct about needing to force
+ * a real commit (see the comment on the !s->visible check below), but wrong
+ * about how: a null-buffer attach fully *unmaps* the wl_surface, and
+ * confirmed live with WAYLAND_DEBUG=1, Wayfire's zwlr_layer_shell_v1
+ * implementation treats a subsequent real-buffer commit on a remapped
+ * surface as needing a brand new configure/ack round-trip first -- one
+ * neither re-issuing set_size() nor anything else this process tried
+ * actually prompts Wayfire to send. Every surface that is ever hidden and
+ * later shown again (menu/ask/control-center's whole open/close cycle, see
+ * shell.js's overlayMapped()) hit this on its first hide, which is why
+ * those looked like they simply never opened at all. payload/bin/nethos-view
+ * avoids the whole question already -- its own comment on _repaint() says
+ * outright that its overlay surface "is deliberately never unmapped" for
+ * exactly this class of reason, even though GTK's set_visible(False) is
+ * still what its own hide() calls; whatever GTK/gtk4-layer-shell does
+ * internally to make that remap safe is not something this direct
+ * libwayland client gets for free. Painting real (fully transparent)
+ * content instead of unmapping gets the same result the Python build wants
+ * -- a real commit that damages the region to nothing, satisfying "unmapping
+ * damages" -- without ever leaving the "configured" state a remap would
+ * need to re-earn. */
+void nethos_surface_paint_blank(struct nethos_surface *s) {
+    if (!s->configured) return;
+    nethos_egl_make_current(s);
+    glViewport(0, 0, s->configured_w, s->configured_h);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    eglSwapBuffers(g_egl_display, s->egl_surface);
+}
+
 static void render_shm(struct nethos_surface *s, struct wl_shm_buffer *buf) {
     /* !s->visible matters as much as !s->configured: WPE can still have one
      * frame already in flight -- queued for export before nethosHost.hide()
-     * ran -- and land it here just after hide()'s bridge.c handler has
-     * already unmapped the wl_surface with a null-buffer attach+commit.
-     * Painting and committing a real buffer to a surface that was just
-     * unmapped is exactly the same fatal "layer_surface has never been
-     * configured" Wayland protocol error the exclusive/keyboard bridge
-     * races were (see bridge.c) -- confirmed live with WAYLAND_DEBUG=1,
-     * tracing it to splash's own self-hide (it waits for the panel to check
-     * in, then calls nethosHost.hide()) racing exactly one trailing export.
-     * One dead connection takes every other surface down with it, which is
-     * why this looked identical to "nothing renders at all" from a
-     * screenshot even after the frame-pacing and bridge-commit-race fixes
-     * made every individual piece work. */
+     * ran -- and land it here after the surface has already been painted
+     * blank (see nethos_surface_paint_blank() above). Skipping it keeps
+     * that deliberate blank frame on screen instead of a stale trailing one
+     * silently overwriting it. */
     if (!s->configured || !s->visible || !buf) return;
     nethos_egl_make_current(s);
 
@@ -84,24 +108,6 @@ static void render_shm(struct nethos_surface *s, struct wl_shm_buffer *buf) {
     glDisable(GL_BLEND);
 
     eglSwapBuffers(g_egl_display, s->egl_surface);
-
-    /* Two separate acks, to two separate APIs, and WPE withholds the next
-     * export until BOTH have been sent -- confirmed live: dispatching only
-     * frame_displayed (the generic wpe_view_backend one, below) still froze
-     * after exactly one exported frame, on every test page tried, static
-     * content and a bare setInterval() alike. frame_complete is the other
-     * half: it belongs to wpe_view_backend_exportable_fdo specifically (see
-     * view-backend-exportable.h) and is this backend's own "I'm done with
-     * that frame, send the next one" signal, distinct from the
-     * backend-agnostic vsync-pacing one. Neither was ever called anywhere
-     * in this file before -- that gap is what root-caused the
-     * "renders the static header, never the async-populated content below
-     * it" shape of the white-window investigation, once the bwrap/
-     * render-group sandbox fix (see nethos_surface_create's activity_state
-     * comment and docs/NETHOS-VIEW-REWRITE.md) got a first frame painting
-     * at all. */
-    wpe_view_backend_exportable_fdo_dispatch_frame_complete(s->exportable);
-    wpe_view_backend_dispatch_frame_displayed(s->wpe_backend);
 }
 
 /* export_buffer_resource/export_dmabuf_resource are the other two shapes
@@ -122,6 +128,23 @@ static void on_export_dmabuf_resource(void *data, struct wpe_view_backend_export
 static void on_export_shm(void *data, struct wpe_fdo_shm_exported_buffer *buffer) {
     struct nethos_surface *s = data;
     render_shm(s, wpe_fdo_shm_exported_buffer_get_shm_buffer(buffer));
+    /* Unconditional, same as the release call below, and for the same
+     * reason: these are WPE's own frame-pipeline bookkeeping, not a
+     * statement about whether *we* chose to visually present this
+     * particular frame. Nesting them inside render_shm()'s early return
+     * (skipped whenever a surface is hidden or not yet configured) meant a
+     * frame exported while hidden -- e.g. a layer-shell overlay's normal
+     * closed state -- was released but never acked, and WPE then withheld
+     * every export after it forever, even once nethosHost.show() ran and
+     * flipped s->visible back on: the menu/ask/control-center overlay
+     * pattern (hidden by default, shown on demand, see shell.js's
+     * overlayMapped()) hit this on literally its first hide, which is why
+     * it looked like those surfaces simply never opened at all while the
+     * dock and panel -- never hidden -- were unaffected. Two separate acks,
+     * to two separate APIs (see view-backend-exportable.h): WPE withholds
+     * the next export until BOTH have been sent, confirmed live. */
+    wpe_view_backend_exportable_fdo_dispatch_frame_complete(s->exportable);
+    wpe_view_backend_dispatch_frame_displayed(s->wpe_backend);
     wpe_view_backend_exportable_fdo_dispatch_release_shm_exported_buffer(s->exportable, buffer);
 }
 

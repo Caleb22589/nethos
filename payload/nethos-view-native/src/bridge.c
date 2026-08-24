@@ -130,22 +130,20 @@ static void on_message(WebKitUserContentManager *mgr, JSCValue *value, gpointer 
         nethos_surface_repaint(s);
     } else if (strcmp(type, "hide") == 0) {
         s->visible = false;
-        /* Unmapping is the one signal the compositor cannot ignore -- a
-         * surface that merely goes transparent leaves its last frame on
-         * screen and its last input region in force (the ghost bug
-         * shell.js's own comments describe at length). Attaching a null
-         * buffer unmaps a wl_surface per the core protocol; the next
-         * eglSwapBuffers from show() attaches a real one again.
-         *
-         * Guarded the same way as the two sites above: nothing has ever been
-         * mapped yet if this fires before the first configure, so there is
-         * nothing to unmap, and the commit itself would be the same fatal
-         * protocol error. */
+        /* A real (fully transparent) painted frame, not a null-buffer
+         * unmap -- see the long comment on nethos_surface_paint_blank() in
+         * surface.c for why: unmapping and later remapping hits a fatal
+         * Wayland protocol error under this Wayfire version, confirmed live
+         * with WAYLAND_DEBUG=1, and payload/bin/nethos-view's own comments
+         * say outright its overlay surface is deliberately never unmapped
+         * for related reasons. This still gets what unmapping was for --
+         * the compositor cannot ignore a real commit, so the region is
+         * genuinely damaged to nothing rather than left showing a stale
+         * frame (the "ghost" bug shell.js's own comments describe) -- and
+         * s->configured never has to be touched, so there is no
+         * reconfiguration to wait for on the way back. */
         wpe_view_backend_remove_activity_state(s->wpe_backend, wpe_view_activity_state_visible);
-        if (s->configured) {
-            wl_surface_attach(s->wl_surface, NULL, 0, 0);
-            wl_surface_commit(s->wl_surface);
-        }
+        nethos_surface_paint_blank(s);
     } else if (strcmp(type, "show") == 0) {
         s->visible = true;
         wpe_view_backend_add_activity_state(s->wpe_backend,

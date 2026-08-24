@@ -115,6 +115,7 @@ bool nethos_parse_spec(const char *text, struct nethos_spec *out);
 struct nethos_surface *nethos_surface_create(const struct nethos_spec *spec);
 void nethos_surface_render(struct nethos_surface *s);
 void nethos_surface_repaint(struct nethos_surface *s);
+void nethos_surface_paint_blank(struct nethos_surface *s);
 void nethos_surface_destroy(struct nethos_surface *s);
 
 /* -- bridge.c -- */
