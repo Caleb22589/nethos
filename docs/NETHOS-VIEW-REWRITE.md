@@ -630,3 +630,57 @@ bought anything visually. Fixed identically to `#panel`/`#dock`: gated behind th
 three backgrounds are already 90%+ opaque, so there's effectively no visible difference (confirmed via
 screenshot); a rapid pointer-motion CPU sample over Control Centre went from sustained high spikes to
 brief, small ones.
+
+## Second architecture: GTK4 + WebKitGTK + gtk4-layer-shell, not raw Wayland/EGL/WPE
+
+Even with the doubled-blur fix above landed, the lag report continued and escalated ("every app is
+laggy", "is there even GPU acceleration") faster than it could be pinned down with the remote testing
+tooling available: real hardware acceleration was already confirmed (`eglinfo`), a `wl_surface.frame`-
+based FPS counter added directly to the render loop showed real but hard-to-interpret numbers, and
+`wlrctl`'s pointer-move coordinates turned out unreliable enough (a click aimed at a screen-visible
+"Install" button, and later a full-screen-width scroll test, both produced no visible effect at all)
+that several of that round's own findings couldn't be trusted as evidence of a real bug rather than a
+measurement artefact.
+
+Rather than continue chasing WPE's own compositor-client plumbing bug by bug -- Phase 1's entire
+history, this document included, is a long account of exactly that -- the decision was made to stop
+doing that plumbing by hand at all. `payload/bin/nethos-view` (Python) already hosts WebKitGTK inside
+real `GtkWindow`s, via `gtk4-layer-shell` for the layer-shell surfaces, and has never had any version
+of the white-window bug, the frame-pacing bug, the input-region-on-hide bug, or the lag report this
+section starts from. Every one of those was specific to Phase 1's own from-scratch
+Wayland/EGL/`wpe_view_backend_exportable_fdo` implementation, not to anything about hosting WebKit
+under Wayfire in general. So: same engine, same `Gtk4LayerShell` C library the Python version already
+depends on (already a required runtime package, see `install-nethos.sh`), just driven from C instead
+of Python/PyGObject for the startup-time and memory win that was always this rewrite's actual point.
+
+Ported directly from `nethos-view`'s own `Surface`/`App` classes -- their comments carried across
+where the reasoning still applies, cited by name where it doesn't need repeating. `spec.c`,
+`apphost.c`, `settle.c`, and `log.c` needed no changes at all: none of them ever touched WPE, Wayland,
+or EGL. `events.c` gained the wake-before-evaluate `queue_draw` calls `_deliver()`'s own comment
+already documents as necessary (a suspended layer-shell surface's WebProcess won't process
+`evaluate_javascript` promptly otherwise); nothing else in it changed. `wayland.c` and the vendored
+`wlr-layer-shell`/`xdg-shell`/`xdg-decoration` protocol XMLs are gone -- no more `wayland-scanner` step
+in `build.sh` at all, since GTK and `gtk4-layer-shell` own that whole protocol surface now.
+
+**Confirmed live on real hardware, first attempt, no debugging round needed** (a first for this
+rewrite): the build succeeded with no errors on the first try; a single test window rendered real
+content immediately; the full 5-surface shell rendered correctly with one shared `WebKitWebProcess`
+(related-view sharing confirmed working, same as Phase 1's own); Ask and Control Centre both opened
+with real keyboard focus and closed with no ghosting -- the exact hide/show cycle that took two
+separate bug hunts to get right under WPE; the app launcher's search box showed a real GTK focus ring;
+CPU during a sustained scroll stayed in a consistent 0-20% range with no spikes at all, where Phase
+1's *best* case (after three separate rounds of fixes) still spiked to 45-127%.
+
+**Known cosmetic difference, not yet chased down:** `role=window` surfaces (the App Store test window)
+came up with a plain GTK-style titlebar rather than firedecor's usual rounded traffic-light frame that
+every other window on this desktop has. `gtk_window_set_decorated(TRUE)` (GTK's own default, left
+alone for `role=window` deliberately -- see `surface.c`'s comment on why `decorated=FALSE` would ask
+for the wrong xdg-decoration mode) should negotiate the same SERVER_SIDE request Phase 1's raw
+`zxdg_toplevel_decoration_v1` call did; worth checking whether GTK4's own decoration negotiation is
+sending something firedecor doesn't recognise, next session.
+
+**Not yet done:** `nethosd` (currently Python) staying in Python for now -- porting it to C is a
+separate, much larger undertaking (a full HTTP API server: package management, window management via
+Wayfire IPC, SSE event streaming, control-center actions) tracked separately from this rewrite. The
+boot-time win this whole effort exists for still has not been re-measured on a full image rebuild +
+reboot, only via live-session swaps -- true for both architectures tried so far.
