@@ -141,9 +141,25 @@ static void on_message(WebKitUserContentManager *mgr, JSCValue *value, gpointer 
          * genuinely damaged to nothing rather than left showing a stale
          * frame (the "ghost" bug shell.js's own comments describe) -- and
          * s->configured never has to be touched, so there is no
-         * reconfiguration to wait for on the way back. */
+         * reconfiguration to wait for on the way back.
+         *
+         * set_input_region(0,0,0,0) alongside the blank paint, not left to
+         * the caller: unmapping used to make a hidden surface click-through
+         * for free (an unmapped wl_surface simply isn't a hit-test target),
+         * which is exactly why splash.html's own hide() call never bothered
+         * setting an empty input region itself, the way menu.html's close
+         * path already does before every one of its own hide() calls (grep
+         * shell.js for inputRect(0, 0, 0, 0)). A surface kept fully mapped
+         * (see above) has no such free lunch -- confirmed live: every
+         * pointer-motion event aimed at the panel and desktop was instead
+         * reported against splash, full-screen and invisible, still
+         * covering and capturing the entire output. Clearing it here makes
+         * every hide() click-through unconditionally, matching what the old
+         * unmap-based one guaranteed implicitly, instead of depending on
+         * each page remembering to ask for it separately. */
         wpe_view_backend_remove_activity_state(s->wpe_backend, wpe_view_activity_state_visible);
         nethos_surface_paint_blank(s);
+        set_input_region(s, 0, 0, 0, 0);
     } else if (strcmp(type, "show") == 0) {
         s->visible = true;
         wpe_view_backend_add_activity_state(s->wpe_backend,
