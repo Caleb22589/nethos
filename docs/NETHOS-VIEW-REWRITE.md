@@ -505,3 +505,34 @@ to the actually-running desktop until it's also `sudo install -m 0755`'d to `/us
 -- confirmed live, more than once, by chasing a "why didn't my fix change anything" ghost that turned
 out to be testing against a stale binary the whole time. A real image build's `install_desktop()`
 handles this automatically; a hand-built live-debug binary does not.
+
+## Back to dma-buf/EGLImage: SHM was never load-bearing, and it was the lag
+
+Reported once the desktop was usable enough for real interaction: scrolling and general UI felt
+laggy, "not GPU-accelerated." Rendering itself was hardware-accelerated the whole time -- confirmed
+with `eglinfo` on the Wayland platform specifically (not its surfaceless-platform probe, which
+does report `llvmpipe` by design and is not what this process uses): Mesa's `crocus` driver, Intel HD
+Graphics 4400 (Haswell GT2). The actual cost was the export mechanism. `wpe_fdo_initialize_shm()` --
+adopted partway through the white-window investigation above specifically to rule out cross-process
+GPU buffer sharing as a variable, at a point where every dma-buf-backed surface rendered nothing with
+every API call reporting success -- requires WebKit to read its own GPU-composited frame back into a
+CPU-side shared-memory buffer every frame, and this process to re-upload that buffer into a fresh GPU
+texture with `glTexImage2D`. A full GPU->CPU->GPU round trip of the whole surface, at up to 60fps, on
+hardware old enough (2013-era Haswell) for that memory-bandwidth cost to be very noticeable.
+
+It turned out dma-buf was never actually the problem. The real causes of the white-window bug --
+missing `render` group membership, two missing WPE frame-pacing acks, no `eglSwapInterval`, three
+Wayland protocol races (see the sections above and their commits `93e9941`/`79a4962`) -- applied
+identically to the dma-buf/EGLImage import path and are now fixed; none of them had anything to do
+with which buffer-sharing mechanism was in use. Switching back
+(`wpe_fdo_initialize_for_egl_display()`, `wpe_view_backend_exportable_fdo_egl_create()`,
+`glEGLImageTargetTexture2DOES` instead of `glTexImage2D` -- see `git show 1e8177c:.../surface.c` for
+the pre-SHM-detour version this was ported forward from, keeping every fix landed since) confirmed the
+theory directly: a sustained scroll that spiked `WPEWebProcess` to 45-127% CPU under SHM sits near 0%
+under dma-buf, on the same page, same hardware, same interaction. Content still renders correctly
+single-window and full-shell, and the menu/ask/control-center hide/show fix still holds exactly as
+before -- none of that logic depends on which export mechanism is active, only on the frame-pacing
+acks and `s->visible`/`s->configured` guards being correct, which they still are (now dispatched
+unconditionally from all three EGL exportable callbacks, not just the one SHM used, closing the same
+class of permanent-stall bug for the unlikely case WPE hands back an SHM buffer anyway under the EGL
+backend).
