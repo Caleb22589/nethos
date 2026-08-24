@@ -94,6 +94,11 @@ struct nethos_surface {
     EGLSurface egl_surface;
     GLuint tex;
 
+    /* Non-NULL while waiting for the compositor to confirm it has actually
+     * presented this surface's last swap -- see render_surface()'s comment
+     * in surface.c for why this replaced eglSwapInterval(1). */
+    struct wl_callback *frame_cb;
+
     struct wpe_view_backend_exportable_fdo *exportable;
     struct wpe_view_backend *wpe_backend;
     WebKitWebView *webview;

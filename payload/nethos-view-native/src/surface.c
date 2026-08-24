@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "nethos_view.h"
 
@@ -62,14 +63,29 @@ void nethos_surface_paint_blank(struct nethos_surface *s) {
     eglSwapBuffers(g_egl_display, s->egl_surface);
 }
 
-static void render_surface(struct nethos_surface *s, EGLImageKHR image) {
+/* Fires once the compositor confirms it has actually presented the swap
+ * that requested it -- see render_surface()'s comment below for why this,
+ * not eglSwapInterval(1), is what paces repainting now. */
+static void on_frame_done(void *data, struct wl_callback *cb, uint32_t time) {
+    struct nethos_surface *s = data;
+    wl_callback_destroy(cb);
+    s->frame_cb = NULL;
+    wpe_view_backend_exportable_fdo_dispatch_frame_complete(s->exportable);
+    wpe_view_backend_dispatch_frame_displayed(s->wpe_backend);
+}
+static const struct wl_callback_listener frame_listener = { on_frame_done };
+
+/* Returns whether it actually painted and swapped -- callers use this to
+ * decide whether to ack WPE immediately (nothing to wait for) or defer to
+ * on_frame_done() (a real swap is now pending presentation). */
+static bool render_surface(struct nethos_surface *s, EGLImageKHR image) {
     /* !s->visible matters as much as !s->configured: WPE can still have one
      * frame already in flight -- queued for export before nethosHost.hide()
      * ran -- and land it here after the surface has already been painted
      * blank (see nethos_surface_paint_blank() above). Skipping it keeps
      * that deliberate blank frame on screen instead of a stale trailing one
      * silently overwriting it. */
-    if (!s->configured || !s->visible || !image) return;
+    if (!s->configured || !s->visible || !image) return false;
     nethos_egl_make_current(s);
     if (!s_eglImageTargetTexture2DOES)
         s_eglImageTargetTexture2DOES =
@@ -98,7 +114,18 @@ static void render_surface(struct nethos_surface *s, EGLImageKHR image) {
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glDisable(GL_BLEND);
 
+    /* Requested before the commit it rides along on (eglSwapBuffers' own
+     * implicit attach+damage+commit), which is what ties the compositor's
+     * eventual done() to *this* frame specifically. By construction there is
+     * never a previous s->frame_cb still pending here: WPE cannot hand this
+     * surface a new export until on_frame_done() (or the immediate-ack path
+     * below, for a frame this function declined to paint) has already acked
+     * the one before it. */
+    s->frame_cb = wl_surface_frame(s->wl_surface);
+    wl_callback_add_listener(s->frame_cb, &frame_listener, s);
+
     eglSwapBuffers(g_egl_display, s->egl_surface);
+    return true;
 }
 
 /* Three shapes WPE's EGL exportable can hand back a frame in. export_shm_buffer
@@ -106,30 +133,43 @@ static void render_surface(struct nethos_surface *s, EGLImageKHR image) {
  * some frame -- unlikely on this hardware, since dma-buf import is confirmed
  * working, but not left silently unhandled: better one dropped frame with a
  * log line than the permanent-stall class of bug the missing acks below were.
- * All three dispatch frame_complete/frame_displayed unconditionally, same
- * place as the buffer/image release right next to them and for the same
- * reason: these are WPE's own frame-pipeline bookkeeping ("I got your last
- * frame, send the next one"), not a statement about whether this client
- * chose to visually present that particular frame. Nesting them inside a
- * visibility-gated render path instead (an earlier version of this file did
- * exactly that, see docs/NETHOS-VIEW-REWRITE.md) meant a frame exported
- * while a surface was hidden -- e.g. a layer-shell overlay's normal closed
- * state -- got released but never acked, and WPE then withheld every export
- * after it forever, even once nethosHost.show() ran: the menu/ask/
- * control-center overlay pattern (hidden by default, shown on demand, see
- * shell.js's overlayMapped()) hit this on literally its first hide. */
+ *
+ * Every export must eventually be acked (frame_complete + frame_displayed)
+ * or WPE withholds every one after it forever -- confirmed live, see the
+ * menu/ask/control-center history in docs/NETHOS-VIEW-REWRITE.md. Two paths
+ * to that ack now: render_surface() returning false (nothing to paint --
+ * hidden or not yet configured) acks immediately, right here, since there is
+ * nothing to wait for; returning true means a real swap is pending
+ * presentation, and on_frame_done() acks once the compositor actually
+ * confirms it, non-blocking. An earlier version of this file dispatched both
+ * acks unconditionally, immediately, right here, paired with a blocking
+ * eglSwapInterval(1) to keep WPE from re-exporting faster than the display
+ * could show -- correct in principle, but eglSwapBuffers() blocking is
+ * exactly how Mesa's own Wayland EGL platform implements that interval, and
+ * this process is single-threaded: one surface's swap blocked reading
+ * Wayland input events for *every* surface, for up to a full vsync period,
+ * confirmed live via timing instrumentation around eglSwapBuffers (3-19ms
+ * per call). With several surfaces animating in the same tick -- the panel
+ * clock, a widget refresh, a slider being dragged -- those blocks stack,
+ * which is what made ordinary interaction (cursor hover, dragging the
+ * volume slider) feel laggy even though raw CPU cost during a plain scroll
+ * had already dropped to near zero switching to dma-buf. A frame callback is
+ * the standard, non-blocking way every well-behaved Wayland EGL client
+ * (GTK, Qt, Chromium's own ozone/wayland backend) paces itself instead. */
 static void on_export_fdo_egl_image(void *data, struct wpe_fdo_egl_exported_image *image) {
     struct nethos_surface *s = data;
-    render_surface(s, wpe_fdo_egl_exported_image_get_egl_image(image));
-    wpe_view_backend_exportable_fdo_dispatch_frame_complete(s->exportable);
-    wpe_view_backend_dispatch_frame_displayed(s->wpe_backend);
+    if (!render_surface(s, wpe_fdo_egl_exported_image_get_egl_image(image))) {
+        wpe_view_backend_exportable_fdo_dispatch_frame_complete(s->exportable);
+        wpe_view_backend_dispatch_frame_displayed(s->wpe_backend);
+    }
     wpe_view_backend_exportable_fdo_egl_dispatch_release_exported_image(s->exportable, image);
 }
 static void on_export_egl_image(void *data, EGLImageKHR image) {
     struct nethos_surface *s = data;
-    render_surface(s, image);
-    wpe_view_backend_exportable_fdo_dispatch_frame_complete(s->exportable);
-    wpe_view_backend_dispatch_frame_displayed(s->wpe_backend);
+    if (!render_surface(s, image)) {
+        wpe_view_backend_exportable_fdo_dispatch_frame_complete(s->exportable);
+        wpe_view_backend_dispatch_frame_displayed(s->wpe_backend);
+    }
     wpe_view_backend_exportable_fdo_egl_dispatch_release_image(s->exportable, image);
 }
 static void on_export_shm(void *data, struct wpe_fdo_shm_exported_buffer *buffer) {
@@ -195,6 +235,13 @@ void nethos_surface_destroy(struct nethos_surface *s) {
      * surfaces remain is not worth the bookkeeping for a case this rare. */
     if (g_related_view == s->webview) g_related_view = NULL;
 
+    /* Otherwise a pending frame callback outlives the surface: the compositor
+     * still fires it, on_frame_done() still runs, dereferencing this `s`
+     * after free(). Nothing to ack on the way out -- the whole point of
+     * destroying a surface is that WPE's own backend is being torn down
+     * with it, not left waiting for a response. */
+    if (s->frame_cb) { wl_callback_destroy(s->frame_cb); s->frame_cb = NULL; }
+
     if (s->tex) glDeleteTextures(1, &s->tex);
     if (s->egl_surface != EGL_NO_SURFACE) eglDestroySurface(g_egl_display, s->egl_surface);
     if (s->egl_window) wl_egl_window_destroy(s->egl_window);
@@ -231,20 +278,23 @@ static void ensure_egl_surface(struct nethos_surface *s, int w, int h) {
         if (!eglMakeCurrent(g_egl_display, s->egl_surface, s->egl_surface, g_egl_context))
             fprintf(stderr, "nethos-view-native: '%s' eglMakeCurrent failed: 0x%x\n",
                     s->spec.name, eglGetError());
-        /* Without this, eglSwapBuffers returns immediately instead of
-         * blocking for the next vblank -- confirmed live: once render_shm
-         * started dispatching frame_complete/frame_displayed right after an
-         * unthrottled swap (see render_shm), WebKit had nothing pacing it
-         * and repainted as fast as the CPU allowed (96%+ CPU, WPEWebProcess
-         * RSS climbing continuously, and the screen showing a stuck void
-         * colour instead of any surface content -- Wayfire's own compositor
-         * falling behind an unbounded commit rate looks identical to "the
-         * client never painted anything" from a screenshot, which is what
-         * made this easy to mistake for a repeat of the original bug).
-         * eglSwapInterval is a property of the EGL *surface*, not the
-         * context, so it has to be set here per-surface, once, right after
-         * this surface's own eglMakeCurrent. */
-        eglSwapInterval(g_egl_display, 1);
+        /* Explicit 0, not left at the driver default: this surface's pacing
+         * is handled entirely by render_surface()'s own wl_surface.frame
+         * callback now (see its comment), not by blocking here. eglSwapBuffers
+         * blocking for vblank was tried first (interval 1) and worked for its
+         * original purpose -- stopping WPE from re-exporting faster than the
+         * CPU could keep up, which pegged it at 96%+ before this existed --
+         * but Mesa's Wayland EGL platform implements that block by doing
+         * exactly the frame-callback wait render_surface() now does
+         * explicitly, except *inside* eglSwapBuffers, blocking this
+         * single-threaded process's entire event loop (all Wayland input,
+         * every other surface's rendering) for up to a full vsync period on
+         * every single swap -- confirmed live via timing instrumentation,
+         * and confirmed as the cause of "cursor focus" and slider-drag lag
+         * once dma-buf had already ruled out CPU cost as the culprit. Explicit
+         * because EGL's own default for a given driver/platform is not
+         * something to depend on staying non-blocking. */
+        eglSwapInterval(g_egl_display, 0);
         nethos_gl_setup();
     } else {
         wl_egl_window_resize(s->egl_window, w, h, 0, 0);
