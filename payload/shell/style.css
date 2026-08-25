@@ -846,7 +846,7 @@ html:not(.neth-compositor-blur) .ask-log {
  */
 
 :root {
-  --metal-pad: 12px;    /* metal showing above and below the panel box */
+  --metal-pad: 16px;    /* metal showing above and below the panel box */
   --metal-inset: 2px;   /* how far the bar sits in from the screen edge */
   /* Sampled from a column of the rendered bar: #ffffff is its hot highlight,
      #ccd3d9 the roll into the core. The metal's own core is near black, and
@@ -877,8 +877,16 @@ body.metal #panel::before { display: none; }
 /* The bar speaks in the widget-title voice -- the same face, size and
    tracking as h3 -- because a chrome bar with UI-sans on it reads as a
    screenshot of two different systems. */
+/* Every text child, not a chosen few. The panel sits on the bar's dark core
+   band, and anything left on the theme's own ink -- which is near-black in the
+   light theme -- disappears into it. That is what happened to Ask, the metrics
+   and the clock on first install. */
+body.metal #panel { color: #eaeef1; }
 body.metal #panel .task .label,
+body.metal #panel .ask,
+body.metal #panel #status,
 body.metal #panel #metrics,
+body.metal #panel .metric,
 body.metal #panel .clock {
   font-family: var(--display);
   font-size: 10px; font-weight: 600; letter-spacing: 0.14em;
@@ -889,9 +897,16 @@ body.metal #panel .clock {
   background-clip: text;
   color: transparent;
 }
-body.metal #panel .metric b {
-  font-family: inherit; font-weight: inherit; color: inherit;
+/* .metric b and .clock set their own colour off --ink; inside the bar they
+   have to take the fill from the parent instead, or the clipped gradient is
+   painted over by an opaque near-black. */
+body.metal #panel .metric b,
+body.metal #panel .clock .date {
+  font-family: inherit; font-weight: inherit;
+  color: inherit; background: none;
 }
+body.metal #panel .ask:hover { background: none; color: inherit; }
+body.metal #panel .tray-item { color: #eaeef1; }
 /* The metal moves under the type, so the glyphs carry their own contact
    shadow rather than trusting the reflection under them to stay dark. It is
    painted from the glyph alpha, so it still reads under a clipped fill. */
