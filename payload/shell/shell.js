@@ -97,7 +97,7 @@ function initPanel(settings) {
      metal and clicks along its lower edge fall through to the desktop. */
   if (!settings || settings.panel_liquid !== false) {
     import("./liquid.js")
-      .then((m) => m.startPanelMetal())
+      .then((m) => m.startPanelMetal(settings))
       .then((h) => {
         if (!h) return;
         barH = h;
@@ -314,7 +314,7 @@ function initDock(settings) {
      its glass either way -- the metal wraps the pill rather than replacing it. */
   if (!settings || settings.panel_liquid !== false) {
     import("./liquid.js")
-      .then((m) => m.startDockMetal())
+      .then((m) => m.startDockMetal(settings))
       .catch((e) => console.log("liquid: " + e.message));
   }
   let apps = [], pinned = DOCK_DEFAULTS.slice(), running = [];
@@ -1634,6 +1634,11 @@ function applySettings(s) {
     root.style.setProperty("--dock-icon", s.dock_size + "px");
   document.body.dataset.autohide = s.dock_autohide === false ? "0" : "1";
   document.body.dataset.seconds = s.panel_clock_seconds ? "1" : "0";
+  /* The liquid surfaces keep their own look (environment, conductor, ink) and
+     cannot be driven from CSS variables alone, so they are told rather than
+     inferred. Dispatched after the theme attribute is set above, because the
+     "auto" preset resolves against it. */
+  document.dispatchEvent(new CustomEvent("nethos:settings", { detail: s }));
 }
 
 async function loadSettings() {

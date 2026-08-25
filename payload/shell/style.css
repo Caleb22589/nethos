@@ -901,7 +901,7 @@ body.metal #panel::before { display: none; }
    band, and anything left on the theme's own ink -- which is near-black in the
    light theme -- disappears into it. That is what happened to Ask, the metrics
    and the clock on first install. */
-body.metal #panel { color: #eaeef1; }
+body.metal #panel { color: var(--metal-ink, #eaeef1); }
 body.metal #panel .task .label,
 body.metal #panel .ask,
 body.metal #panel #status,
@@ -938,7 +938,7 @@ body.metal #panel .task.focused {
   background: none; box-shadow: none;
   height: 22px; padding: 0 12px;
 }
-body.metal #panel .task .x { color: #eaeef1; }
+body.metal #panel .task .x { color: var(--metal-ink, #eaeef1); }
 
 /* The launcher mark, turned from the same stock. This is the one place the
    panel gives up its accent: docs/DESIGN.md rule 1 asks for one accent used
@@ -947,15 +947,15 @@ body.metal #panel .mark { width: 20px; height: 20px; }
 body.metal #panel .mark:hover { background: none; }
 body.metal #panel .mark i {
   width: 8px; height: 8px;
-  background: linear-gradient(160deg,
-                #ffffff 0%, #eaeef1 40%, #b9c1c8 64%, #f4f7f9 100%);
+  background: var(--metal-type, linear-gradient(160deg,
+                #ffffff 0%, #eaeef1 40%, #b9c1c8 64%, #f4f7f9 100%));
   box-shadow: 0 1px 2px rgba(6, 9, 14, .6),
               inset 0 0 0 0.5px rgba(255, 255, 255, .7);
 }
 
 body.metal #status,
 body.metal #status:hover { background: none; }
-body.metal #tray .tray-item { color: #eaeef1; }
+body.metal #tray .tray-item { color: var(--metal-ink, #eaeef1); }
 
 /* ---------------------------------------------------------- dock metal --
  * The dock keeps its glass; the metal wraps it. The pill has to lift by the
@@ -976,5 +976,7 @@ body[data-view="dock"].metal #dock::before { display: none; }
 
 /* Dark pane, light ink -- the same inversion the panel makes. */
 body[data-view="dock"].metal .dock-item .fallback,
-body[data-view="dock"].metal .dock-label { color: #eaeef1; }
-body[data-view="dock"].metal .dock-item.running::after { background: #eaeef1; }
+body[data-view="dock"].metal .dock-label { color: var(--metal-ink, #eaeef1); }
+body[data-view="dock"].metal .dock-item.running::after {
+  background: var(--metal-ink, #eaeef1);
+}

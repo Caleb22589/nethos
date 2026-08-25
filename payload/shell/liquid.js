@@ -19,7 +19,57 @@
  * here is load-bearing: the panel works without it.
  */
 
+import { PRESETS, resolve } from "/lib/liquid-presets.js";
+
 const SOFTWARE = /llvmpipe|softpipe|swiftshader|software|swrast/i;
+
+/* The look, shared by both surfaces and rebuilt whenever settings change.
+   `swell` and `pad` live here rather than as constants because they are the
+   two things a user is most likely to want turned down. */
+const look = {
+  preset: null, thickness: 0.78, swell: 2.5, pad: 16,
+  dock: true, paneAlpha: 0.34,
+};
+
+/* Settings -> one coherent look. The preset supplies the environment, the
+   conductor and the ink together; the sliders scale what it chose rather than
+   replacing it, so no combination of them can produce type that cannot be
+   read on its own bar. */
+function applyLook(lm, s) {
+  s = s || {};
+  const dark = document.documentElement.getAttribute("data-theme") === "dark";
+  const name = resolve(s.liquid_preset, dark);
+  const p = PRESETS[name];
+  look.preset = name;
+  look.thickness = p.thickness;
+  look.swell = typeof s.liquid_swell === "number" ? s.liquid_swell : 2.5;
+  look.dock = s.liquid_dock !== false;
+  look.paneAlpha = (typeof s.liquid_pane === "number" ? s.liquid_pane : 34) / 100;
+
+  const height = typeof s.liquid_height === "number" ? s.liquid_height : 62;
+  look.pad = Math.max(2, (height - 30) / 2);      // the panel box is 30px tall
+
+  const root = document.documentElement.style;
+  root.setProperty("--metal-pad", look.pad + "px");
+  const [r, g, b] = p.pane;
+  root.setProperty("--metal-pane", `rgba(${r},${g},${b},${look.paneAlpha.toFixed(3)})`);
+  /* The dock's pane needs a heavier alpha to land on the same colour: it sits
+     over the bright band of the reflection where the panel's box sits over the
+     dark core. 2.15 is the ratio measured off the screen at the default. */
+  root.setProperty("--metal-pane-dock",
+    `rgba(${r},${g},${b},${Math.min(0.95, look.paneAlpha * 2.15).toFixed(3)})`);
+  root.setProperty("--metal-type", p.type);
+  root.setProperty("--metal-ink", p.ink);
+
+  if (lm) {
+    lm.setEnvironment(p.env);
+    const m = p.material;
+    lm.opts.tint = m.tint;
+    lm.opts.roughness = m.roughness;
+    lm.opts.exposure = m.exposure * ((s.liquid_exposure || 100) / 100);
+    lm.opts.contrast = m.contrast * ((s.liquid_contrast || 100) / 100);
+  }
+}
 
 /* How long a pointer may be silent before the bar treats it as gone.
  *
@@ -102,8 +152,9 @@ const px = (name, fallback) =>
    one radius in from each end -- so the horizontal padding is the radius
    itself. Padding all four sides equally would leave the dock's corners
    hanging out of the rounded ends. */
-export async function startDockMetal() {
+export async function startDockMetal(settings) {
   if (!usable()) return false;
+  if (settings && settings.liquid_dock === false) return false;
   let LiquidMetal;
   try { ({ LiquidMetal } = await import("/lib/liquid-metal.js")); }
   catch (e) { console.log("liquid: " + e.message); return false; }
@@ -118,6 +169,13 @@ export async function startDockMetal() {
 
   const lm = new LiquidMetal(canvas, {
     quality: "low", supersample: 1, fov: 6, background: [0, 0, 0, 0],
+  });
+  applyLook(lm, settings);
+  document.addEventListener("nethos:settings", (e) => {
+    applyLook(lm, e.detail);
+    if (!look.dock) { canvas.style.display = "none"; return; }
+    canvas.style.display = "";
+    measure(); wake();
   });
 
   let L = null;
@@ -161,7 +219,8 @@ export async function startDockMetal() {
     const want = live && P.y > g.top - 40 && P.y < g.bottom + 40
       ? Math.max(0, 1 - Math.abs(P.y - g.cy) / (60 + g.rad)) : 0;
     if (live) swell.x = ease(swell.x, clamp(P.x, g.x0, g.x1), 0.26);
-    swell.r = ease(swell.r, want * SWELL, want * SWELL > swell.r ? GRAB : LET_GO);
+    const tgt = want * look.swell;
+    swell.r = ease(swell.r, tgt, tgt > swell.r ? GRAB : LET_GO);
     if (swell.r > 0.15) {
       const r = g.rad + swell.r;
       paths.push([[swell.x - 6, g.cy, r], [swell.x + 6, g.cy, r]]);
@@ -176,7 +235,7 @@ export async function startDockMetal() {
         paths.push([[it.cx - 6, g.cy, g.rad + lift], [it.cx + 6, g.cy, g.rad + lift]]);
       }
     }
-    return { paths, thickness: 0.8, blend: 0.75 };
+    return { paths, thickness: look.thickness, blend: 0.75 };
   }
 
   let raf = 0, lastDraw = -1e9, idle = 0;
@@ -216,7 +275,7 @@ export async function startDockMetal() {
 
 /* Returns the height of the bar in CSS pixels so the caller can size the
    input region and the exclusive zone, or 0 when the metal did not start. */
-export async function startPanelMetal() {
+export async function startPanelMetal(settings) {
   if (!usable()) return 0;
 
   let LiquidMetal;
@@ -251,6 +310,12 @@ export async function startPanelMetal() {
     fov: 4.5,
     background: [0, 0, 0, 0],
   });
+  applyLook(lm, settings);
+  // Live: the panel repaints as a slider moves rather than on next login.
+  document.addEventListener("nethos:settings", (e) => {
+    applyLook(lm, e.detail);
+    fit(); wake();
+  });
 
   // --- layout, measured rarely ------------------------------------------------
 
@@ -263,7 +328,7 @@ export async function startPanelMetal() {
 
   function measure() {
     const b = panel.getBoundingClientRect();
-    const pad = px("--metal-pad", 16);
+    const pad = look.pad;
     const inset = px("--metal-inset", 2);
     const top = b.top - pad, bottom = b.bottom + pad;
     const rad = (bottom - top) / 2;
@@ -345,7 +410,7 @@ export async function startPanelMetal() {
     const want = live
       ? Math.max(0, 1 - Math.abs(P.y - g.cy) / (80 + g.rad))
       : 0;
-    const target = want * SWELL;
+    const target = want * look.swell;
     if (live) swell.x = ease(swell.x, clamp(P.x, g.x0, g.x1), 0.3);
     swell.r = ease(swell.r, target, target > swell.r ? GRAB : LET_GO);
     if (swell.r > 0.1) {
@@ -383,7 +448,7 @@ export async function startPanelMetal() {
       }
     }
 
-    return { paths, thickness: 0.78, blend: 0.75 };
+    return { paths, thickness: look.thickness, blend: 0.75 };
   }
 
   // --- on-demand loop ---------------------------------------------------------

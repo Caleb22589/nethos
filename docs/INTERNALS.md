@@ -317,3 +317,36 @@ check correctly refuses — you get the glass panel. To look at it anyway, with
 
 and reload. Expect single-digit frame rates. On a machine with a real GPU, or a
 VM with virglrenderer and a gtk/sdl display, no override is needed.
+
+### Looks, and why they are presets rather than sliders
+
+`lib/liquid-presets.js` holds one coherent look each: the environment the bar
+reflects, the conductor it is made of, and the CSS tokens its contents need to
+stay readable. Those three cannot be chosen independently — a darker conductor
+needs lighter ink, and a ramp tuned for a pale desktop is a black slab on a
+dark one — so they travel together. The sliders in Settings scale what the
+preset chose; they cannot replace it, which is what stops any combination of
+them producing type that cannot be read on its own bar.
+
+| preset | what it is |
+| --- | --- |
+| `chrome-dark` | the default on a dark theme |
+| `chrome-light` | lifted ramp, dark ink; the default on a light theme |
+| `mercury` | fatter tube, some roughness: rolled highlight instead of hard bands |
+| `obsidian` | low F0, so most of the environment is absorbed and only the lights survive |
+| `titanium` | matte and neutral, bands blurred to a sheen |
+| `brass` | warm conductor, with the type warmed to match |
+
+`auto` resolves against the theme, which is the only choice that stays right on
+a machine whose theme follows the time of day.
+
+Settings live under **Liquid metal**: material, bar height, swell, pane tint,
+exposure, contrast, and whether the dock is surrounded. They apply as the
+slider moves — `applySettings` dispatches `nethos:settings`, and each surface
+rebuilds its look from it — because the alternative is judging a material from
+a screenshot taken at the last login.
+
+The elevation ramp is where a metal's character lives, and the rule that
+governs it is in `lib/liquid-metal.js`: the dome must not clip, or the bar
+renders as matte white plastic rather than metal. Highlights are the lights'
+job, and lights are small.

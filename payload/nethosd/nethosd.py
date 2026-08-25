@@ -643,10 +643,42 @@ SETTINGS_SCHEMA = [
      "unit": "px"},
     {"key": "panel_clock_seconds", "label": "Show seconds",
      "group": "Panel", "type": "bool", "default": False},
-    {"key": "panel_liquid", "label": "Liquid metal panel",
-     "group": "Panel", "type": "bool", "default": True,
-     "help": "Needs a GPU. Falls back to glass on its own if there is not "
-             "one, so leaving this on costs nothing."},
+    # Liquid metal. The preset carries the environment, the conductor and the
+    # ink together -- see lib/liquid-presets.js on why those three cannot be
+    # picked separately -- and the rest of this group adjusts it around the
+    # edges. Everything here is inert on a machine that cannot draw it.
+    {"key": "panel_liquid", "label": "Liquid metal", "group": "Liquid metal",
+     "type": "bool", "default": True,
+     "help": "Draws the panel as chrome. Needs a GPU; falls back to glass on "
+             "its own if there is not one, so leaving this on costs nothing."},
+    {"key": "liquid_preset", "label": "Material", "group": "Liquid metal",
+     "type": "choice",
+     "options": ["auto", "chrome-dark", "chrome-light", "mercury",
+                 "obsidian", "titanium", "brass"],
+     "default": "auto",
+     "help": "Auto follows the theme: chrome for dark, its lighter cut for "
+             "light."},
+    {"key": "liquid_dock", "label": "Surround the dock", "group": "Liquid metal",
+     "type": "bool", "default": True,
+     "help": "Wraps the dock in the same metal. The dock keeps its own pane."},
+    {"key": "liquid_height", "label": "Bar height", "group": "Liquid metal",
+     "type": "range", "min": 40, "max": 96, "step": 2, "default": 62,
+     "unit": "px"},
+    {"key": "liquid_swell", "label": "Swell", "group": "Liquid metal",
+     "type": "range", "min": 0, "max": 8, "step": 0.5, "default": 2.5,
+     "unit": "px",
+     "help": "How far the bar bulges under the pointer. 0 turns it off."},
+    {"key": "liquid_pane", "label": "Pane", "group": "Liquid metal",
+     "type": "range", "min": 0, "max": 90, "step": 2, "default": 34,
+     "unit": "%",
+     "help": "The tint between the contents and the metal. Lower shows more "
+             "metal and reads less well."},
+    {"key": "liquid_exposure", "label": "Exposure", "group": "Liquid metal",
+     "type": "range", "min": 60, "max": 160, "step": 5, "default": 100,
+     "unit": "%"},
+    {"key": "liquid_contrast", "label": "Contrast", "group": "Liquid metal",
+     "type": "range", "min": 80, "max": 160, "step": 5, "default": 100,
+     "unit": "%"},
     # Not shown in Settings: this is state, not a preference. It is in the
     # same file because that is the file that already exists and is already
     # written atomically, and inventing a second one for a single boolean is
