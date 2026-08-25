@@ -207,7 +207,12 @@ struct nethos_surface *nethos_surface_create(const struct nethos_spec *spec) {
     webkit_settings_set_enable_write_console_messages_to_stdout(settings, TRUE);
     webkit_settings_set_enable_media(settings, FALSE);
     webkit_settings_set_enable_webaudio(settings, FALSE);
-    webkit_settings_set_enable_webgl(settings, FALSE);
+    /* WebGL is off by default for the same reason as media and webaudio: a
+     * shell surface has no use for it, and every surface here shares one web
+     * process, so the machinery would be kept warm for four surfaces that
+     * never touch it. The panel asks for it with webgl=1 so that it, and only
+     * it, pays -- see shell/liquid.js. */
+    webkit_settings_set_enable_webgl(settings, spec->webgl ? TRUE : FALSE);
     webkit_settings_set_media_playback_requires_user_gesture(settings, TRUE);
     webkit_settings_set_enable_page_cache(settings, FALSE);
     webkit_settings_set_enable_html5_database(settings, FALSE);

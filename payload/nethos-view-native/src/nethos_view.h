@@ -54,6 +54,7 @@ struct nethos_spec {
     int exclusive;        /* -1 = "auto" sentinel handled by has_exclusive_auto */
     bool exclusive_auto;
     bool transparent;
+    bool webgl;
     bool keyboard_off;    /* spec's keyboard=off */
 };
 

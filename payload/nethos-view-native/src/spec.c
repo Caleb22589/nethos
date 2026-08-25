@@ -59,6 +59,7 @@ static void apply_role_defaults(enum nethos_role role, const char **layer,
 bool nethos_parse_spec(const char *text, struct nethos_spec *out) {
     memset(out, 0, sizeof(*out));
     out->transparent = true; /* spec.get("transparent", "1") not in (0,false,no) */
+    out->webgl = false;      /* opt-in per surface; see surface.c */
 
     struct kv pairs[MAX_KV];
     int n = 0;
@@ -129,6 +130,10 @@ bool nethos_parse_spec(const char *text, struct nethos_spec *out) {
     if (transparent && (strcmp(transparent, "0") == 0 || strcmp(transparent, "false") == 0
                          || strcmp(transparent, "no") == 0))
         out->transparent = false;
+
+    const char *webgl = kv_find(pairs, n, "webgl");
+    out->webgl = webgl && (strcmp(webgl, "1") == 0 || strcmp(webgl, "true") == 0
+                            || strcmp(webgl, "yes") == 0);
 
     const char *keyboard = kv_find(pairs, n, "keyboard");
     out->keyboard_off = keyboard && strcmp(keyboard, "off") == 0;
