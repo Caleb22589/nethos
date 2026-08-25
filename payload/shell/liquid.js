@@ -9,7 +9,7 @@
  *
  *   - the `panel_liquid` setting,
  *   - WebGL2 being available (nethos-view only enables it for surfaces that
- *     ask, so this is off everywhere else in the shell),
+ *     ask, and gives them their own web process when they do),
  *   - the GL renderer not being a software rasteriser. Under QEMU without
  *     virtio-gpu, or on a machine whose driver never loaded, WebKit falls back
  *     to llvmpipe, and a raymarcher on llvmpipe across a 1920px bar is not a
@@ -17,20 +17,29 @@
  *
  * When any of those says no the CSS glass is left exactly as it was. Nothing
  * here is load-bearing: the panel works without it.
- *
- * Frames are drawn on demand. A shell surface that renders a shader at 60fps
- * for its own amusement is a battery bug, so the loop runs only while
- * something is still moving and stops as soon as everything has settled.
  */
 
 const SOFTWARE = /llvmpipe|softpipe|swiftshader|software|swrast/i;
 
+/* How long a pointer may be silent before the bar treats it as gone.
+ *
+ * A layer-shell surface stops receiving pointer events the moment the cursor
+ * leaves its input region, and no leave event is delivered -- the same thing
+ * that makes :hover stick on the dock (see shell.js's clearHover). Waiting for
+ * pointerleave meant the swell never retracted, which also meant the settle
+ * check below never came true and the render loop ran at 60fps for the rest of
+ * the session. That is the whole cost of this constant. */
+const POINTER_TTL = 0.45;
+
+/* An old iGPU is the target, so frames are capped rather than free-running.
+ * At 30 the swell still reads as liquid and costs half the GPU of 60. */
+const MIN_FRAME = 1 / 30;
+
 function usable() {
   /* Escape hatch. scripts/run.sh on macOS picks the cocoa display backend,
      which cannot hand a GL context to the guest, so the VM renders through
-     llvmpipe and the check below correctly refuses. That is the right default
-     and the wrong thing when you are trying to look at the bar. Set it from
-     the inspector (NETHOS_INSPECTOR=1) and reload:
+     llvmpipe and the check below correctly refuses. Set it from the inspector
+     (NETHOS_INSPECTOR=1) and reload:
 
          localStorage.nethosLiquidForce = "1"
 
@@ -51,6 +60,23 @@ function usable() {
   if (lose) lose.loseContext();
   if (!ok) console.log("liquid: software renderer (" + name + "), keeping glass");
   return ok;
+}
+
+/* The renderer string cannot be trusted on its own. WebKit masks it: on this
+   hardware -- Intel HD 4400, Mesa i915 -- it reports "Apple GPU", so the check
+   above can never match llvmpipe however software the rasteriser really is.
+   Timing actual frames is the honest question anyway: what matters is whether
+   this machine can draw the bar, not what it calls its GPU. */
+const TOO_SLOW = 26;   // ms/frame; beyond this a swell would visibly stutter
+
+function benchmark(lm, shape, t) {
+  const N = 8;
+  lm.setShapes([shape]); lm.render(t);          // warm: compile, upload
+  lm.gl.finish();
+  const t0 = performance.now();
+  for (let i = 0; i < N; i++) { lm.setShapes([shape]); lm.render(t); }
+  lm.gl.finish();
+  return (performance.now() - t0) / N;
 }
 
 const ease = (a, b, k) => a + (b - a) * k;
@@ -81,151 +107,223 @@ export async function startPanelMetal() {
   canvas.id = "metal";
   document.body.insertBefore(canvas, document.body.firstChild);
 
-  const lm = new LiquidMetal(canvas, { quality: "medium", background: [0, 0, 0, 0] });
+  /* quality "low": one bounce, no supersampling beyond a touch of edge
+     smoothing. The bar is a plain capsule with nothing concave in it, so the
+     second bounce buys almost no detail and costs a whole extra march. Aimed
+     at the oldest machine this is expected to run on, not the newest.
 
-  const fit = () => lm.resize(window.innerWidth, window.innerHeight);
-  fit();
+     A long lens rather than a wide one: the canvas is a short strip, so its
+     aspect ratio is extreme, and an 18-degree vertical field becomes a
+     70-degree horizontal one that visibly bends the reflection at both ends. */
+  const lm = new LiquidMetal(canvas, {
+    quality: "low",
+    supersample: 1,
+    fov: 4.5,
+    background: [0, 0, 0, 0],
+  });
 
-  /* Geometry. The metal is derived from the panel's own layout box rather
-     than from a second copy of the numbers, so moving the panel in CSS moves
-     the metal with it. */
-  function housing() {
+  // --- layout, measured rarely ------------------------------------------------
+
+  /* Geometry comes from the panel's own layout box rather than a second copy
+     of the numbers. It is cached: getBoundingClientRect forces layout, and
+     calling it for the panel and every task on every frame was enough to make
+     the pointer itself feel late. Refreshed when something can actually have
+     moved. */
+  let L = null;
+
+  function measure() {
     const b = panel.getBoundingClientRect();
-    const pad = px("--metal-pad", 12);
+    const pad = px("--metal-pad", 16);
     const inset = px("--metal-inset", 2);
-    return {
-      left: inset, right: window.innerWidth - inset,
-      top: b.top - pad, bottom: b.bottom + pad,
-      height: b.height + pad * 2,
+    const top = b.top - pad, bottom = b.bottom + pad;
+    const rad = (bottom - top) / 2;
+    L = {
+      top, bottom, rad,
+      cy: top + rad,
+      x0: inset + rad,
+      x1: window.innerWidth - inset - rad,
+      band: Math.ceil(bottom) + 20,
+      tasks: [...document.querySelectorAll("#panel .task")].map((el) => {
+        const r = el.getBoundingClientRect();
+        return { el, left: r.left, right: r.right };
+      }),
+      mark: brand ? (() => {
+        const r = brand.getBoundingClientRect();
+        return { x: r.left + r.width / 2 };
+      })() : null,
     };
+    return L;
   }
 
-  // --- interaction state ----------------------------------------------------
+  /* The canvas covers only the bar's band, not the whole 360px surface. The
+     surface is tall so menus have somewhere to open; compositing and clearing
+     a 1366x360 GL buffer every frame to draw a 60px bar was most of what the
+     GPU was being asked to do. */
+  function fit() {
+    measure();
+    lm.resize(window.innerWidth, L.band);
+    canvas.style.height = L.band + "px";
+  }
+  fit();
 
-  const P = { x: -1e4, y: -1e4, inside: false };
+  addEventListener("resize", () => { fit(); wake(); });
+  // tasks come and go as windows open; their rects are cached, so re-measure
+  const tasksEl = document.getElementById("tasks");
+  if (tasksEl) {
+    new MutationObserver(() => { measure(); wake(); })
+      .observe(tasksEl, { childList: true, subtree: true });
+  }
+
+  // --- interaction state ------------------------------------------------------
+
+  const P = { x: -1e4, y: -1e4, seen: -1e9 };
   const swell = { x: 0, r: 0 };
-  const wake = [{ x: 0, r: 0 }, { x: 0, r: 0 }, { x: 0, r: 0 }];
+  const wake3 = [{ x: 0, r: 0 }, { x: 0, r: 0 }, { x: 0, r: 0 }];
+  const hover = new WeakMap();
   let clickAge = 1e3, clickX = 0, flash = 0, markPull = 0;
+  let now = 0;
 
   addEventListener("pointermove", (e) => {
-    P.x = e.clientX; P.y = e.clientY; P.inside = true; wake_up();
-  });
-  addEventListener("pointerleave", () => { P.inside = false; wake_up(); });
+    P.x = e.clientX; P.y = e.clientY; P.seen = now;
+    wake();
+  }, true);
   addEventListener("pointerdown", (e) => {
-    const h = housing();
-    if (e.clientY > h.bottom + 20 || e.clientY < h.top - 20) return;
-    clickAge = 0; clickX = e.clientX; flash = 1; wake_up();
-  });
-  addEventListener("resize", () => { fit(); wake_up(); });
+    if (!L) return;
+    if (e.clientY > L.bottom + 20 || e.clientY < L.top - 20) return;
+    clickAge = 0; clickX = e.clientX; flash = 1; wake();
+  }, true);
 
-  // hover state for the task buttons, which the shell rebuilds as windows open
-  const hovers = new WeakMap();
-  const track = (el) => {
-    if (hovers.has(el)) return;
-    hovers.set(el, { hover: 0 });
-    el.addEventListener("pointerenter", () => { el._hot = true; wake_up(); });
-    el.addEventListener("pointerleave", () => { el._hot = false; wake_up(); });
+  const hot = (el) => {
+    if (!hover.has(el)) hover.set(el, { v: 0 });
+    return hover.get(el);
   };
-  if (brand) track(brand);
+  const over = (el, r) =>
+    now - P.seen < POINTER_TTL &&
+    P.x >= r.left && P.x <= r.right && P.y >= L.top && P.y <= L.bottom;
 
-  // --- the scene ------------------------------------------------------------
+  // --- the scene --------------------------------------------------------------
 
   function build(dt) {
-    const h = housing();
-    const rad = h.height / 2;
-    const cy = h.top + rad;
-    const x0 = h.left + rad, x1 = h.right - rad;
-    if (x1 <= x0) return null;
+    const g = L;
+    if (!g || g.x1 <= g.x0) return null;
 
     // one capsule: uniform, pill-ended, and exact -- a lone primitive never
     // enters the smooth-union, so it is not inflated by the blend
-    const paths = [[[x0, cy, rad], [x1, cy, rad]]];
+    const paths = [[[g.x0, g.cy, g.rad], [g.x1, g.cy, g.rad]]];
 
-    const near = P.inside && P.y > h.top - 80 && P.y < h.bottom + 80;
-    const want = near ? Math.max(0, 1 - Math.abs(P.y - cy) / (80 + rad)) : 0;
-    if (P.inside) swell.x = ease(swell.x, clamp(P.x, x0, x1), 0.26);
+    // A pointer that has gone quiet is a pointer that has left. See POINTER_TTL.
+    const live = now - P.seen < POINTER_TTL;
+    const want = live
+      ? Math.max(0, 1 - Math.abs(P.y - g.cy) / (80 + g.rad))
+      : 0;
+    if (live) swell.x = ease(swell.x, clamp(P.x, g.x0, g.x1), 0.26);
     swell.r = ease(swell.r, want * 5, 0.16);
     if (swell.r > 0.15) {
-      const r = rad + swell.r;
-      paths.push([[swell.x - 6, cy, r], [swell.x + 6, cy, r]]);
+      const r = g.rad + swell.r;
+      paths.push([[swell.x - 6, g.cy, r], [swell.x + 6, g.cy, r]]);
     }
 
     let lead = swell.x;
-    wake.forEach((w, i) => {
+    wake3.forEach((w, i) => {
       w.x = ease(w.x, lead, 0.14 - i * 0.03);
       w.r = ease(w.r, swell.r * (0.62 - i * 0.18), 0.12);
       lead = w.x;
-      if (w.r > 0.15) paths.push([[w.x, cy, rad + w.r], [w.x + 5, cy, rad + w.r]]);
+      if (w.r > 0.15) paths.push([[w.x, g.cy, g.rad + w.r], [w.x + 5, g.cy, g.rad + w.r]]);
     });
 
     clickAge += dt;
     if (clickAge < 1.1) {
       const ring = Math.abs(Math.sin(clickAge * 26) * Math.exp(-clickAge * 5.5) * 7);
-      const cx = clamp(clickX, x0, x1);
-      paths.push([[cx - 4, cy, rad + ring], [cx + 4, cy, rad + ring]]);
+      const cx = clamp(clickX, g.x0, g.x1);
+      paths.push([[cx - 4, g.cy, g.rad + ring], [cx + 4, g.cy, g.rad + ring]]);
     }
     flash = Math.max(0, flash - dt * 2.4);
     lm.env.lights[1].intensity = 6 + flash * 10;
 
     // a pool under a hovered task. The focused task gets no bulge of its own:
     // a permanent swell reads as a defect in the bar rather than as a state.
-    document.querySelectorAll("#panel .task").forEach((el) => {
-      track(el);
-      const s = hovers.get(el);
-      s.hover = ease(s.hover, el._hot ? 1 : 0, 0.18);
-      if (s.hover > 0.05) {
-        const b = el.getBoundingClientRect();
-        const lift = s.hover * 2;
-        paths.push([[b.left + 10, cy, rad + lift], [b.right - 10, cy, rad + lift]]);
+    for (const t of g.tasks) {
+      const s = hot(t.el);
+      s.v = ease(s.v, over(t.el, t) ? 1 : 0, 0.18);
+      if (s.v > 0.05) {
+        const lift = s.v * 2;
+        paths.push([[t.left + 10, g.cy, g.rad + lift], [t.right - 10, g.cy, g.rad + lift]]);
       }
-    });
+    }
 
-    if (brand) {
-      markPull = ease(markPull, brand._hot ? 1 : 0, 0.16);
+    if (g.mark) {
+      const on = live && Math.abs(P.x - g.mark.x) < 16 && P.y < g.bottom;
+      markPull = ease(markPull, on ? 1 : 0, 0.16);
       if (markPull > 0.02) {
-        const b = brand.getBoundingClientRect();
-        const mx = b.left + b.width / 2;
-        paths.push([[mx, cy, rad * 0.9],
-                    [mx, cy + rad * 0.55 + markPull * 10, rad * 0.4]]);
+        paths.push([[g.mark.x, g.cy, g.rad * 0.9],
+                    [g.mark.x, g.cy + g.rad * 0.55 + markPull * 10, g.rad * 0.4]]);
       }
     }
 
     return { paths, thickness: 0.78, blend: 0.75 };
   }
 
-  // --- on-demand loop -------------------------------------------------------
+  // --- on-demand loop ---------------------------------------------------------
 
-  let raf = 0, prev = 0, idle = 0;
+  let raf = 0, prev = 0, lastDraw = -1e9, idle = 0;
 
   function settled() {
-    // still moving? keep drawing. Everything eases towards a target, so "no
-    // movement" is the honest end condition rather than a fixed timeout.
     if (clickAge < 1.15 || flash > 0.01) return false;
     if (swell.r > 0.02 || markPull > 0.02) return false;
-    if (wake.some((w) => w.r > 0.02)) return false;
-    if (P.inside && Math.abs(swell.x - clamp(P.x, 0, window.innerWidth)) > 0.5) return false;
+    if (wake3.some((w) => w.r > 0.02)) return false;
+    for (const t of (L ? L.tasks : [])) {
+      const s = hover.get(t.el);
+      if (s && s.v > 0.02) return false;
+    }
+    // a live pointer that has not reached its target yet is still animating
+    if (now - P.seen < POINTER_TTL &&
+        Math.abs(swell.x - clamp(P.x, 0, window.innerWidth)) > 0.5) return false;
     return true;
   }
 
   function frame(ms) {
-    const t = ms / 1000;
-    const dt = Math.min(prev ? t - prev : 0.016, 0.05);
-    prev = t;
-    const shape = build(dt);
-    if (shape) {
-      lm.setShapes([shape]);
-      lm.render(t);
+    now = ms / 1000;
+    const dt = Math.min(prev ? now - prev : 0.016, 0.05);
+    prev = now;
+
+    if (now - lastDraw >= MIN_FRAME) {
+      const shape = build(dt);
+      if (shape) { lm.setShapes([shape]); lm.render(now); }
+      lastDraw = now;
     }
-    if (settled() && ++idle > 4) { raf = 0; return; }
-    if (!settled()) idle = 0;
+
+    // Park once nothing is moving. Without this the loop is a 60fps shader
+    // running for the life of the session.
+    if (settled()) {
+      if (++idle > 3) { raf = 0; return; }
+    } else idle = 0;
     raf = requestAnimationFrame(frame);
   }
 
-  function wake_up() {
+  function wake() {
     idle = 0;
     if (!raf) { prev = 0; raf = requestAnimationFrame(frame); }
   }
 
-  wake_up();
-  return Math.ceil(housing().bottom) + 4;
+  /* Measure before committing. If this machine cannot draw the bar fast
+     enough, take the canvas back out and let the glass panel stand -- a
+     stuttering shell surface is worse than a plain one. */
+  const ms = benchmark(lm, build(0.016), now);
+  const report = (msg) => fetch("/api/log", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ surface: "panel", kind: "liquid", message: msg }),
+  }).catch(() => {});
+
+  if (ms > TOO_SLOW) {
+    report(`too slow: ${ms.toFixed(1)}ms/frame, keeping glass`);
+    canvas.remove();
+    document.body.classList.remove("metal");
+    return 0;
+  }
+  report(`metal up: ${ms.toFixed(2)}ms/frame ` +
+         `buffer=${canvas.width}x${canvas.height} band=${L.band}px`);
+
+  wake();
+  return Math.ceil(L.bottom) + 4;
 }
