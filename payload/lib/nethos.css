@@ -45,6 +45,25 @@
   font-display: swap;
 }
 
+/* The display face, vendored for the same reason as Nunito and then some:
+   nothing in --display's old stack existed on a Debian machine. Copperplate
+   Gothic is Monotype's and cannot ship; on the laptop every name in that list
+   -- Copperplate, Cinzel, Optima, Palatino -- resolved to DejaVu Sans, so the
+   panel and every card title were being set in the body face with wide
+   tracking rather than in a display face at all.
+
+   Archivo, under the OFL (lib/fonts/OFL-Archivo.txt). A modern grotesque cut
+   for exactly the role Arial Black is usually pressed into, which is a licence
+   we do not have. One variable file spans 100-900 and a width axis, so a heavy
+   title and a normal one are the same download. */
+@font-face {
+  font-family: "Archivo";
+  src: url("/lib/fonts/Archivo[wdth,wght].ttf") format("truetype-variations");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   /* Surfaces are translucent; the compositor blurs what is behind them. */
   /* Thinner than before. At 0.66 the panel reads as a white bar with a blur
@@ -111,8 +130,8 @@
      stack falls through to Cinzel, then to any serif, so the interface is
      correct with or without it. Drop the real thing in
      /usr/local/share/fonts and run fc-cache to have it picked up. */
-  --display: "Copperplate Gothic Light", "Copperplate Gothic", "Copperplate",
-             "Cinzel", "Optima", "Palatino", Georgia, serif;
+  --display: "Archivo", "Arial Black", "Helvetica Neue", Helvetica, Arial,
+             system-ui, sans-serif;
   --mono: "JetBrains Mono", "SF Mono", "DejaVu Sans Mono", ui-monospace, monospace;
 
   /* Legacy aliases: apps written against the first design system keep working
@@ -340,7 +359,10 @@ h1 { font-size: 22px; }
 h2 { font-size: 17px; }
 h3, .neth-card-title, .card-title {
   font-family: var(--display);
-  font-size: 12px; font-weight: 600; letter-spacing: 0.14em;
+  /* 800, not 600: Archivo at 600 is a semibold that reads as body text set in
+     caps. The display face earns its place by being visibly heavier than the
+     text around it. */
+  font-size: 12px; font-weight: 800; letter-spacing: 0.14em;
   text-transform: uppercase; color: var(--ink-faint); margin-bottom: 6px;
 }
 

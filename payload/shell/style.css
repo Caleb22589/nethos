@@ -847,6 +847,19 @@ html:not(.neth-compositor-blur) .ask-log {
 
 :root {
   --metal-pad: 16px;    /* metal showing above and below the panel box */
+  /* The pane that sits between the contents and the metal. --glass is white
+     at 0.42 in the light theme, so a dock left on it read as a bright slab
+     next to the panel's dark one.
+
+     Two alphas, one colour, and they are not a mistake. A translucent pane is
+     tinted by whatever it is over, and these two are over different parts of
+     the same reflection: the panel's box straddles the bar's dark core, the
+     dock's pill sits over the bright band above it. Measured off the screen,
+     the panel pane lands at #414243 over its backdrop; 0.73 is what puts the
+     dock on the same colour over #dfdfdf. Matching the numbers instead would
+     mean not matching the result. */
+  --metal-pane: rgba(8, 11, 16, 0.34);
+  --metal-pane-dock: rgba(8, 11, 16, 0.73);
   --metal-inset: 2px;   /* how far the bar sits in from the screen edge */
   /* Sampled from a column of the rendered bar: #ffffff is its hot highlight,
      #ccd3d9 the roll into the core. The metal's own core is near black, and
@@ -874,7 +887,7 @@ body[data-view="panel"].metal { padding: 18px 10px 0; }
 body.metal #panel {
   position: relative; z-index: 1;
   height: 30px;
-  background: rgba(8, 11, 16, 0.34);
+  background: var(--metal-pane);
   box-shadow: none;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
@@ -896,7 +909,7 @@ body.metal #panel #metrics,
 body.metal #panel .metric,
 body.metal #panel .clock {
   font-family: var(--display);
-  font-size: 10px; font-weight: 600; letter-spacing: 0.14em;
+  font-size: 10px; font-weight: 800; letter-spacing: 0.14em;
   text-transform: uppercase;
   font-variant-numeric: tabular-nums;
   background: var(--metal-type);
@@ -954,4 +967,14 @@ body.metal #tray .tray-item { color: #eaeef1; }
 body[data-view="dock"].metal #dock {
   position: relative; z-index: 1;
   margin-bottom: calc(10px + var(--metal-dock-pad));
+  background: var(--metal-pane-dock);
+  /* The rim and the sheen are glass lighting. The metal around the pill is
+     the edge now, and a white hairline inside it reads as a second border. */
+  box-shadow: none;
 }
+body[data-view="dock"].metal #dock::before { display: none; }
+
+/* Dark pane, light ink -- the same inversion the panel makes. */
+body[data-view="dock"].metal .dock-item .fallback,
+body[data-view="dock"].metal .dock-label { color: #eaeef1; }
+body[data-view="dock"].metal .dock-item.running::after { background: #eaeef1; }
