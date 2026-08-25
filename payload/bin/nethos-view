@@ -465,12 +465,21 @@ class Surface:
         # first estimated. Measured on real hardware: four renderers at ~181MB
         # each, 1.69GB for the shell. Sharing brings that to roughly one.
         # Set NETHOS_SHARE_WEBPROCESS=0 to go back to a process per surface.
-        if os.environ.get("NETHOS_SHARE_WEBPROCESS") != "0" \
+        # A surface that asks for WebGL does not share. Sharing is what makes
+        # one crash take down the whole shell, and the GL surface is the one
+        # likely to crash. Isolated, the worst case is a panel that falls back
+        # to no panel while the dock, desktop and menu keep running. Costs a
+        # second web process; only the panel asks.
+        isolate = str(spec.get("webgl", "0")).lower() in ("1", "true", "yes")
+
+        if not isolate and os.environ.get("NETHOS_SHARE_WEBPROCESS") != "0" \
                 and Surface._related_to is not None:
             self.view = WebKit.WebView(related_view=Surface._related_to)
         else:
             self.view = WebKit.WebView()
-            if Surface._related_to is None:
+            # An isolated view must never become the one everything else
+            # relates to, or the isolation inverts.
+            if Surface._related_to is None and not isolate:
                 Surface._related_to = self.view
 
         # No browser menu anywhere in the shell.

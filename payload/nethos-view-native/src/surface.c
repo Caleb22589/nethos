@@ -186,12 +186,25 @@ struct nethos_surface *nethos_surface_create(const struct nethos_spec *spec) {
      * same property. */
     const char *share_env = getenv("NETHOS_SHARE_WEBPROCESS");
     bool share = !(share_env && !strcmp(share_env, "0"));
+
+    /* A surface that asks for WebGL does not share. Sharing is what makes one
+     * crash take down the whole shell, and the GL surface is the one likely to
+     * crash: with WebGL on, the web process dies on reload on this hardware and
+     * every other surface -- dock, desktop, menu -- died with it, because they
+     * were all the same process. Isolated, the worst case is a panel that
+     * falls back to no panel while the rest of the shell keeps running.
+     *
+     * It costs a second web process (~180MB measured). Only the panel asks. */
+    if (spec->webgl) share = false;
+
     if (share && g_related_view) {
         s->webview = WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW,
             "related-view", g_related_view, NULL));
     } else {
         s->webview = WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW, NULL));
-        if (!g_related_view) g_related_view = s->webview;
+        /* An isolated view must never become the one everything else relates
+         * to, or the isolation inverts and the whole shell joins it. */
+        if (!g_related_view && !spec->webgl) g_related_view = s->webview;
     }
 
     /* No browser menu anywhere in the shell -- see nethos-view's own
