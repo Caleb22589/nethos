@@ -29,11 +29,21 @@ const SOFTWARE = /llvmpipe|softpipe|swiftshader|software|swrast/i;
  * pointerleave meant the swell never retracted, which also meant the settle
  * check below never came true and the render loop ran at 60fps for the rest of
  * the session. That is the whole cost of this constant. */
-const POINTER_TTL = 0.45;
+const POINTER_TTL = 0.2;
 
 /* An old iGPU is the target, so frames are capped rather than free-running.
  * At 30 the swell still reads as liquid and costs half the GPU of 60. */
 const MIN_FRAME = 1 / 30;
+
+/* How far the bar swells under the pointer, and how fast it lets go.
+ *
+ * This is a panel, not a demo. The swell should be noticeable when looked for
+ * and invisible when working, so the amplitude is small and the release is
+ * faster than the grab -- a bulge that lingers after the cursor has moved on
+ * reads as the interface lagging behind the mouse, which is the one impression
+ * an ornament must never give. */
+const SWELL = 2.5;
+const GRAB = 0.22, LET_GO = 0.42;
 
 function usable() {
   /* Escape hatch. scripts/run.sh on macOS picks the cocoa display backend,
@@ -151,7 +161,7 @@ export async function startDockMetal() {
     const want = live && P.y > g.top - 40 && P.y < g.bottom + 40
       ? Math.max(0, 1 - Math.abs(P.y - g.cy) / (60 + g.rad)) : 0;
     if (live) swell.x = ease(swell.x, clamp(P.x, g.x0, g.x1), 0.26);
-    swell.r = ease(swell.r, want * 6, 0.16);
+    swell.r = ease(swell.r, want * SWELL, want * SWELL > swell.r ? GRAB : LET_GO);
     if (swell.r > 0.15) {
       const r = g.rad + swell.r;
       paths.push([[swell.x - 6, g.cy, r], [swell.x + 6, g.cy, r]]);
@@ -160,9 +170,9 @@ export async function startDockMetal() {
       if (!hover.has(it.el)) hover.set(it.el, { v: 0 });
       const s = hover.get(it.el);
       const on = live && Math.abs(P.x - it.cx) < 26 && P.y > g.top && P.y < g.bottom;
-      s.v = ease(s.v, on ? 1 : 0, 0.2);
+      s.v = ease(s.v, on ? 1 : 0, on ? GRAB : LET_GO);
       if (s.v > 0.05) {
-        const lift = s.v * 5;
+        const lift = s.v * 3;
         paths.push([[it.cx - 6, g.cy, g.rad + lift], [it.cx + 6, g.cy, g.rad + lift]]);
       }
     }
@@ -298,7 +308,6 @@ export async function startPanelMetal() {
 
   const P = { x: -1e4, y: -1e4, seen: -1e9 };
   const swell = { x: 0, r: 0 };
-  const wake3 = [{ x: 0, r: 0 }, { x: 0, r: 0 }, { x: 0, r: 0 }];
   const hover = new WeakMap();
   let clickAge = 1e3, clickX = 0, flash = 0, markPull = 0;
   let now = 0;
@@ -336,24 +345,17 @@ export async function startPanelMetal() {
     const want = live
       ? Math.max(0, 1 - Math.abs(P.y - g.cy) / (80 + g.rad))
       : 0;
-    if (live) swell.x = ease(swell.x, clamp(P.x, g.x0, g.x1), 0.26);
-    swell.r = ease(swell.r, want * 5, 0.16);
-    if (swell.r > 0.15) {
+    const target = want * SWELL;
+    if (live) swell.x = ease(swell.x, clamp(P.x, g.x0, g.x1), 0.3);
+    swell.r = ease(swell.r, target, target > swell.r ? GRAB : LET_GO);
+    if (swell.r > 0.1) {
       const r = g.rad + swell.r;
       paths.push([[swell.x - 6, g.cy, r], [swell.x + 6, g.cy, r]]);
     }
 
-    let lead = swell.x;
-    wake3.forEach((w, i) => {
-      w.x = ease(w.x, lead, 0.14 - i * 0.03);
-      w.r = ease(w.r, swell.r * (0.62 - i * 0.18), 0.12);
-      lead = w.x;
-      if (w.r > 0.15) paths.push([[w.x, g.cy, g.rad + w.r], [w.x + 5, g.cy, g.rad + w.r]]);
-    });
-
     clickAge += dt;
-    if (clickAge < 1.1) {
-      const ring = Math.abs(Math.sin(clickAge * 26) * Math.exp(-clickAge * 5.5) * 7);
+    if (clickAge < 0.6) {
+      const ring = Math.abs(Math.sin(clickAge * 30) * Math.exp(-clickAge * 8) * 4);
       const cx = clamp(clickX, g.x0, g.x1);
       paths.push([[cx - 4, g.cy, g.rad + ring], [cx + 4, g.cy, g.rad + ring]]);
     }
@@ -364,19 +366,20 @@ export async function startPanelMetal() {
     // a permanent swell reads as a defect in the bar rather than as a state.
     for (const t of g.tasks) {
       const s = hot(t.el);
-      s.v = ease(s.v, over(t.el, t) ? 1 : 0, 0.18);
+      const on = over(t.el, t);
+      s.v = ease(s.v, on ? 1 : 0, on ? GRAB : LET_GO);
       if (s.v > 0.05) {
-        const lift = s.v * 2;
+        const lift = s.v * 1.5;
         paths.push([[t.left + 10, g.cy, g.rad + lift], [t.right - 10, g.cy, g.rad + lift]]);
       }
     }
 
     if (g.mark) {
       const on = live && Math.abs(P.x - g.mark.x) < 16 && P.y < g.bottom;
-      markPull = ease(markPull, on ? 1 : 0, 0.16);
+      markPull = ease(markPull, on ? 1 : 0, on ? GRAB : LET_GO);
       if (markPull > 0.02) {
-        paths.push([[g.mark.x, g.cy, g.rad * 0.9],
-                    [g.mark.x, g.cy + g.rad * 0.55 + markPull * 10, g.rad * 0.4]]);
+        paths.push([[g.mark.x, g.cy, g.rad * 0.92],
+                    [g.mark.x, g.cy + g.rad * 0.6 + markPull * 5, g.rad * 0.34]]);
       }
     }
 
@@ -388,9 +391,8 @@ export async function startPanelMetal() {
   let raf = 0, prev = 0, lastDraw = -1e9, idle = 0;
 
   function settled() {
-    if (clickAge < 1.15 || flash > 0.01) return false;
+    if (clickAge < 0.65 || flash > 0.01) return false;
     if (swell.r > 0.02 || markPull > 0.02) return false;
-    if (wake3.some((w) => w.r > 0.02)) return false;
     for (const t of (L ? L.tasks : [])) {
       const s = hover.get(t.el);
       if (s && s.v > 0.02) return false;

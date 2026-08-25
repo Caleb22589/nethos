@@ -129,7 +129,10 @@ if [ -d "$PAYLOAD/lib/fonts" ]; then
     # not a web page.
     install -d /usr/share/fonts/nethos
     install -m 0644 "$PAYLOAD"/lib/fonts/*.ttf /usr/share/fonts/nethos/
-    install -m 0644 "$PAYLOAD"/lib/fonts/OFL.txt /usr/share/fonts/nethos/ 2>/dev/null || true
+    # OFL*.txt, not OFL.txt: the licence has to travel with the font it covers,
+    # and there is more than one font here now. The glob was written when there
+    # was only Nunito, so Archivo would have been installed without its licence.
+    install -m 0644 "$PAYLOAD"/lib/fonts/OFL*.txt /usr/share/fonts/nethos/ 2>/dev/null || true
     # Without this the file is on disk and no application can find it by name.
     command -v fc-cache >/dev/null && fc-cache -f /usr/share/fonts/nethos >/dev/null 2>&1 || true
 fi
