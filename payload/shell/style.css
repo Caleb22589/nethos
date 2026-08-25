@@ -831,3 +831,93 @@ html:not(.neth-compositor-blur) .ask-log {
 .ask-line.warn { color: var(--danger, #b3261e); }
 .ask-line.step { color: var(--ink-faint); }
 .ask-line.term { font-family: var(--mono); font-size: 12px; color: var(--ink); }
+
+/* ======================================================= liquid metal ====
+ *
+ * The panel drawn as a bar of chrome instead of a pane of glass, by
+ * lib/liquid-metal.js. shell/liquid.js adds `body.metal` when the renderer
+ * actually starts, so everything here is scoped to that class: a machine
+ * without a GPU, or with the setting off, keeps every rule above untouched
+ * and never loads a line of this.
+ *
+ * The metal is a canvas behind the panel, not a background on it. It has to
+ * be, because the bar is larger than the panel box on every side -- the
+ * panel's contents run through the middle of a shape that surrounds them.
+ */
+
+:root {
+  --metal-pad: 12px;    /* metal showing above and below the panel box */
+  --metal-inset: 2px;   /* how far the bar sits in from the screen edge */
+  /* Sampled from a column of the rendered bar: #ffffff is its hot highlight,
+     #ccd3d9 the roll into the core. The metal's own core is near black, and
+     type cut from the full range would vanish into the band it sits on. */
+  --metal-type: linear-gradient(180deg,
+                  #ffffff 0%, #f6f8f9 32%, #eaeef1 56%, #ccd3d9 84%, #f4f7f9 100%);
+}
+
+#metal {
+  position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  z-index: 0; pointer-events: none;
+}
+
+/* Taller top padding than the glass panel: the metal needs room above the
+   panel box to show, and the panel box is what the renderer measures. */
+body[data-view="panel"].metal { padding: 18px 10px 0; }
+
+body.metal #panel {
+  position: relative; z-index: 1;
+  height: 30px;
+  background: none;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+body.metal #panel::before { display: none; }
+
+/* The bar speaks in the widget-title voice -- the same face, size and
+   tracking as h3 -- because a chrome bar with UI-sans on it reads as a
+   screenshot of two different systems. */
+body.metal #panel .task .label,
+body.metal #panel #metrics,
+body.metal #panel .clock {
+  font-family: var(--display);
+  font-size: 10px; font-weight: 600; letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  background: var(--metal-type);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+body.metal #panel .metric b {
+  font-family: inherit; font-weight: inherit; color: inherit;
+}
+/* The metal moves under the type, so the glyphs carry their own contact
+   shadow rather than trusting the reflection under them to stay dark. It is
+   painted from the glyph alpha, so it still reads under a clipped fill. */
+body.metal #panel,
+body.metal #panel .task { text-shadow: 0 1px 3px rgba(6, 9, 14, .7); }
+
+body.metal #panel .task,
+body.metal #panel .task.focused {
+  background: none; box-shadow: none;
+  height: 22px; padding: 0 12px;
+}
+body.metal #panel .task .x { color: #eaeef1; }
+
+/* The launcher mark, turned from the same stock. This is the one place the
+   panel gives up its accent: docs/DESIGN.md rule 1 asks for one accent used
+   sparingly, and a metal shell has none to give. */
+body.metal #panel .mark { width: 20px; height: 20px; }
+body.metal #panel .mark:hover { background: none; }
+body.metal #panel .mark i {
+  width: 8px; height: 8px;
+  background: linear-gradient(160deg,
+                #ffffff 0%, #eaeef1 40%, #b9c1c8 64%, #f4f7f9 100%);
+  box-shadow: 0 1px 2px rgba(6, 9, 14, .6),
+              inset 0 0 0 0.5px rgba(255, 255, 255, .7);
+}
+
+body.metal #status,
+body.metal #status:hover { background: none; }
+body.metal #tray .tray-item { color: #eaeef1; }

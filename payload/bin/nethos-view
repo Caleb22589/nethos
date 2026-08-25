@@ -495,7 +495,12 @@ class Surface:
         # machinery WebKit would otherwise keep warm.
         settings.set_enable_media(False)
         settings.set_enable_webaudio(False)
-        settings.set_enable_webgl(False)
+        # WebGL is off by default for the same reason as media and webaudio:
+        # a shell surface has no use for it and it is machinery WebKit would
+        # otherwise keep warm in a process shared by every surface. The panel
+        # asks for it with webgl=1 so that it, and only it, pays.
+        settings.set_enable_webgl(
+            str(spec.get("webgl", "0")).lower() in ("1", "true", "yes"))
         settings.set_media_playback_requires_user_gesture(True)
         settings.set_enable_page_cache(False)
         settings.set_enable_html5_database(False)

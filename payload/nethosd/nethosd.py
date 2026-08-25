@@ -643,6 +643,10 @@ SETTINGS_SCHEMA = [
      "unit": "px"},
     {"key": "panel_clock_seconds", "label": "Show seconds",
      "group": "Panel", "type": "bool", "default": False},
+    {"key": "panel_liquid", "label": "Liquid metal panel",
+     "group": "Panel", "type": "bool", "default": True,
+     "help": "Needs a GPU. Falls back to glass on its own if there is not "
+             "one, so leaving this on costs nothing."},
     # Not shown in Settings: this is state, not a preference. It is in the
     # same file because that is the file that already exists and is already
     # written atomically, and inventing a second one for a single boolean is

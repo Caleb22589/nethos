@@ -291,6 +291,6 @@ fi
 exec "$NETHOS_VIEW_BIN" \
     "url=$API/splash.html,role=overlay,name=splash,exclusive=0" \
     "url=$API/desktop.html,role=widget,name=desktop,layer=bottom,anchor=top,exclusive=-1" \
-    "url=$API/panel.html,role=panel,name=panel,height=360,anchor=top,exclusive=46" \
+    "url=$API/panel.html,role=panel,name=panel,height=360,anchor=top,exclusive=46,webgl=1" \
     "url=$API/dock.html,role=dock,name=dock,height=110,anchor=bottom,exclusive=0" \
     "url=$API/menu.html,role=overlay,name=menu,keyboard=on,exclusive=0"

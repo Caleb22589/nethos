@@ -262,3 +262,58 @@ is the way in when the shell itself is frozen.
 theory that fit the symptoms. The frame-clock bug, the connection-pool
 exhaustion, the swaybg layer collision and the resolution mismatch were each
 found by an instrument, not an argument.
+
+## The liquid metal panel
+
+`lib/liquid-metal.js` is a WebGL2 renderer for chrome blobs: raymarched signed
+distance fields — tapered capsule chains squashed on Z — shaded as a smooth
+conductor against a procedural studio environment. No textures, no HDRI files,
+no dependencies. `shell/liquid.js` is the shell's use of it, which draws the
+panel as a bar of chrome with the panel's own contents running through it.
+
+It is progressive enhancement, and every layer is allowed to say no:
+
+| gate | where |
+| --- | --- |
+| `panel_liquid` setting | `nethosd` schema, default on |
+| WebGL enabled for the surface | `webgl=1` in the panel's spec, `nethos-view` |
+| not a software rasteriser | `shell/liquid.js`, matched on the GL renderer string |
+
+When any of them refuses, `startPanelMetal()` returns 0 and the panel keeps its
+glass. Nothing in the panel depends on the metal: the CSS is scoped to
+`body.metal`, which is added only once the renderer has actually started.
+
+**WebGL is off for every other surface.** It is enabled per-surface by the
+`webgl=1` spec key rather than globally, because all the shell surfaces share
+one web process and the machinery would otherwise be kept warm for four
+surfaces that never use it.
+
+### Geometry comes from layout
+
+The bar is measured from the panel's own layout box (`--metal-pad` above and
+below, `--metal-inset` from the screen edge) rather than from a second copy of
+the numbers. Moving the panel in CSS moves the metal with it.
+
+The bar is taller than the glass one, so `initPanel` grows both the input
+region and the exclusive zone to match what the renderer reports. Without that,
+maximised windows slide under the metal and clicks along its lower edge fall
+through to the desktop.
+
+### It draws on demand
+
+A shell surface running a shader at 60fps for its own amusement is a battery
+bug. The loop runs only while something is still easing towards its target and
+parks itself as soon as everything has settled; pointer movement, a click or a
+hover restarts it.
+
+### Seeing it without a GPU
+
+`scripts/run.sh` on macOS picks the cocoa display backend, which cannot hand a
+GL context to the guest, so the VM renders through llvmpipe and the renderer
+check correctly refuses — you get the glass panel. To look at it anyway, with
+`NETHOS_INSPECTOR=1`:
+
+    localStorage.nethosLiquidForce = "1"
+
+and reload. Expect single-digit frame rates. On a machine with a real GPU, or a
+VM with virglrenderer and a gtk/sdl display, no override is needed.

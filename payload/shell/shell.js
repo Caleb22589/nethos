@@ -69,7 +69,7 @@ function iconTile(app, cls, fallbackCls) {
 
 /* ------------------------------------------------------------------ panel */
 
-function initPanel() {
+function initPanel(settings) {
   const tasks = document.getElementById("tasks");
   const brand = document.getElementById("brand");
   const clock = document.getElementById("clock");
@@ -80,11 +80,32 @@ function initPanel() {
      input. Without this the transparent area below the bar would swallow
      every click in the top third of the screen. */
   const BAR_H = 54;
+  let barH = BAR_H;
   function applyPanelRect() {
-    setHostRect({ x: 0, y: 0, w: window.innerWidth, h: BAR_H });
+    setHostRect({ x: 0, y: 0, w: window.innerWidth, h: barH });
   }
   applyPanelRect();
   window.addEventListener("resize", applyPanelRect);
+
+  /* Liquid metal, when the machine can draw it. The module decides that for
+     itself -- setting, WebGL, and whether the renderer is a software
+     rasteriser -- and returns 0 when the answer is no, in which case the
+     glass panel above is already correct and nothing here changes.
+
+     The bar is taller than the glass one, so both the input region and the
+     exclusive zone have to grow with it, or maximised windows slide under the
+     metal and clicks along its lower edge fall through to the desktop. */
+  if (!settings || settings.panel_liquid !== false) {
+    import("./liquid.js")
+      .then((m) => m.startPanelMetal())
+      .then((h) => {
+        if (!h) return;
+        barH = h;
+        applyPanelRect();
+        if (typeof nethosHost !== "undefined") nethosHost.exclusive(h - 4);
+      })
+      .catch((e) => console.log("liquid: " + e.message));
+  }
 
   let busy = false;
   brand.addEventListener("click", async () => {
@@ -1616,9 +1637,9 @@ async function loadSettings() {
 
 document.addEventListener("DOMContentLoaded", async () => {
   const view = document.body.dataset.view;
-  await loadSettings();
+  const settings = await loadSettings();
   onEvent((msg) => { if (msg.type === "settings") applySettings(msg.data); });
-  if (view === "panel") initPanel();
+  if (view === "panel") initPanel(settings);
   else if (view === "dock") initDock();
   else if (view === "menu") initMenu();
   else if (view === "desktop") initDesktop();
