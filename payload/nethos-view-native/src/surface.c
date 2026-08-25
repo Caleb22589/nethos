@@ -21,6 +21,7 @@
 struct nethos_surface *g_surfaces[NETHOS_MAX_SURFACES];
 int g_surface_count;
 WebKitWebView *g_related_view;
+WebKitWebView *g_gl_related_view;   /* WebGL surfaces share with each other */
 
 /* No browser menu anywhere in the shell -- direct port of the Python
  * version's `lambda *_a: True` connected to the same signal. Returning TRUE
@@ -195,16 +196,17 @@ struct nethos_surface *nethos_surface_create(const struct nethos_spec *spec) {
      * falls back to no panel while the rest of the shell keeps running.
      *
      * It costs a second web process (~180MB measured). Only the panel asks. */
-    if (spec->webgl) share = false;
+    /* Two pools, not one exception. GL surfaces share a process with each
+     * other -- panel and dock together cost one extra renderer, not two --
+     * and never with the surfaces that do no GL. */
+    WebKitWebView **pool = spec->webgl ? &g_gl_related_view : &g_related_view;
 
-    if (share && g_related_view) {
+    if (share && *pool) {
         s->webview = WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW,
-            "related-view", g_related_view, NULL));
+            "related-view", *pool, NULL));
     } else {
         s->webview = WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW, NULL));
-        /* An isolated view must never become the one everything else relates
-         * to, or the isolation inverts and the whole shell joins it. */
-        if (!g_related_view && !spec->webgl) g_related_view = s->webview;
+        if (!*pool) *pool = s->webview;
     }
 
     /* No browser menu anywhere in the shell -- see nethos-view's own

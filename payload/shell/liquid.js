@@ -84,6 +84,126 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const px = (name, fallback) =>
   parseFloat(getComputedStyle(document.documentElement).getPropertyValue(name)) || fallback;
 
+/* The dock's surround. Same renderer, same gates; the shape is derived from
+   the dock pill rather than the panel box, and it wraps the pill instead of
+   running through it.
+
+   A pill only contains a rectangle along its straight section, which starts
+   one radius in from each end -- so the horizontal padding is the radius
+   itself. Padding all four sides equally would leave the dock's corners
+   hanging out of the rounded ends. */
+export async function startDockMetal() {
+  if (!usable()) return false;
+  let LiquidMetal;
+  try { ({ LiquidMetal } = await import("/lib/liquid-metal.js")); }
+  catch (e) { console.log("liquid: " + e.message); return false; }
+
+  const dock = document.getElementById("dock");
+  if (!dock) return false;
+  document.body.classList.add("metal");
+
+  const canvas = document.createElement("canvas");
+  canvas.id = "metal";
+  document.body.insertBefore(canvas, document.body.firstChild);
+
+  const lm = new LiquidMetal(canvas, {
+    quality: "low", supersample: 1, fov: 6, background: [0, 0, 0, 0],
+  });
+
+  let L = null;
+  function measure() {
+    const b = dock.getBoundingClientRect();
+    const vpad = px("--metal-dock-pad", 10);
+    const rad = b.height / 2 + vpad;
+    L = {
+      rad, cy: b.top + b.height / 2,
+      x0: b.left - rad + rad, x1: b.right + rad - rad,   // straight section
+      top: b.top - vpad, bottom: b.bottom + vpad,
+      items: [...dock.querySelectorAll(".dock-item")].map((el) => {
+        const r = el.getBoundingClientRect();
+        return { el, cx: r.left + r.width / 2 };
+      }),
+    };
+    return L;
+  }
+  const fit = () => { measure(); lm.resize(window.innerWidth, window.innerHeight); };
+  fit();
+  addEventListener("resize", () => { fit(); wake(); });
+  // the dock slides, hides and regrows its icons; all of that moves the pill
+  new MutationObserver(() => { measure(); wake(); })
+    .observe(document.body, { attributes: true, attributeFilter: ["class"] });
+  new MutationObserver(() => { measure(); wake(); })
+    .observe(dock, { childList: true, subtree: true, attributes: true });
+
+  const P = { x: -1e4, y: -1e4, seen: -1e9 };
+  const hover = new WeakMap();
+  const swell = { x: 0, r: 0 };
+  let now = 0;
+  addEventListener("pointermove", (e) => {
+    P.x = e.clientX; P.y = e.clientY; P.seen = now; wake();
+  }, true);
+
+  function build() {
+    const g = L;
+    if (!g || g.x1 <= g.x0) return null;
+    const paths = [[[g.x0, g.cy, g.rad], [g.x1, g.cy, g.rad]]];
+    const live = now - P.seen < POINTER_TTL;
+    const want = live && P.y > g.top - 40 && P.y < g.bottom + 40
+      ? Math.max(0, 1 - Math.abs(P.y - g.cy) / (60 + g.rad)) : 0;
+    if (live) swell.x = ease(swell.x, clamp(P.x, g.x0, g.x1), 0.26);
+    swell.r = ease(swell.r, want * 6, 0.16);
+    if (swell.r > 0.15) {
+      const r = g.rad + swell.r;
+      paths.push([[swell.x - 6, g.cy, r], [swell.x + 6, g.cy, r]]);
+    }
+    for (const it of g.items) {
+      if (!hover.has(it.el)) hover.set(it.el, { v: 0 });
+      const s = hover.get(it.el);
+      const on = live && Math.abs(P.x - it.cx) < 26 && P.y > g.top && P.y < g.bottom;
+      s.v = ease(s.v, on ? 1 : 0, 0.2);
+      if (s.v > 0.05) {
+        const lift = s.v * 5;
+        paths.push([[it.cx - 6, g.cy, g.rad + lift], [it.cx + 6, g.cy, g.rad + lift]]);
+      }
+    }
+    return { paths, thickness: 0.8, blend: 0.75 };
+  }
+
+  let raf = 0, lastDraw = -1e9, idle = 0;
+  const still = () => {
+    if (swell.r > 0.02) return false;
+    for (const it of (L ? L.items : [])) {
+      const s = hover.get(it.el);
+      if (s && s.v > 0.02) return false;
+    }
+    return !(now - P.seen < POINTER_TTL &&
+             Math.abs(swell.x - clamp(P.x, 0, window.innerWidth)) > 0.5);
+  };
+  function frame(ms) {
+    now = ms / 1000;
+    if (now - lastDraw >= MIN_FRAME) {
+      const sh = build();
+      if (sh) { lm.setShapes([sh]); lm.render(now); }
+      lastDraw = now;
+    }
+    if (still()) { if (++idle > 3) { raf = 0; return; } } else idle = 0;
+    raf = requestAnimationFrame(frame);
+  }
+  function wake() { idle = 0; if (!raf) raf = requestAnimationFrame(frame); }
+
+  const ms = benchmark(lm, build(), 0);
+  if (ms > TOO_SLOW) {
+    canvas.remove();
+    document.body.classList.remove("metal");
+    return false;
+  }
+  fetch("/api/log", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ surface: "dock", kind: "liquid",
+      message: `dock metal up: ${ms.toFixed(2)}ms/frame` }) }).catch(() => {});
+  wake();
+  return true;
+}
+
 /* Returns the height of the bar in CSS pixels so the caller can size the
    input region and the exclusive zone, or 0 when the metal did not start. */
 export async function startPanelMetal() {

@@ -364,6 +364,7 @@ class Surface:
     # a single web process, so the shell costs roughly one renderer no matter
     # how many surfaces it draws.
     _related_to = None
+    _related_gl = None   # WebGL surfaces share with each other, not with these
     _input_warned = False
     _transparent_css = False
 
@@ -470,17 +471,19 @@ class Surface:
         # likely to crash. Isolated, the worst case is a panel that falls back
         # to no panel while the dock, desktop and menu keep running. Costs a
         # second web process; only the panel asks.
-        isolate = str(spec.get("webgl", "0")).lower() in ("1", "true", "yes")
+        # Two pools, not one exception. GL surfaces share a process with each
+        # other -- panel and dock together cost one extra renderer, not two --
+        # and never with the surfaces that do no GL.
+        gl = str(spec.get("webgl", "0")).lower() in ("1", "true", "yes")
+        attr = "_related_gl" if gl else "_related_to"
+        peer = getattr(Surface, attr, None)
 
-        if not isolate and os.environ.get("NETHOS_SHARE_WEBPROCESS") != "0" \
-                and Surface._related_to is not None:
-            self.view = WebKit.WebView(related_view=Surface._related_to)
+        if os.environ.get("NETHOS_SHARE_WEBPROCESS") != "0" and peer is not None:
+            self.view = WebKit.WebView(related_view=peer)
         else:
             self.view = WebKit.WebView()
-            # An isolated view must never become the one everything else
-            # relates to, or the isolation inverts.
-            if Surface._related_to is None and not isolate:
-                Surface._related_to = self.view
+            if peer is None:
+                setattr(Surface, attr, self.view)
 
         # No browser menu anywhere in the shell.
         #

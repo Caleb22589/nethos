@@ -943,3 +943,15 @@ body.metal #panel .mark i {
 body.metal #status,
 body.metal #status:hover { background: none; }
 body.metal #tray .tray-item { color: #eaeef1; }
+
+/* ---------------------------------------------------------- dock metal --
+ * The dock keeps its glass; the metal wraps it. The pill has to lift by the
+ * surround's padding plus the float it already had, or the metal's lower rim
+ * sits flush on the screen edge -- every other surface here floats.
+ */
+:root { --metal-dock-pad: 10px; }
+
+body[data-view="dock"].metal #dock {
+  position: relative; z-index: 1;
+  margin-bottom: calc(10px + var(--metal-dock-pad));
+}

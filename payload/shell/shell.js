@@ -305,9 +305,18 @@ function keyboard(on) {
   if (typeof nethosHost !== "undefined" && nethosHost.keyboard) nethosHost.keyboard(on);
 }
 
-function initDock() {
+function initDock(settings) {
   const dock = document.getElementById("dock");
   const body = document.body;
+
+  /* The dock's metal surround. Same three gates as the panel; the module
+     returns false and changes nothing when any of them refuses. The dock keeps
+     its glass either way -- the metal wraps the pill rather than replacing it. */
+  if (!settings || settings.panel_liquid !== false) {
+    import("./liquid.js")
+      .then((m) => m.startDockMetal())
+      .catch((e) => console.log("liquid: " + e.message));
+  }
   let apps = [], pinned = DOCK_DEFAULTS.slice(), running = [];
   let autohide = true;
 
@@ -1640,7 +1649,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const settings = await loadSettings();
   onEvent((msg) => { if (msg.type === "settings") applySettings(msg.data); });
   if (view === "panel") initPanel(settings);
-  else if (view === "dock") initDock();
+  else if (view === "dock") initDock(settings);
   else if (view === "menu") initMenu();
   else if (view === "desktop") initDesktop();
 });
