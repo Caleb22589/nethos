@@ -188,7 +188,12 @@ function initPanel(settings) {
   /* The assistant, reachable from the bar rather than from an application.
      Placed before the status cluster so the right-hand end reads outwards:
      ask, then what the machine is doing, then the clock. */
-  const ask = el("button", "ask", "Ask");
+  // Text in its own inner span, not the button's own text node -- matching
+  // .task's own .label child. Metal mode needs the button's background for
+  // a solid scrim behind it and the gradient-clip text fill on something
+  // else; one element's background property cannot be both at once.
+  const ask = el("button", "ask", null);
+  ask.append(el("span", "label", "Ask"));
   ask.title = "Ask NETHBot";
   ask.addEventListener("click", () => post("/api/nethbot/ask", { open: true }));
 

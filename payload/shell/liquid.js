@@ -241,7 +241,14 @@ export async function startDockMetal(settings) {
     if (live) swell.x = ease(swell.x, clamp(P.x, g.x0, g.x1), 0.26);
     const tgt = want * look.swell;
     swell.r = ease(swell.r, tgt, tgt > swell.r ? GRAB : LET_GO);
-    if (swell.r > 0.15) {
+    // Matches still()'s own 0.02 threshold below, not a separate, larger
+    // one: the shape used to stop being drawn at all once swell.r fell
+    // under 0.15, which on a 0-2.5-ish range is not "gone", it is a visible
+    // remaining bulge that then vanished in one frame instead of finishing
+    // its fade -- the "smoothly retracts, then suddenly snaps" the easing
+    // fix alone did not explain, because the easing itself was never the
+    // problem past this point.
+    if (swell.r > 0.02) {
       const r = g.rad + swell.r;
       paths.push([[swell.x - 6, g.cy, r], [swell.x + 6, g.cy, r]]);
     }
@@ -250,7 +257,7 @@ export async function startDockMetal(settings) {
       const s = hover.get(it.el);
       const on = live && Math.abs(P.x - it.cx) < 26 && P.y > g.top && P.y < g.bottom;
       s.v = ease(s.v, on ? 1 : 0, on ? GRAB : LET_GO);
-      if (s.v > 0.05) {
+      if (s.v > 0.02) {
         const lift = s.v * 3;
         paths.push([[it.cx - 6, g.cy, g.rad + lift], [it.cx + 6, g.cy, g.rad + lift]]);
       }
@@ -436,7 +443,10 @@ export async function startPanelMetal(settings) {
     const target = want * look.swell;
     if (live) swell.x = ease(swell.x, clamp(P.x, g.x0, g.x1), 0.3);
     swell.r = ease(swell.r, target, target > swell.r ? GRAB : LET_GO);
-    if (swell.r > 0.1) {
+    // See the dock's own version of this same fix, just below in this file:
+    // 0.02, matching still()'s own cutoff, not a larger threshold that cut
+    // the shape from the render while it was still visibly mid-fade.
+    if (swell.r > 0.02) {
       const r = g.rad + swell.r;
       paths.push([[swell.x - 6, g.cy, r], [swell.x + 6, g.cy, r]]);
     }
@@ -456,7 +466,7 @@ export async function startPanelMetal(settings) {
       const s = hot(t.el);
       const on = over(t.el, t);
       s.v = ease(s.v, on ? 1 : 0, on ? GRAB : LET_GO);
-      if (s.v > 0.05) {
+      if (s.v > 0.02) {
         const lift = s.v * 1.5;
         paths.push([[t.left + 10, g.cy, g.rad + lift], [t.right - 10, g.cy, g.rad + lift]]);
       }

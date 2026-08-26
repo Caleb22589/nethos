@@ -903,7 +903,7 @@ body.metal #panel::before { display: none; }
    and the clock on first install. */
 body.metal #panel { color: var(--metal-ink, #eaeef1); }
 body.metal #panel .task .label,
-body.metal #panel .ask,
+body.metal #panel .ask .label,
 body.metal #panel #status,
 body.metal #panel #metrics,
 body.metal #panel .metric,
@@ -925,7 +925,6 @@ body.metal #panel .clock .date {
   font-family: inherit; font-weight: inherit;
   color: inherit; background: none;
 }
-body.metal #panel .ask:hover { background: none; color: inherit; }
 body.metal #panel .tray-item { color: #eaeef1; }
 /* The metal moves under the type, so the glyphs carry their own contact
    shadow rather than trusting the reflection under them to stay dark. It is
@@ -940,14 +939,20 @@ body.metal #panel .task { text-shadow: 0 1px 3px rgba(6, 9, 14, .7); }
    itself is drawing at that pixel. A uniform backing under it means the
    glyphs are always read against the same dark tone regardless of where a
    highlight happens to be sweeping under them, which the raymarched
-   reflection alone cannot promise. Kept small and low-contrast -- a pill
-   this dark this size still reads as "sitting on metal", not as a UI
-   chrome pasted over it, which a full-strength glass pill would. */
+   reflection alone cannot promise.
+   Deliberately more opaque than the bar's own pane (--metal-pane, the
+   translucent tint over the reflection -- liquid_pane in Settings, 34-44%
+   in practice): a scrim at the same strength as the pane it sits on reads
+   as more material, not as a distinct chip, which defeats the point of
+   having one. 0.55 stays short of opaque -- the metal is still legible
+   through it -- while reading clearly as its own layer above the pane at
+   any pane setting a person is likely to choose. */
 body.metal #panel .task,
 body.metal #panel .task.focused,
 body.metal #status,
+body.metal #panel .ask,
 body.metal #tray .tray-item {
-  background: rgba(6, 9, 14, 0.30);
+  background: rgba(6, 9, 14, 0.55);
   border-radius: var(--r-pill);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
@@ -955,7 +960,8 @@ body.metal #panel .task,
 body.metal #panel .task.focused {
   height: 22px; padding: 0 12px;
 }
-body.metal #status:hover { background: rgba(6, 9, 14, 0.30); }
+body.metal #status:hover,
+body.metal #panel .ask:hover { background: rgba(6, 9, 14, 0.55); }
 body.metal #panel .task .x { color: var(--metal-ink, #eaeef1); }
 
 /* The launcher mark, turned from the same stock. This is the one place the
@@ -964,10 +970,10 @@ body.metal #panel .task .x { color: var(--metal-ink, #eaeef1); }
 body.metal #panel .mark {
   width: 20px; height: 20px;
   border-radius: var(--r-pill);
-  background: rgba(6, 9, 14, 0.30);
+  background: rgba(6, 9, 14, 0.55);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
-body.metal #panel .mark:hover { background: rgba(6, 9, 14, 0.42); }
+body.metal #panel .mark:hover { background: rgba(6, 9, 14, 0.68); }
 body.metal #panel .mark i {
   width: 8px; height: 8px;
   background: var(--metal-type, linear-gradient(160deg,
