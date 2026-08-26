@@ -246,6 +246,13 @@ SETS = {
         # it only produced a "not in the repository" note on every install.
         # The one plugin outside core that NETHOS uses is firedecor, below.
         "wayfire",
+        # wlr-output-management-unstable-v1's standard CLI -- the xrandr of
+        # any wlroots compositor, Wayfire included. Wayfire's own core IPC
+        # plugins have no output-configuration method of their own; this is
+        # what the Settings app's Display panel and nethosd's
+        # /api/display/* routes actually run to list and change resolution,
+        # scale and refresh rate.
+        "wlr-randr",
         # reform-firedecor is firedecor, packaged. Wayfire's own decorator has
         # no corner radius and no way to move its buttons off the right, so
         # without this a foreign window can never match a NETHOS one. Despite

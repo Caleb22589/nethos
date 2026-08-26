@@ -93,6 +93,112 @@ BUILTINS = {
 
 
 # ---------------------------------------------------------------------------
+# display -- resolution, scale, refresh rate
+# ---------------------------------------------------------------------------
+#
+# wlr-randr, not Wayfire's own IPC: window-rules/* (the methods this file
+# already calls, for focus/close/minimise) is what the window-rules plugin
+# happens to expose, and nothing in Wayfire's core ipc/stipc plugins covers
+# output configuration the same way. wlr-output-management-unstable-v1 is a
+# real, documented Wayland protocol every wlroots compositor speaks --
+# Wayfire, sway, alike -- and wlr-randr is the standard CLI for it, the
+# xrandr of wlroots. Verified against real hardware: --json gives a stable,
+# parseable schema (name/modes/scale/position), and --output NAME --scale N
+# applies live and reads back correctly through the same --json a moment
+# later.
+
+def wayfire_env_ready():
+    return bool(os.environ.get("WAYLAND_DISPLAY"))
+
+
+def display_outputs():
+    """What wlr-randr sees right now, or [] if it cannot run at all --
+    no compositor, no wlr-randr installed, wrong session. The caller (the
+    Settings app) treats an empty list as "nothing to show", not an error,
+    since a machine with no way to change its display is not broken, just
+    not configurable here."""
+    if not wayfire_env_ready():
+        return []
+    try:
+        out = subprocess.run(["wlr-randr", "--json"], capture_output=True,
+                             text=True, timeout=5)
+        return json.loads(out.stdout) if out.returncode == 0 else []
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return []
+
+
+def display_apply(name, width, height, refresh, scale):
+    """Live now, via wlr-randr; on disk for next boot, via wayfire.ini --
+    the two are separate calls because they are two different failure
+    modes. wlr-randr can fail on a mode the monitor rejects (caught, not
+    fatal to the whole request -- reported back so the UI can say so
+    instead of claiming success); writing the config file essentially
+    cannot fail short of a full disk, and should still happen even if the
+    live apply did, so the next real boot gets the requested state --
+    wlr-randr only ever fails against the CURRENT session's video mode
+    table, not the config, and a plugged-in external monitor found only at
+    boot is exactly the case where that distinction matters.
+    """
+    mode = "%dx%d@%.6fHz" % (width, height, refresh) if refresh else "%dx%d" % (width, height)
+    ok = True
+    detail = ""
+    if wayfire_env_ready():
+        try:
+            r = subprocess.run(
+                ["wlr-randr", "--output", name, "--mode", mode, "--scale", str(scale)],
+                capture_output=True, text=True, timeout=5)
+            ok = r.returncode == 0
+            detail = r.stderr.strip()
+        except (OSError, subprocess.SubprocessError) as exc:
+            ok, detail = False, str(exc)
+    display_persist(name, mode, scale)
+    return ok, detail
+
+
+def display_persist(name, mode, scale):
+    """Write (or replace) this output's [output:NAME] section in
+    ~/.config/wayfire.ini, touching nothing else in the file.
+
+    Not configparser: it does not round-trip comments, and wayfire.ini is
+    almost entirely comments explaining *why* each setting is what it is --
+    rewriting the file through configparser would silently delete every one
+    of them the first time anyone touched a Display setting. A section that
+    already exists (a previous Display change) is replaced in place; a new
+    one is appended at the end, after a blank line so it reads as its own
+    block rather than a continuation of whatever came before it.
+    """
+    path = os.path.expanduser("~/.config/wayfire.ini")
+    try:
+        with open(path) as fh:
+            lines = fh.readlines()
+    except OSError:
+        lines = []
+
+    header = "[output:%s]\n" % name
+    body = "mode = %s\nscale = %.6f\n" % (mode, scale)
+
+    start = None
+    for i, line in enumerate(lines):
+        if line.strip() == header.strip():
+            start = i
+            break
+    if start is not None:
+        end = start + 1
+        while end < len(lines) and not lines[end].lstrip().startswith("["):
+            end += 1
+        lines[start:end] = [header, body]
+    else:
+        if lines and lines[-1].strip():
+            lines.append("\n")
+        lines.append(header)
+        lines.append(body)
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        fh.writelines(lines)
+
+
+# ---------------------------------------------------------------------------
 # control centre -- wifi, brightness, battery
 # ---------------------------------------------------------------------------
 
@@ -2557,6 +2663,9 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             return self.send_json({"snapshots": out})
 
+        if route == "/api/display/outputs":
+            return self.send_json({"outputs": display_outputs()})
+
         if route == "/api/control":
             # Deliberately without the Wi-Fi list. `nmcli device wifi list`
             # takes seconds -- it may trigger a scan -- and putting it here
@@ -2760,6 +2869,20 @@ class Handler(BaseHTTPRequestHandler):
             spawn(["sh", "-c", "nethos-update >/tmp/nethos-update.log 2>&1"])
             return self.send_json({"ok": True,
                                    "log": "/tmp/nethos-update.log"})
+
+        if route == "/api/display/set":
+            name = str(data.get("output", ""))
+            try:
+                width = int(data.get("width", 0))
+                height = int(data.get("height", 0))
+                refresh = float(data.get("refresh", 0))
+                scale = float(data.get("scale", 1))
+            except (TypeError, ValueError):
+                return self.send_json({"error": "bad width/height/refresh/scale"}, 400)
+            if not name or width <= 0 or height <= 0 or scale <= 0:
+                return self.send_json({"error": "need output, width, height, scale"}, 400)
+            ok, detail = display_apply(name, width, height, refresh, scale)
+            return self.send_json({"ok": ok, "detail": detail})
 
         if route == "/api/control/brightness":
             return self.send_json({"ok": True,

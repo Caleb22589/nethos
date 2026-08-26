@@ -83,6 +83,13 @@
     <button class="neth-btn" id="reset">Reset to defaults</button>
   </div>
 
+  <section class="group" id="display">
+    <h3>Display</h3>
+    <div class="neth-card" style="padding:0" id="display-card">
+      <p class="neth-sub" style="padding:13px 16px" id="display-empty">Looking for a display…</p>
+    </div>
+  </section>
+
   <div id="form"><p class="neth-sub">Loading…</p></div>
 
   <section class="group" id="updates">
@@ -425,6 +432,102 @@
 
   // Another surface may change a setting; reflect it rather than going stale.
   api.on("settings", (v) => { if (v) { values = v; render(); } });
+
+  // ------------------------------------------------------------- display
+  // No auto-revert-in-15-seconds the way GNOME/Windows do -- a real safety
+  // net for a resolution the monitor cannot actually show, which this does
+  // not attempt to protect against yet. What it does have: Apply is a
+  // separate click rather than writing through on every dropdown change
+  // (the pattern the rest of this page uses), specifically because a wrong
+  // display choice can leave the screen unreadable, unlike a wrong accent
+  // colour.
+  async function loadDisplay() {
+    const card = document.getElementById("display-card");
+    const empty = document.getElementById("display-empty");
+    let r;
+    try {
+      r = await fetch("/api/display/outputs").then((x) => x.json());
+    } catch (e) {
+      empty.textContent = "nethosd is not answering.";
+      return;
+    }
+    const outputs = r.outputs || [];
+    if (!outputs.length) {
+      empty.textContent = "No display reachable through wlr-randr on this session.";
+      return;
+    }
+    card.textContent = "";
+
+    for (const out of outputs) {
+      const row = document.createElement("div");
+      row.className = "row";
+      const label = document.createElement("div");
+      label.className = "label";
+      const name = document.createElement("strong");
+      name.className = "name";
+      name.textContent = out.description || out.name;
+      const help = document.createElement("span");
+      help.className = "help";
+      help.textContent = out.name;
+      label.append(name, help);
+
+      const ctl = document.createElement("div");
+      ctl.className = "control";
+
+      // De-duplicated WxH list -- a panel reports one refresh rate per
+      // resolution here, so the mode picker is resolution only; the
+      // matching refresh rate is looked up again at Apply time.
+      const seen = new Set();
+      const resSel = document.createElement("select");
+      for (const m of out.modes || []) {
+        const key = m.width + "x" + m.height;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const o = document.createElement("option");
+        o.value = key;
+        o.textContent = key + (m.preferred ? " (recommended)" : "");
+        if (m.current) o.selected = true;
+        resSel.append(o);
+      }
+
+      const scaleSel = document.createElement("select");
+      for (const s of [1, 1.25, 1.5, 1.75, 2, 2.5, 3]) {
+        const o = document.createElement("option");
+        o.value = s;
+        o.textContent = Math.round(s * 100) + "%";
+        if (Math.abs((out.scale || 1) - s) < 0.01) o.selected = true;
+        scaleSel.append(o);
+      }
+
+      const applyBtn = document.createElement("button");
+      applyBtn.className = "neth-btn";
+      applyBtn.textContent = "Apply";
+      applyBtn.onclick = async () => {
+        const [w, h] = resSel.value.split("x").map(Number);
+        const mode = (out.modes || []).find((m) => m.width === w && m.height === h);
+        const was = applyBtn.textContent;
+        applyBtn.disabled = true; applyBtn.textContent = "Applying…";
+        try {
+          const res = await fetch("/api/display/set", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              output: out.name, width: w, height: h,
+              refresh: mode ? mode.refresh : 0, scale: Number(scaleSel.value),
+            }),
+          }).then((x) => x.json());
+          applyBtn.textContent = res.ok ? "Applied" : (res.detail || res.error || "Failed");
+        } catch (e) {
+          applyBtn.textContent = "Failed";
+        }
+        setTimeout(() => { applyBtn.textContent = was; applyBtn.disabled = false; }, 2200);
+      };
+
+      ctl.append(resSel, scaleSel, applyBtn);
+      row.append(label, ctl);
+      card.append(row);
+    }
+  }
+  loadDisplay();
 
   await load();
 })();
