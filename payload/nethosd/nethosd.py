@@ -950,6 +950,14 @@ SETTINGS_SCHEMA = [
      "type": "bool", "default": True,
      "help": "Draws the panel as chrome. Needs a GPU; falls back to glass on "
              "its own if there is not one, so leaving this on costs nothing."},
+    {"key": "panel_quality", "label": "Quality", "group": "Liquid metal",
+     "type": "choice", "options": ["low", "medium", "high"], "default": "low",
+     "help": "Higher softens the edges of the bar itself (rounder, less "
+             "stair-stepped) at the cost of a second light bounce and real "
+             "supersampling. Low is tuned for the oldest machine this runs "
+             "on; a newer GPU can afford more. Takes effect on the next "
+             "shell restart -- the renderer is rebuilt at this size, not "
+             "adjusted live, the same as changing a display's resolution."},
     {"key": "liquid_preset", "label": "Material", "group": "Liquid metal",
      "type": "choice",
      "options": ["auto", "chrome-dark", "chrome-light", "mercury",

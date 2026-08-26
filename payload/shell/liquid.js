@@ -23,6 +23,22 @@ import { PRESETS, resolve } from "/lib/liquid-presets.js";
 
 const SOFTWARE = /llvmpipe|softpipe|swiftshader|software|swrast/i;
 
+/* panel_quality -> the renderer's own quality tier + supersample. "low" is
+   the bar's long-standing hardcoded default (one bounce, no supersampling
+   beyond the shader's own edge smoothing, tuned for the oldest machine this
+   runs on); this only widens what a newer GPU can opt into -- baked into the
+   WebGL context at construction, so changing it needs the shell rebuilt, not
+   just re-applied, which is why this is read once here rather than through
+   applyLook() with everything else. */
+const QUALITY_TIERS = {
+  low:    { quality: "low",    supersample: 1 },
+  medium: { quality: "medium", supersample: 1.5 },
+  high:   { quality: "high",   supersample: 2 },
+};
+function qualityFor(settings) {
+  return QUALITY_TIERS[(settings || {}).panel_quality] || QUALITY_TIERS.low;
+}
+
 /* The look, shared by both surfaces and rebuilt whenever settings change.
    `swell` and `pad` live here rather than as constants because they are the
    two things a user is most likely to want turned down. */
@@ -88,12 +104,16 @@ const MIN_FRAME = 1 / 30;
 /* How far the bar swells under the pointer, and how fast it lets go.
  *
  * This is a panel, not a demo. The swell should be noticeable when looked for
- * and invisible when working, so the amplitude is small and the release is
- * faster than the grab -- a bulge that lingers after the cursor has moved on
- * reads as the interface lagging behind the mouse, which is the one impression
- * an ornament must never give. */
+ * and invisible when working, so the amplitude stays small. Release used to
+ * be faster than the grab (0.42 against 0.22) on the theory that a bulge
+ * lingering after the cursor moved on would read as the interface lagging
+ * behind the mouse -- in practice that made the release read as the metal
+ * simply vanishing rather than a liquid settling back to rest, which is its
+ * own tell. Slower than the grab now, closer to how the material is
+ * supposed to behave: forming a bulge is effortful (the grab), the metal
+ * relaxing back to flat afterward should look effortless rather than cut. */
 const SWELL = 2.5;
-const GRAB = 0.22, LET_GO = 0.42;
+const GRAB = 0.22, LET_GO = 0.10;
 
 function usable() {
   /* Escape hatch. scripts/run.sh on macOS picks the cocoa display backend,
@@ -168,7 +188,7 @@ export async function startDockMetal(settings) {
   document.body.insertBefore(canvas, document.body.firstChild);
 
   const lm = new LiquidMetal(canvas, {
-    quality: "low", supersample: 1, fov: 6, background: [0, 0, 0, 0],
+    ...qualityFor(settings), fov: 6, background: [0, 0, 0, 0],
   });
   applyLook(lm, settings);
   document.addEventListener("nethos:settings", (e) => {
@@ -296,17 +316,20 @@ export async function startPanelMetal(settings) {
   canvas.id = "metal";
   document.body.insertBefore(canvas, document.body.firstChild);
 
-  /* quality "low": one bounce, no supersampling beyond a touch of edge
-     smoothing. The bar is a plain capsule with nothing concave in it, so the
-     second bounce buys almost no detail and costs a whole extra march. Aimed
-     at the oldest machine this is expected to run on, not the newest.
+  /* Defaults to quality "low": one bounce, no supersampling beyond a touch
+     of edge smoothing. The bar is a plain capsule with nothing concave in
+     it, so the second bounce buys almost no detail and costs a whole extra
+     march -- a reasonable default for the oldest machine this is expected
+     to run on, not the newest, which is exactly why panel_quality exists as
+     a setting rather than this staying a fixed choice: a stair-stepped edge
+     that reads as "low quality" on real hardware to someone who is not the
+     oldest machine it was tuned for should be a choice, not a ceiling.
 
      A long lens rather than a wide one: the canvas is a short strip, so its
      aspect ratio is extreme, and an 18-degree vertical field becomes a
      70-degree horizontal one that visibly bends the reflection at both ends. */
   const lm = new LiquidMetal(canvas, {
-    quality: "low",
-    supersample: 1,
+    ...qualityFor(settings),
     fov: 4.5,
     background: [0, 0, 0, 0],
   });
