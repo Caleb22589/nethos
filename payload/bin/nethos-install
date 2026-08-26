@@ -452,6 +452,39 @@ if [ "${ONLINE:-0}" = 1 ]; then
         say "  (nethos-kernel install-tar adds it later)"
     fi
 
+    # nethos-view-native: not source npkg_bootstrap.py/install-nethos.sh can
+    # just copy the way every other payload/bin/* tool is, since it is
+    # compiled C, not a script -- and not something worth compiling on
+    # whatever this machine turns out to be, the way the installer never
+    # compiles a kernel either. Fetched the same way the kernel just was: a
+    # prebuilt release asset, not fatal to miss. Without it nethos-session's
+    # own command -v check falls back to nethos-view (Python) automatically,
+    # so a machine that cannot reach this URL still gets a working desktop --
+    # just not this one's lower memory use and the deadlock nethos-view
+    # (Python) has under real use, found and fixed by actually reproducing it
+    # on real hardware rather than assumed away (see the git log for
+    # nethos-session and payload/nethos-view-native).
+    VNURL="${NETHOS_VIEW_NATIVE_URL:-https://github.com/NethercraftMC5608/nethos/releases/download/nethos-view-native-x86_64/nethos-view-native-x86_64}"
+    say "Fetching nethos-view-native"
+    if curl -fL --retry 3 --retry-delay 2 -o /tmp/nethos-view-native "$VNURL" 2>/dev/null; then
+        ok=1
+        if curl -fsL -o /tmp/nethos-view-native.sha256 "$VNURL.sha256" 2>/dev/null; then
+            want=$(awk '{print $1}' /tmp/nethos-view-native.sha256)
+            got=$(sha256sum /tmp/nethos-view-native 2>/dev/null | awk '{print $1}')
+            if [ -n "$want" ] && [ -n "$got" ] && [ "$want" != "$got" ]; then
+                say "  checksum does not match; not installing it"
+                ok=0
+            fi
+        fi
+        if [ "$ok" = 1 ]; then
+            install -m 0755 /tmp/nethos-view-native "$MNT/usr/bin/nethos-view-native"
+            say "  installed"
+        fi
+        rm -f /tmp/nethos-view-native /tmp/nethos-view-native.sha256
+    else
+        say "  could not fetch it; nethos-session falls back to nethos-view (Python)"
+    fi
+
     # The desktop, the tools and the shell: everything the image build installs
     # after the packages land.
     PAYLOAD_DIR=""

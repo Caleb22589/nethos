@@ -26,8 +26,20 @@ grep -q 'nethos\.recovery=1' /proc/cmdline 2>/dev/null && RECOVERY=1
 
 # Hand the compositor's environment to the user service manager, otherwise
 # nethosd starts without WAYLAND_DISPLAY and cannot talk to the compositor.
+#
+# WAYFIRE_SOCKET matters here for a second reason beyond nethosd: it is what
+# this script's own native-vs-python choice below gates on, and only the
+# very first nethos-session of a boot inherits it directly from Wayfire's
+# autostart. Every later one -- nethos-reload --shell, the Troubleshooter's
+# "Restart the shell", anything spawned as a child of nethosd rather than of
+# Wayfire itself -- gets nethosd's own environment instead, which never had
+# WAYFIRE_SOCKET without this import. Confirmed on real hardware: nethosd's
+# own /proc/<pid>/environ had WAYLAND_DISPLAY but no WAYFIRE_SOCKET, and every
+# shell restart after the first silently fell back to nethos-view (Python)
+# even with nethos-view-native installed and working -- indistinguishable
+# from the binary being missing unless someone thought to check `ps`.
 systemctl --user import-environment \
-    WAYLAND_DISPLAY SWAYSOCK HYPRLAND_INSTANCE_SIGNATURE \
+    WAYLAND_DISPLAY WAYFIRE_SOCKET SWAYSOCK HYPRLAND_INSTANCE_SIGNATURE \
     XDG_CURRENT_DESKTOP XDG_SESSION_TYPE 2>/dev/null || true
 
 # Wayfire's own autostart already starts nethosd (nethosd = systemctl
