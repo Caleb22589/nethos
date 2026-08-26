@@ -74,14 +74,26 @@ cat <<EOF
 # implementation detail of updating, not a choice to put in front of somebody
 # turning their computer on -- so both entries carry the same name and the
 # menu stays hidden. Hold SHIFT to see it when something has gone wrong.
-# grub-reboot writes next_entry for exactly one boot. It has to be handled
-# here because this file sets `default` later, and would otherwise overrule
-# the choice somebody just made. Cleared as it is read, so the boot after this
-# one is normal again -- which is what makes "boot the RT kernel once" safe.
-if [ -n "\$next_entry" ]; then
-    set default="\$next_entry"
-    set next_entry=
-    save_env next_entry
+#
+# grub-reboot's next_entry is already handled by this point: Debian's own
+# 00_header runs before this script and is grub-reboot's implementation --
+# it reads next_entry, copies it into the default entry, clears next_entry,
+# and marks that a one-shot choice was made. This file used to re-check
+# next_entry itself and set the default entry again here, on the theory
+# that it had to or its own logic below would overrule a one-shot choice --
+# true in principle, but next_entry is already empty by the time this runs
+# (00_header just cleared it), so that check was always false and execution
+# always fell through to the normal nethos_slot logic below, clobbering the
+# one-shot choice right back to the ordinary nethos-a/b entry. Confirmed on
+# real hardware: the nethos-ab recovery subcommand armed next_entry
+# correctly, grubenv showed it cleared after boot (proving 00_header ran),
+# and the machine booted the normal desktop anyway.
+#
+# The variable to check instead is boot_once: 00_header sets it exactly
+# when it has already made a one-shot choice, and it is runtime-only (never
+# persisted to grubenv), so it is naturally unset again on the next boot
+# without this file having to clear anything itself.
+if [ -n "\$boot_once" ]; then
     set timeout=0
 else
 
