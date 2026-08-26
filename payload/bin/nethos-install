@@ -310,6 +310,42 @@ if [ "${ONLINE:-0}" = 1 ]; then
     ip route 2>/dev/null | grep -q '^default' \
         || die "no network. The full system is downloaded, so one is required."
 
+    # The stick's own pkg/ and payload/ are whatever commit
+    # scripts/build-installer.sh happened to be run against -- which drifts
+    # the moment anyone lands a commit afterward without rebuilding and
+    # re-flashing every stick in circulation. install_desktop() (below, via
+    # npkg_bootstrap.py) and the install-nethos.sh chain-call (further down)
+    # both resolve their payload as a sibling of wherever this NPKG_DIR was
+    # found, so refreshing that one directory here fixes both at once and
+    # needs no changes to either. An install already needs a connection for
+    # the ~700MB it downloads next, so this rides along on the same
+    # requirement rather than adding a new one -- and like the kernel fetch
+    # below, failing to reach it is not fatal: the stick's own copy, however
+    # old, still installs a working system.
+    NPKG_BASE=$(dirname "$NPKG_DIR")
+    PAYLOAD_URL="${NETHOS_PAYLOAD_URL:-https://codeload.github.com/NethercraftMC5608/nethos/tar.gz/refs/heads/main}"
+    if [ -w "$NPKG_BASE" ]; then
+        say "Refreshing the NETHOS payload from the repository"
+        if curl -fL --retry 2 --retry-delay 2 -o /tmp/nethos-src.tar.gz "$PAYLOAD_URL" 2>/dev/null; then
+            rm -rf /tmp/nethos-src && mkdir -p /tmp/nethos-src
+            if tar xzf /tmp/nethos-src.tar.gz -C /tmp/nethos-src --strip-components=1 2>/dev/null; then
+                for part in pkg payload; do
+                    [ -d "/tmp/nethos-src/$part" ] || continue
+                    rm -rf "${NPKG_BASE:?}/$part"
+                    cp -R "/tmp/nethos-src/$part" "$NPKG_BASE/$part"
+                done
+                say "  using pkg/ and payload/ from main, not the stick's own copy"
+            else
+                say "  fetched but could not extract; using the stick's own copy"
+            fi
+            rm -rf /tmp/nethos-src /tmp/nethos-src.tar.gz
+        else
+            say "  could not reach the repository; using the stick's own copy"
+        fi
+    else
+        say "  $NPKG_BASE is read-only on this stick; using its own copy"
+    fi
+
     # From the repository, not from Debian.
     #
     # Converting 618 packages is pure CPU and identical on every machine: 90
