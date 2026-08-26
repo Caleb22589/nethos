@@ -904,7 +904,6 @@ body.metal #panel::before { display: none; }
 body.metal #panel { color: var(--metal-ink, #eaeef1); }
 body.metal #panel .task .label,
 body.metal #panel .ask .label,
-body.metal #panel #status,
 body.metal #panel #metrics,
 body.metal #panel .metric,
 body.metal #panel .clock {
