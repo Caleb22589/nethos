@@ -67,17 +67,26 @@ if [ "$SHELL_RESTART" -eq 1 ]; then
     say "Relaunching the shell"
     pkill -f "[n]ethos-view.*role=panel" 2>/dev/null || true
     sleep 1
-    # setsid, so the shell does not die with the SSH session or terminal that
-    # asked for the restart -- which is exactly how this gets run.
-    #
-    # Appended to a real file, not /dev/null: this is the only path a shell
-    # restart takes once the very first boot has passed (the Troubleshooter's
-    # "Restart the shell" goes through here too, via nethosd), so /dev/null
-    # here was throwing away stderr for most of a machine's actual uptime --
-    # confirmed on real hardware chasing a crash that left nothing in dmesg
-    # and nothing anywhere readable, only reproducible by running
-    # nethos-session by hand with output visible.
-    setsid nohup nethos-session >>"$HOME/.cache/nethos/shell-stderr.log" 2>&1 &
+    # In its own unit, not as a child of this one -- the same fix, for the
+    # same reason, as nethbot_start()'s own long comment in nethosd.py:
+    # `setsid nohup ... &` escapes the calling shell's process *group*, which
+    # is what stops the shell dying with the SSH session or terminal that
+    # asked for the restart, but it does not escape a systemd *cgroup*. This
+    # script is called from nethosd (the Troubleshooter's "Restart the
+    # shell" goes through here, via /api/troubleshoot), so a shell started
+    # this way stayed inside nethosd.service's own cgroup -- and
+    # systemd kills the whole cgroup on `systemctl restart`, so the shell
+    # died every single time nethosd did, including a crash of nethosd
+    # itself that systemd auto-restarts, which is exactly the situation
+    # this button exists for. Confirmed on real hardware: a shell restarted
+    # this way vanished within one second of the very next `systemctl
+    # --user restart nethosd`, no crash trace anywhere, because it was
+    # never nethos-view-native crashing at all.
+    if command -v systemd-run >/dev/null 2>&1; then
+        systemd-run --user --collect --unit=nethos-shell -- nethos-session
+    else
+        setsid nohup nethos-session >>"$HOME/.cache/nethos/shell-stderr.log" 2>&1 &
+    fi
     exit 0
 fi
 

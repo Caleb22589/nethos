@@ -84,6 +84,34 @@ static void crash_handler(int sig) {
     _exit(128 + sig);
 }
 
+/* Not a crash -- SIGTERM/SIGHUP/SIGINT are how something *asks* this to
+ * stop, which is meant to happen (nethos-reload --shell's own pkill sends
+ * exactly this). The reason this exists at all: chasing a real disappearance
+ * on real hardware where the process was simply gone -- no crash_handler
+ * entry, no dmesg OOM kill, no reboot -- and there was no way afterward to
+ * tell "something asked it to stop and this is fine" from "it vanished and
+ * that is not". No backtrace: a normal termination signal says nothing
+ * about where execution was, only that something else wanted it to end,
+ * which the log line already says on its own. */
+static void term_handler(int sig) {
+    char hdr[128];
+    time_t now = time(NULL);
+    struct tm tm_now;
+    localtime_r(&now, &tm_now);
+    int len = strftime(hdr, sizeof(hdr) - 40, "%H:%M:%S ", &tm_now);
+    len += snprintf(hdr + len, sizeof(hdr) - len,
+                     "nethos-view-native: received signal %d, exiting\n", sig);
+    write(2, hdr, len);
+    const char *home = getenv("HOME");
+    if (home) {
+        char path[1088];
+        snprintf(path, sizeof(path), "%s/.cache/nethos/session.log", home);
+        int fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0644);
+        if (fd >= 0) { write(fd, hdr, len); close(fd); }
+    }
+    _exit(128 + sig);
+}
+
 /* Direct port of App.do_activate(). */
 static void on_activate(GApplication *app, gpointer user_data) {
     bool is_shell = false;
@@ -112,6 +140,8 @@ int main(int argc, char **argv) {
     signal(SIGBUS, crash_handler);
     signal(SIGFPE, crash_handler);
     signal(SIGILL, crash_handler);
+    signal(SIGTERM, term_handler);
+    signal(SIGHUP, term_handler);
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--")) continue;
