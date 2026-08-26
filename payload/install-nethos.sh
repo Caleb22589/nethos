@@ -427,13 +427,13 @@ chown -h "$NETH_USER:$NETH_USER" "$NETH_HOME/.config/sway/config"
 
 # The same face for GTK applications. Installing the font only puts it on
 # disk; nothing selects it, so Thunar and every dialog would go on rendering
-# in Cantarell next to a shell rendering in Nunito. Both toolkit versions,
-# because the system has GTK3 and GTK4 applications side by side.
+# in Cantarell next to a shell rendering in Space Grotesk. Both toolkit
+# versions, because the system has GTK3 and GTK4 applications side by side.
 for gtkdir in gtk-3.0 gtk-4.0; do
     install -d -o "$NETH_USER" -g "$NETH_USER" "$NETH_HOME/.config/$gtkdir"
     cat > "$NETH_HOME/.config/$gtkdir/settings.ini" <<'GTKINI'
 [Settings]
-gtk-font-name=Nunito 11
+gtk-font-name=Space Grotesk 11
 GTKINI
     chown "$NETH_USER:$NETH_USER" "$NETH_HOME/.config/$gtkdir/settings.ini"
 done

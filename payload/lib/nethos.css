@@ -19,48 +19,35 @@
  * layered on top only where the engine supports it.
  */
 
-/* The system face. Nunito is not in Debian trixie -- only forky and sid -- so
-   it is vendored under lib/fonts and installed to /usr/share/fonts/nethos,
-   rather than being asked of a package manager that cannot supply it.
-   Declared here as well as installed there because the two paths cover
-   different things: fontconfig is what lets GTK applications use it, and this
-   is what lets a surface render in it before fc-cache has caught up, and on a
-   machine updated with `nethos-update` where no packaging step ran at all.
-   One variable file spans 200-1000, so every weight below is the same
-   download rather than nine. */
+/* The one system face, everywhere: body, headers, bold, all of it. Nunito
+   and Archivo used to split this -- a body face and a separate display face
+   for titles -- on the theory that a title deserved its own identity the
+   way a heavy weight of the body face couldn't give it. In practice two
+   type families is the interface equivalent of two accent colours: each one
+   reads as a reasonable choice alone, and together they read as indecision.
+   One face, carrying hierarchy with weight and size the way the rest of
+   this system carries it with everything else.
+
+   Space Grotesk, under the OFL (lib/fonts/OFL-SpaceGrotesk.txt) -- a
+   geometric grotesque with a distinctly technical, cut-for-screens
+   character rather than a humanist one, which is the "modern" this system
+   wants: not warmer, sharper. Not in Debian trixie, so vendored under
+   lib/fonts and installed to /usr/share/fonts/nethos, the same as the two
+   faces it replaces -- declared here as well as installed there because the
+   two paths cover different things: fontconfig is what lets GTK
+   applications use it, and this is what lets a surface render in it before
+   fc-cache has caught up, and on a machine updated with `nethos-update`
+   where no packaging step ran at all. One variable file spans the whole
+   weight range, so heavy and normal are the same download. No italic: the
+   upstream family does not cut one, and a synthesized oblique is worse than
+   not offering it -- nothing in this system leans on italic for emphasis. */
 @font-face {
-  font-family: "Nunito";
-  src: url("/lib/fonts/Nunito[wght].ttf") format("truetype-variations");
-  font-weight: 200 1000;
+  font-family: "Space Grotesk";
+  src: url("/lib/fonts/SpaceGrotesk[wght].ttf") format("truetype-variations");
+  font-weight: 300 700;
   font-style: normal;
   /* Show the fallback immediately and swap when it lands: the alternative is
      a shell that paints no text at all for the first moments of a session. */
-  font-display: swap;
-}
-@font-face {
-  font-family: "Nunito";
-  src: url("/lib/fonts/Nunito-Italic[wght].ttf") format("truetype-variations");
-  font-weight: 200 1000;
-  font-style: italic;
-  font-display: swap;
-}
-
-/* The display face, vendored for the same reason as Nunito and then some:
-   nothing in --display's old stack existed on a Debian machine. Copperplate
-   Gothic is Monotype's and cannot ship; on the laptop every name in that list
-   -- Copperplate, Cinzel, Optima, Palatino -- resolved to DejaVu Sans, so the
-   panel and every card title were being set in the body face with wide
-   tracking rather than in a display face at all.
-
-   Archivo, under the OFL (lib/fonts/OFL-Archivo.txt). A modern grotesque cut
-   for exactly the role Arial Black is usually pressed into, which is a licence
-   we do not have. One variable file spans 100-900 and a width axis, so a heavy
-   title and a normal one are the same download. */
-@font-face {
-  font-family: "Archivo";
-  src: url("/lib/fonts/Archivo[wdth,wght].ttf") format("truetype-variations");
-  font-weight: 100 900;
-  font-style: normal;
   font-display: swap;
 }
 
@@ -119,19 +106,14 @@
   --fast: 140ms var(--ease);
   --slow: 320ms var(--ease);
 
-  --sans: "Nunito", "Inter", "SF Pro Text", "DejaVu Sans", system-ui, sans-serif;
-
-  /* The signature face. Copperplate is an engraver's type: no true lowercase
-     (what reads as lowercase is small caps), wide, and defined by the flared
-     stroke ends that turn to mush below ~14px. So it is the *display* face,
-     never body -- used where the design already calls for uppercase with wide
-     tracking, which is exactly what it was cut for.
-     Copperplate Gothic is licensed (Monotype/URW) and is not in Debian; the
-     stack falls through to Cinzel, then to any serif, so the interface is
-     correct with or without it. Drop the real thing in
-     /usr/local/share/fonts and run fc-cache to have it picked up. */
-  --display: "Archivo", "Arial Black", "Helvetica Neue", Helvetica, Arial,
-             system-ui, sans-serif;
+  /* One face for everything text-shaped in the system. --display used to
+     name a second family (Archivo, before it Copperplate Gothic); it is
+     kept as its own variable, pointing at the same stack as --sans, rather
+     than deleted outright -- every rule below that reaches for --display
+     wants a *heavier weight or larger size*, which is still real hierarchy,
+     just carried by the one face instead of a second identity. */
+  --sans: "Space Grotesk", "Inter", "SF Pro Text", "DejaVu Sans", system-ui, sans-serif;
+  --display: var(--sans);
   --mono: "JetBrains Mono", "SF Mono", "DejaVu Sans Mono", ui-monospace, monospace;
 
   /* Legacy aliases: apps written against the first design system keep working
@@ -216,6 +198,13 @@ html, body {
   line-height: 1.55;
   color: var(--ink);
   -webkit-font-smoothing: antialiased;
+  /* optimizeLegibility turns on kerning and ligatures rather than the
+     browser's speed-first default -- worth it here because nothing in this
+     interface is a long scrolling document where that costs real layout
+     time, and it is the difference between Space Grotesk's kerning pairs
+     (the face leans on them, being geometric) being honoured or ignored. */
+  text-rendering: optimizeLegibility;
+  font-kerning: normal;
   background: transparent;          /* the compositor supplies the backdrop */
 }
 
@@ -359,16 +348,18 @@ h1 { font-size: 22px; }
 h2 { font-size: 17px; }
 h3, .neth-card-title, .card-title {
   font-family: var(--display);
-  /* 800, not 600: Archivo at 600 is a semibold that reads as body text set in
-     caps. The display face earns its place by being visibly heavier than the
-     text around it. */
-  font-size: 12px; font-weight: 800; letter-spacing: 0.14em;
+  /* 700 -- Space Grotesk's own Bold, and the heaviest weight the variable
+     file actually carries (its axis stops at 700; asking for more just
+     clamps back to this). Still visibly heavier than 600 at a much smaller
+     size and with real tracking, which is what earns this its own label
+     treatment rather than reading as body text set in caps. */
+  font-size: 12px; font-weight: 700; letter-spacing: 0.14em;
   text-transform: uppercase; color: var(--ink-faint); margin-bottom: 6px;
 }
 
-/* The wordmark and anything else meant to carry the identity rather than
-   information. Tracking is wide because Copperplate was cut for engraving,
-   where letters were never set tight. */
+/* Anything meant to carry the identity rather than information -- what used
+   to lean on a second, wider-tracked display face now leans on uppercase
+   and tracking alone, on the one face. */
 .display, .wordmark {
   font-family: var(--display);
   text-transform: uppercase;
