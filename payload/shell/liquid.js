@@ -242,16 +242,21 @@ export async function startDockMetal(settings) {
     if (live) swell.x = ease(swell.x, clamp(P.x, g.x0, g.x1), 0.26);
     const tgt = want * look.swell;
     swell.r = ease(swell.r, tgt, tgt > swell.r ? GRAB : LET_GO);
-    // Always pushed, not conditionally above some "close enough to zero"
-    // threshold -- a single extra primitive is cheap regardless of its
-    // radius, and at swell.r == 0 this shape is identical to the base
-    // capsule already in paths[0], a no-op in the union. Any threshold here
-    // is a real, visible one-frame jump the moment a still-easing value
-    // crosses it, no matter how small the threshold is chosen to be --
-    // there is no cutoff value that is not eventually visible at some
-    // screen size or zoom, which is why this is not "a lower number" now,
-    // it is no gate at all.
-    {
+    // Wrong reasoning, reverted: "identical radius is a no-op in the union"
+    // is true for a hard union, not the smooth one this renderer actually
+    // uses -- smin(d, d, k) is *not* d, it is measurably less than d for any
+    // real blend k, because that softening is exactly what a smooth minimum
+    // does at the boundary between two inputs, including two inputs that
+    // happen to be equal. Always including this shape did not remove the
+    // discontinuity, it replaced "the bulge disappears in one frame" with
+    // "the bulge never disappears at all" -- confirmed live: cursor off,
+    // and the bar stayed permanently swollen. Gated again, at a threshold
+    // small enough (0.005, against the old 0.15/0.1/0.02 attempts) that the
+    // same smin-of-near-equal-radii excess is below what a screen can show,
+    // while still reached in a fraction of a second at LET_GO's current
+    // rate. There is no zero-cost version of this animation; there is only
+    // a cutoff small enough that its own jump is smaller than a pixel.
+    if (swell.r > 0.005) {
       const r = g.rad + swell.r;
       paths.push([[swell.x - 6, g.cy, r], [swell.x + 6, g.cy, r]]);
     }
@@ -270,7 +275,12 @@ export async function startDockMetal(settings) {
 
   let raf = 0, lastDraw = -1e9, idle = 0;
   const still = () => {
-    if (swell.r > 0.02) return false;
+    // Matches the shape's own draw cutoff (0.005) above, not a larger,
+    // separate one: a looser threshold here let the loop decide "close
+    // enough to stop" while swell.r was still above what the shape actually
+    // needs to disappear, freezing a small residual bulge in place forever
+    // instead of the loop running the last few frames down to true zero.
+    if (swell.r > 0.005) return false;
     for (const it of (L ? L.items : [])) {
       const s = hover.get(it.el);
       if (s && s.v > 0.02) return false;
@@ -446,9 +456,9 @@ export async function startPanelMetal(settings) {
     const target = want * look.swell;
     if (live) swell.x = ease(swell.x, clamp(P.x, g.x0, g.x1), 0.3);
     swell.r = ease(swell.r, target, target > swell.r ? GRAB : LET_GO);
-    // Always pushed -- see the dock's own version of this same fix, just
-    // above in this file, for why any threshold here is eventually visible.
-    {
+    // Gated again at 0.005 -- see the dock's own version of this same fix,
+    // just above in this file, for why "always include it" was wrong.
+    if (swell.r > 0.005) {
       const r = g.rad + swell.r;
       paths.push([[swell.x - 6, g.cy, r], [swell.x + 6, g.cy, r]]);
     }
@@ -492,7 +502,9 @@ export async function startPanelMetal(settings) {
 
   function settled() {
     if (clickAge < 0.65 || flash > 0.01) return false;
-    if (swell.r > 0.02 || markPull > 0.02) return false;
+    // swell.r matches its own draw cutoff (0.005) above, not the looser
+    // 0.02 markPull still uses for its own, unchanged, unrelated shape.
+    if (swell.r > 0.005 || markPull > 0.02) return false;
     for (const t of (L ? L.tasks : [])) {
       const s = hover.get(t.el);
       if (s && s.v > 0.02) return false;

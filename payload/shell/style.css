@@ -972,7 +972,13 @@ body.metal #panel .task,
 body.metal #panel .task.focused {
   padding: 0 12px;
 }
-body.metal #status:hover,
+/* #status alone is wider than every other scrim here -- it wraps #metrics
+   and .clock with a 12px gap between them, not one compact label the way
+   Ask/the mark/a task pill are, so the same 0.55 shows more of whatever the
+   reflection is doing across that extra width and reads as thinner. Its own
+   slightly higher alpha, not a structural change, to read as equally solid. */
+body.metal #status { background: rgba(6, 9, 14, 0.68); }
+body.metal #status:hover { background: rgba(6, 9, 14, 0.68); }
 body.metal #panel .ask:hover { background: rgba(6, 9, 14, 0.55); }
 body.metal #panel .task .x { color: var(--metal-ink, #eaeef1); }
 
