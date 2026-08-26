@@ -107,12 +107,14 @@ const MIN_FRAME = 1 / 30;
  * and invisible when working, so the amplitude stays small. Release wants to
  * be quick -- a bulge that lingers reads as the interface lagging behind the
  * mouse -- which is a decay *rate*, and is independent of the actual bug
- * that made a quick release look like a snap: the shape used to stop being
- * drawn at all below a visibility threshold, so a fast, genuinely smooth
- * ease-out still ended with a one-frame jump the moment it crossed that
- * line. Fixed at the source below (the shape is always in the render now,
- * never conditionally dropped), which is what actually lets this go back to
- * being fast without being a snap. */
+ * that made a quick release look like a snap: the bulge used to be a second
+ * shape smin'd against the bar, conditionally dropped below a visibility
+ * threshold, so a fast, genuinely smooth ease-out still ended in a one-frame
+ * jump when the shape was pulled from the union. Fixed at the source below --
+ * the extra shape's own blend width is tied to swell.r, not the bar's
+ * radius, so it shrinks to nothing together with the bulge instead of being
+ * dropped -- which is what actually lets this go back to being fast without
+ * being a snap. */
 const SWELL = 2.5;
 const GRAB = 0.22, LET_GO = 0.28;
 
@@ -235,30 +237,34 @@ export async function startDockMetal(settings) {
   function build() {
     const g = L;
     if (!g || g.x1 <= g.x0) return null;
-    const paths = [[[g.x0, g.cy, g.rad], [g.x1, g.cy, g.rad]]];
     const live = now - P.seen < POINTER_TTL;
     const want = live && P.y > g.top - 40 && P.y < g.bottom + 40
       ? Math.max(0, 1 - Math.abs(P.y - g.cy) / (60 + g.rad)) : 0;
     if (live) swell.x = ease(swell.x, clamp(P.x, g.x0, g.x1), 0.26);
     const tgt = want * look.swell;
     swell.r = ease(swell.r, tgt, tgt > swell.r ? GRAB : LET_GO);
-    // Wrong reasoning, reverted: "identical radius is a no-op in the union"
-    // is true for a hard union, not the smooth one this renderer actually
-    // uses -- smin(d, d, k) is *not* d, it is measurably less than d for any
-    // real blend k, because that softening is exactly what a smooth minimum
-    // does at the boundary between two inputs, including two inputs that
-    // happen to be equal. Always including this shape did not remove the
-    // discontinuity, it replaced "the bulge disappears in one frame" with
-    // "the bulge never disappears at all" -- confirmed live: cursor off,
-    // and the bar stayed permanently swollen. Gated again, at a threshold
-    // small enough (0.005, against the old 0.15/0.1/0.02 attempts) that the
-    // same smin-of-near-equal-radii excess is below what a screen can show,
-    // while still reached in a fraction of a second at LET_GO's current
-    // rate. There is no zero-cost version of this animation; there is only
-    // a cutoff small enough that its own jump is smaller than a pixel.
-    if (swell.r > 0.005) {
-      const r = g.rad + swell.r;
-      paths.push([[swell.x - 6, g.cy, r], [swell.x + 6, g.cy, r]]);
+    // Any extra primitive unioned in via smin(a, b, k) leaves a residual
+    // dip of up to k/6 whenever a and b are close -- tried making it one
+    // shape with the base (still bulged forever), tried one *chain* of
+    // control points relying on prune() to fold it away (still bulged --
+    // prune only bounds how far the simplified curve may drift from the
+    // dense spline, not how many points survive, and any survivor reopens
+    // the same smin dip no matter how small its radius delta is). The part
+    // that was always wrong: k depended on the *bar's* radius (g.rad),
+    // which never went to zero, so the dip never did either.
+    // A lone point in a chain (`_prepare` in liquid-metal.js) is packed as
+    // a sphere segment, and a sphere's own blend width is its own radius --
+    // not the bar's. So two point-blobs, sitting exactly on the bar's top
+    // and bottom edge with radius swell.r itself (not g.rad + swell.r),
+    // reproduce the same bulge, but k = uSmooth * swell.r now shrinks to 0
+    // together with the bulge. At swell.r == 0 the dip's own upper bound
+    // (k/6) is 0 -- not small, exactly zero -- so nothing to fade out, ever,
+    // and no threshold is needed at all.
+    const sx = clamp(swell.x, g.x0, g.x1);
+    const paths = [[[g.x0, g.cy, g.rad], [g.x1, g.cy, g.rad]]];
+    if (swell.r > 0) {
+      paths.push([[sx, g.cy - g.rad, swell.r]]);
+      paths.push([[sx, g.cy + g.rad, swell.r]]);
     }
     for (const it of g.items) {
       if (!hover.has(it.el)) hover.set(it.el, { v: 0 });
@@ -275,12 +281,11 @@ export async function startDockMetal(settings) {
 
   let raf = 0, lastDraw = -1e9, idle = 0;
   const still = () => {
-    // Matches the shape's own draw cutoff (0.005) above, not a larger,
-    // separate one: a looser threshold here let the loop decide "close
-    // enough to stop" while swell.r was still above what the shape actually
-    // needs to disappear, freezing a small residual bulge in place forever
-    // instead of the loop running the last few frames down to true zero.
-    if (swell.r > 0.005) return false;
+    // The blobs above are gated at swell.r > 0 (their own blend width goes
+    // to exactly 0 there too, so that gate is now cosmetic, not load-
+    // bearing). This 0.0005 is a separate, purely perf decision: "close
+    // enough to flat that the render loop can stop."
+    if (swell.r > 0.0005) return false;
     for (const it of (L ? L.items : [])) {
       const s = hover.get(it.el);
       if (s && s.v > 0.02) return false;
@@ -444,10 +449,6 @@ export async function startPanelMetal(settings) {
     const g = L;
     if (!g || g.x1 <= g.x0) return null;
 
-    // one capsule: uniform, pill-ended, and exact -- a lone primitive never
-    // enters the smooth-union, so it is not inflated by the blend
-    const paths = [[[g.x0, g.cy, g.rad], [g.x1, g.cy, g.rad]]];
-
     // A pointer that has gone quiet is a pointer that has left. See POINTER_TTL.
     const live = now - P.seen < POINTER_TTL;
     const want = live
@@ -456,11 +457,34 @@ export async function startPanelMetal(settings) {
     const target = want * look.swell;
     if (live) swell.x = ease(swell.x, clamp(P.x, g.x0, g.x1), 0.3);
     swell.r = ease(swell.r, target, target > swell.r ? GRAB : LET_GO);
-    // Gated again at 0.005 -- see the dock's own version of this same fix,
-    // just above in this file, for why "always include it" was wrong.
-    if (swell.r > 0.005) {
-      const r = g.rad + swell.r;
-      paths.push([[swell.x - 6, g.cy, r], [swell.x + 6, g.cy, r]]);
+    // Ground-truthed with a real requestAnimationFrame trace of swell.r
+    // itself (not screenshots): the release decays as a clean geometric
+    // series, ratio ~0.72/frame matching LET_GO, ~50ms apart, ~35 frames to
+    // bottom out. No discontinuity in the number, ever -- every jump grim
+    // caught was downstream, in the render, not here.
+    // Any extra primitive unioned in via smin(a, b, k) leaves a residual
+    // dip of up to k/6 whenever a and b are close. Tried folding it into
+    // the same shape (permanently bulged), tried one *chain* of control
+    // points and trusting prune() in liquid-metal.js to fold it away at
+    // rest (still permanently bulged -- prune only bounds how far the
+    // simplified curve may drift from the dense spline, not how many
+    // points survive, and any survivor reopens the same dip regardless of
+    // how small its radius delta is). The part that was always wrong: k
+    // depended on the *bar's* radius (g.rad), which never went to zero, so
+    // neither did the dip.
+    // A lone point in a chain is packed as a sphere segment, and a
+    // sphere's own blend width is its own radius, not the bar's. So two
+    // point-blobs sitting exactly on the bar's top and bottom edge, with
+    // radius swell.r itself (not g.rad + swell.r), reproduce the same
+    // bulge, but k = uSmooth * swell.r now shrinks to 0 together with it.
+    // At swell.r == 0 the dip's own upper bound (k/6) is 0 -- not small,
+    // exactly zero -- so there is nothing left to fade out, and no
+    // threshold is needed at all.
+    const sx = clamp(swell.x, g.x0, g.x1);
+    const paths = [[[g.x0, g.cy, g.rad], [g.x1, g.cy, g.rad]]];
+    if (swell.r > 0) {
+      paths.push([[sx, g.cy - g.rad, swell.r]]);
+      paths.push([[sx, g.cy + g.rad, swell.r]]);
     }
 
     clickAge += dt;
@@ -502,9 +526,11 @@ export async function startPanelMetal(settings) {
 
   function settled() {
     if (clickAge < 0.65 || flash > 0.01) return false;
-    // swell.r matches its own draw cutoff (0.005) above, not the looser
-    // 0.02 markPull still uses for its own, unchanged, unrelated shape.
-    if (swell.r > 0.005 || markPull > 0.02) return false;
+    // The blobs above are gated at swell.r > 0 (cosmetic now -- their own
+    // blend width already goes to exactly 0 there). This 0.0005 is a
+    // separate, purely perf decision: when the render loop can stop.
+    // markPull's 0.02 is its own, unchanged, unrelated shape.
+    if (swell.r > 0.0005 || markPull > 0.02) return false;
     for (const t of (L ? L.tasks : [])) {
       const s = hover.get(t.el);
       if (s && s.v > 0.02) return false;
