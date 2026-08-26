@@ -947,18 +947,30 @@ body.metal #panel .task { text-shadow: 0 1px 3px rgba(6, 9, 14, .7); }
    having one. 0.55 stays short of opaque -- the metal is still legible
    through it -- while reading clearly as its own layer above the pane at
    any pane setting a person is likely to choose. */
+/* One shared height and box-sizing across every scrim, not each element's
+   own auto-sizing -- .ask carried a 12.5px font-size on the button itself
+   (its .label child at 10px did not change that), #status a different
+   padding again, and a browser sizing each pill off its own font-size/
+   padding combination is exactly how "the same 0.55 background" ends up
+   looking like different amounts of scrim: a taller box shows more of it.
+   box-sizing: border-box so the fixed height already includes the padding
+   below rather than adding to it. */
 body.metal #panel .task,
 body.metal #panel .task.focused,
 body.metal #status,
 body.metal #panel .ask,
 body.metal #tray .tray-item {
+  height: 22px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
   background: rgba(6, 9, 14, 0.55);
   border-radius: var(--r-pill);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 body.metal #panel .task,
 body.metal #panel .task.focused {
-  height: 22px; padding: 0 12px;
+  padding: 0 12px;
 }
 body.metal #status:hover,
 body.metal #panel .ask:hover { background: rgba(6, 9, 14, 0.55); }
@@ -966,9 +978,13 @@ body.metal #panel .task .x { color: var(--metal-ink, #eaeef1); }
 
 /* The launcher mark, turned from the same stock. This is the one place the
    panel gives up its accent: docs/DESIGN.md rule 1 asks for one accent used
-   sparingly, and a metal shell has none to give. */
+   sparingly, and a metal shell has none to give. Same 22px as every other
+   scrim above -- it used to be 20px, its own one-off size, which is the
+   same "each element decides for itself" problem the rest of this block
+   just stopped doing. */
 body.metal #panel .mark {
-  width: 20px; height: 20px;
+  width: 22px; height: 22px;
+  box-sizing: border-box;
   border-radius: var(--r-pill);
   background: rgba(6, 9, 14, 0.55);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);

@@ -104,16 +104,17 @@ const MIN_FRAME = 1 / 30;
 /* How far the bar swells under the pointer, and how fast it lets go.
  *
  * This is a panel, not a demo. The swell should be noticeable when looked for
- * and invisible when working, so the amplitude stays small. Release used to
- * be faster than the grab (0.42 against 0.22) on the theory that a bulge
- * lingering after the cursor moved on would read as the interface lagging
- * behind the mouse -- in practice that made the release read as the metal
- * simply vanishing rather than a liquid settling back to rest, which is its
- * own tell. Slower than the grab now, closer to how the material is
- * supposed to behave: forming a bulge is effortful (the grab), the metal
- * relaxing back to flat afterward should look effortless rather than cut. */
+ * and invisible when working, so the amplitude stays small. Release wants to
+ * be quick -- a bulge that lingers reads as the interface lagging behind the
+ * mouse -- which is a decay *rate*, and is independent of the actual bug
+ * that made a quick release look like a snap: the shape used to stop being
+ * drawn at all below a visibility threshold, so a fast, genuinely smooth
+ * ease-out still ended with a one-frame jump the moment it crossed that
+ * line. Fixed at the source below (the shape is always in the render now,
+ * never conditionally dropped), which is what actually lets this go back to
+ * being fast without being a snap. */
 const SWELL = 2.5;
-const GRAB = 0.22, LET_GO = 0.10;
+const GRAB = 0.22, LET_GO = 0.28;
 
 function usable() {
   /* Escape hatch. scripts/run.sh on macOS picks the cocoa display backend,
@@ -241,14 +242,16 @@ export async function startDockMetal(settings) {
     if (live) swell.x = ease(swell.x, clamp(P.x, g.x0, g.x1), 0.26);
     const tgt = want * look.swell;
     swell.r = ease(swell.r, tgt, tgt > swell.r ? GRAB : LET_GO);
-    // Matches still()'s own 0.02 threshold below, not a separate, larger
-    // one: the shape used to stop being drawn at all once swell.r fell
-    // under 0.15, which on a 0-2.5-ish range is not "gone", it is a visible
-    // remaining bulge that then vanished in one frame instead of finishing
-    // its fade -- the "smoothly retracts, then suddenly snaps" the easing
-    // fix alone did not explain, because the easing itself was never the
-    // problem past this point.
-    if (swell.r > 0.02) {
+    // Always pushed, not conditionally above some "close enough to zero"
+    // threshold -- a single extra primitive is cheap regardless of its
+    // radius, and at swell.r == 0 this shape is identical to the base
+    // capsule already in paths[0], a no-op in the union. Any threshold here
+    // is a real, visible one-frame jump the moment a still-easing value
+    // crosses it, no matter how small the threshold is chosen to be --
+    // there is no cutoff value that is not eventually visible at some
+    // screen size or zoom, which is why this is not "a lower number" now,
+    // it is no gate at all.
+    {
       const r = g.rad + swell.r;
       paths.push([[swell.x - 6, g.cy, r], [swell.x + 6, g.cy, r]]);
     }
@@ -443,10 +446,9 @@ export async function startPanelMetal(settings) {
     const target = want * look.swell;
     if (live) swell.x = ease(swell.x, clamp(P.x, g.x0, g.x1), 0.3);
     swell.r = ease(swell.r, target, target > swell.r ? GRAB : LET_GO);
-    // See the dock's own version of this same fix, just below in this file:
-    // 0.02, matching still()'s own cutoff, not a larger threshold that cut
-    // the shape from the render while it was still visibly mid-fade.
-    if (swell.r > 0.02) {
+    // Always pushed -- see the dock's own version of this same fix, just
+    // above in this file, for why any threshold here is eventually visible.
+    {
       const r = g.rad + swell.r;
       paths.push([[swell.x - 6, g.cy, r], [swell.x + 6, g.cy, r]]);
     }
