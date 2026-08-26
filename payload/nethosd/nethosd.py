@@ -400,6 +400,120 @@ def wifi_connect(ssid, password):
         return False, str(exc)
 
 
+# Control Centre's wifi_state()/wifi_connect() above cover the quick-connect
+# case; this is the Settings-app Network panel's own deeper view -- every
+# interface (wired included, which Control Centre never shows at all), the
+# IP/gateway/DNS/MAC a "why can I not reach anything" question actually
+# needs, and the saved-profile list forgetting a network requires. Same
+# nmcli -t/-f terse-mode backend throughout, for the same reason wifi_state()
+# already uses it: stable machine-readable fields rather than parsing
+# nmcli's human-formatted table output.
+
+def network_devices():
+    """Every interface nmcli knows about, wifi and wired alike."""
+    if not shutil.which("nmcli"):
+        return []
+    try:
+        r = subprocess.run(
+            ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"],
+            capture_output=True, text=True, timeout=8)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    out = []
+    for line in r.stdout.splitlines():
+        parts = re.split(r"(?<!\\):", line)
+        if len(parts) < 4:
+            continue
+        dev, typ, state = parts[0], parts[1], parts[2]
+        conn = parts[3].replace("\\:", ":")
+        # wifi-p2p is a virtual device NetworkManager creates alongside every
+        # real wifi adapter for Wi-Fi Direct, never a second NIC -- listing
+        # it doubled every wifi machine's device count with an entry that is
+        # permanently "disconnected" and cannot usefully be anything else.
+        if typ in ("loopback", "wifi-p2p", ""):
+            continue
+        out.append({"device": dev, "type": typ, "state": state, "connection": conn})
+    return out
+
+
+def network_details(device):
+    """IP, gateway, DNS and MAC for one device -- what a real "About this
+    connection" screen shows, not just whether it is up."""
+    if not shutil.which("nmcli") or not device:
+        return {}
+    try:
+        r = subprocess.run(
+            ["nmcli", "-t", "-f", "GENERAL.HWADDR,IP4.ADDRESS,IP4.GATEWAY,IP4.DNS",
+             "device", "show", device],
+            capture_output=True, text=True, timeout=8)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    out = {"mac": "", "address": "", "gateway": "", "dns": []}
+    for line in r.stdout.splitlines():
+        parts = re.split(r"(?<!\\):", line, maxsplit=1)
+        if len(parts) < 2:
+            continue
+        key, val = parts[0], parts[1].replace("\\:", ":")
+        if key == "GENERAL.HWADDR":
+            out["mac"] = val
+        elif key.startswith("IP4.ADDRESS"):
+            out["address"] = val
+        elif key == "IP4.GATEWAY":
+            out["gateway"] = val
+        elif key.startswith("IP4.DNS") and val:
+            out["dns"].append(val)
+    return out
+
+
+def network_known():
+    """Saved connection profiles -- what "forget this network" removes.
+    Wifi and ethernet only: nmcli also tracks bridges, VPNs and the loopback
+    as "connections", none of which this panel has any business showing."""
+    if not shutil.which("nmcli"):
+        return []
+    try:
+        r = subprocess.run(
+            ["nmcli", "-t", "-f", "NAME,TYPE,DEVICE", "connection", "show"],
+            capture_output=True, text=True, timeout=8)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    out = []
+    for line in r.stdout.splitlines():
+        parts = re.split(r"(?<!\\):", line)
+        if len(parts) < 3:
+            continue
+        name, typ, dev = parts[0].replace("\\:", ":"), parts[1], parts[2]
+        if typ not in ("802-11-wireless", "802-3-ethernet"):
+            continue
+        out.append({"name": name, "type": typ, "active": bool(dev)})
+    return out
+
+
+def network_forget(name):
+    if not shutil.which("nmcli") or not name:
+        return False
+    try:
+        p = subprocess.run(["nmcli", "connection", "delete", name],
+                           capture_output=True, text=True, timeout=15)
+        return p.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def network_reconnect(name):
+    """Bring a known profile back up by name -- works for wired profiles
+    too, unlike wifi_connect() above which only ever dials an SSID."""
+    if not shutil.which("nmcli") or not name:
+        return False, ""
+    try:
+        p = subprocess.run(["nmcli", "connection", "up", name],
+                           capture_output=True, text=True, timeout=30)
+        msg = (p.stdout or p.stderr or "").strip().splitlines()
+        return p.returncode == 0, (msg[-1] if msg else "")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)
+
+
 # ---------------------------------------------------------------------------
 # files -- what the explorer and the extractor are built on
 # ---------------------------------------------------------------------------
@@ -2684,6 +2798,15 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/control/networks":
             return self.send_json({"wifi": wifi_state()})
 
+        if route == "/api/network/status":
+            devices = network_devices()
+            for d in devices:
+                d["details"] = network_details(d["device"]) if d["state"] == "connected" else {}
+            return self.send_json({"devices": devices})
+
+        if route == "/api/network/known":
+            return self.send_json({"known": network_known()})
+
         if route == "/api/files":
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             path = safe_path(qs.get("path", [""])[0])
@@ -2891,6 +3014,19 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/control/volume":
             return self.send_json({"ok": True, "volume": volume_set(
                 data.get("value"), data.get("muted"))})
+
+        if route == "/api/network/forget":
+            name = str(data.get("name", ""))
+            if not name:
+                return self.send_json({"error": "need name"}, 400)
+            return self.send_json({"ok": network_forget(name)})
+
+        if route == "/api/network/reconnect":
+            name = str(data.get("name", ""))
+            if not name:
+                return self.send_json({"error": "need name"}, 400)
+            ok, detail = network_reconnect(name)
+            return self.send_json({"ok": ok, "detail": detail})
 
         if route == "/api/control/wifi":
             action = data.get("action", "")

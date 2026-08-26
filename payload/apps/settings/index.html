@@ -90,6 +90,18 @@
     </div>
   </section>
 
+  <section class="group" id="network">
+    <h3>Network</h3>
+    <div class="neth-card" style="padding:0" id="network-devices">
+      <p class="neth-sub" style="padding:13px 16px" id="network-empty">Looking for network devices…</p>
+    </div>
+    <div class="neth-card" style="padding:0;margin-top:10px" id="network-known" hidden>
+      <div class="row" style="border-bottom:0">
+        <div class="label"><strong class="name">Known networks</strong></div>
+      </div>
+    </div>
+  </section>
+
   <div id="form"><p class="neth-sub">Loading…</p></div>
 
   <section class="group" id="updates">
@@ -528,6 +540,146 @@
     }
   }
   loadDisplay();
+
+  // ------------------------------------------------------------- network
+  // Deeper than Control Centre's quick wifi list: every interface including
+  // wired (Control Centre never shows that at all), real IP/gateway/DNS/MAC
+  // once connected, and the saved-profile list "forget" actually needs --
+  // scanning for what is currently in range, which is all Control Centre
+  // does, cannot tell you what you already told the machine to remember.
+  // Two different vocabularies from nmcli's own two subcommands: `device
+  // status` answers with the short form ("wifi", "ethernet"), `connection
+  // show` with the long form ("802-11-wireless", "802-3-ethernet") -- not a
+  // choice this page gets to make, nmcli genuinely names the same kind of
+  // thing two different ways depending which command you ask. Found by the
+  // device list silently coming back empty: a single map with only the long
+  // form matched nothing "device status" ever actually returns.
+  const DEVICE_TYPE_LABEL = { wifi: "Wi-Fi", ethernet: "Ethernet" };
+  const CONN_TYPE_LABEL = { "802-11-wireless": "Wi-Fi", "802-3-ethernet": "Ethernet" };
+  const STATE_LABEL = {
+    connected: "Connected", connecting: "Connecting…", disconnected: "Not connected",
+    unavailable: "Unavailable", unmanaged: "Unmanaged",
+  };
+
+  async function loadNetwork() {
+    const devicesCard = document.getElementById("network-devices");
+    const empty = document.getElementById("network-empty");
+    let r;
+    try {
+      r = await fetch("/api/network/status").then((x) => x.json());
+    } catch (e) {
+      empty.textContent = "nethosd is not answering.";
+      return;
+    }
+    const devices = (r.devices || []).filter((d) => d.type in DEVICE_TYPE_LABEL);
+    if (!devices.length) {
+      empty.textContent = "No network devices found.";
+      return;
+    }
+    devicesCard.textContent = "";
+
+    for (const d of devices) {
+      const row = document.createElement("div");
+      row.className = "row";
+      const label = document.createElement("div");
+      label.className = "label";
+      const name = document.createElement("strong");
+      name.className = "name";
+      name.textContent = (DEVICE_TYPE_LABEL[d.type] || d.type) + (d.connection ? " — " + d.connection : "");
+      const help = document.createElement("span");
+      help.className = "help";
+      const bits = [d.device, STATE_LABEL[d.state] || d.state];
+      const det = d.details || {};
+      if (det.address) bits.push(det.address);
+      if (det.mac) bits.push(det.mac);
+      help.textContent = bits.join(" · ");
+      label.append(name, help);
+      row.append(label);
+      devicesCard.append(row);
+
+      // Gateway/DNS is real "About this connection" detail, one row down
+      // rather than crammed into the summary line above.
+      if (det.gateway || (det.dns && det.dns.length)) {
+        const sub = document.createElement("div");
+        sub.className = "row";
+        sub.style.paddingTop = "0";
+        const subLabel = document.createElement("div");
+        subLabel.className = "label";
+        const subHelp = document.createElement("span");
+        subHelp.className = "help";
+        const subBits = [];
+        if (det.gateway) subBits.push("Gateway " + det.gateway);
+        if (det.dns && det.dns.length) subBits.push("DNS " + det.dns.join(", "));
+        subHelp.textContent = subBits.join(" · ");
+        subLabel.append(subHelp);
+        sub.append(subLabel);
+        devicesCard.append(sub);
+      }
+    }
+
+    // ------------------------------------------------------- known networks
+    const knownCard = document.getElementById("network-known");
+    let kr;
+    try {
+      kr = await fetch("/api/network/known").then((x) => x.json());
+    } catch (e) {
+      return;
+    }
+    const known = kr.known || [];
+    if (!known.length) return;
+    knownCard.hidden = false;
+    // Keep the header row, drop any previously rendered network rows.
+    for (const el of [...knownCard.children].slice(1)) el.remove();
+
+    for (const n of known) {
+      const row = document.createElement("div");
+      row.className = "row";
+      const label = document.createElement("div");
+      label.className = "label";
+      const name = document.createElement("strong");
+      name.className = "name";
+      name.textContent = n.name;
+      const help = document.createElement("span");
+      help.className = "help";
+      help.textContent = (CONN_TYPE_LABEL[n.type] || n.type) + (n.active ? " · active now" : "");
+      label.append(name, help);
+
+      const ctl = document.createElement("div");
+      ctl.className = "control";
+      if (!n.active) {
+        const joinBtn = document.createElement("button");
+        joinBtn.className = "neth-btn";
+        joinBtn.textContent = "Connect";
+        joinBtn.onclick = async () => {
+          joinBtn.disabled = true; joinBtn.textContent = "Connecting…";
+          const res = await fetch("/api/network/reconnect", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: n.name }),
+          }).then((x) => x.json()).catch(() => ({ error: "failed" }));
+          joinBtn.textContent = res.ok ? "Connected" : (res.detail || res.error || "Failed");
+          setTimeout(loadNetwork, 1500);
+        };
+        ctl.append(joinBtn);
+      }
+      const forgetBtn = document.createElement("button");
+      forgetBtn.className = "neth-btn";
+      forgetBtn.textContent = "Forget";
+      forgetBtn.onclick = async () => {
+        if (!(await ui.confirm("Forget \"" + n.name + "\"? You will need to reconnect manually."))) return;
+        forgetBtn.disabled = true; forgetBtn.textContent = "Forgetting…";
+        await fetch("/api/network/forget", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: n.name }),
+        }).catch(() => {});
+        loadNetwork();
+      };
+      ctl.append(forgetBtn);
+
+      row.append(label, ctl);
+      knownCard.append(row);
+    }
+  }
+  loadNetwork();
 
   await load();
 })();
