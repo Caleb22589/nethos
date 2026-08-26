@@ -139,6 +139,41 @@ static void init_layer_shell(struct nethos_surface *s) {
     }
 }
 
+/* Found on real hardware: closing an app window (role=window -- the shell's
+ * own layer-shell surfaces are never individually closed) crashed the whole
+ * process. g_surfaces[] only ever grew, never shrank -- nothing here ever
+ * removed a closed window's entry, so events.c's tick_cb()/deliver_idle()
+ * kept calling webkit_web_view_evaluate_javascript() on it every second (or
+ * on every SSE event) after the underlying GtkWindow and WebKitWebView were
+ * already destroyed. GTK's own GTK_IS_WIDGET()/WEBKIT_IS_WEB_VIEW() type
+ * checks caught most of those calls -- the Gtk-CRITICAL assertions are
+ * visible in the crash log right before the actual segfault -- but a
+ * type-check reading already-freed memory is not a guarantee, only a delay,
+ * and the delay ran out.
+ *
+ * Connected to "destroy" rather than "close-request": close-request fires
+ * before anything is torn down and can be cancelled, so this needs the
+ * signal that fires exactly once, unconditionally, whichever way the window
+ * actually goes away. wake_source is a separate concern from the array
+ * entry -- a pending g_timeout_add from bridge.c's wake_tick() also carries
+ * a raw `s` pointer and is not cancelled by GTK destroying the window at
+ * all, since it is a GLib main-loop timer, not a widget. */
+static void on_surface_destroy(GtkWidget *widget, gpointer user_data) {
+    (void)widget;
+    struct nethos_surface *s = user_data;
+    if (s->wake_source) {
+        g_source_remove(s->wake_source);
+        s->wake_source = 0;
+    }
+    for (int i = 0; i < g_surface_count; i++) {
+        if (g_surfaces[i] == s) {
+            g_surfaces[i] = g_surfaces[--g_surface_count];
+            break;
+        }
+    }
+    free(s);
+}
+
 struct nethos_surface *nethos_surface_create(const struct nethos_spec *spec) {
     if (g_surface_count >= NETHOS_MAX_SURFACES) {
         fprintf(stderr, "nethos-view-native: too many surfaces, dropping %s\n", spec->name);
@@ -162,6 +197,7 @@ struct nethos_surface *nethos_surface_create(const struct nethos_spec *spec) {
     }
 
     s->window = GTK_WINDOW(gtk_application_window_new(g_app));
+    g_signal_connect(s->window, "destroy", G_CALLBACK(on_surface_destroy), s);
     gtk_window_set_title(s->window, spec->title);
     gtk_window_set_default_size(s->window, spec->width > 0 ? spec->width : 800,
                                  spec->height > 0 ? spec->height : 600);
