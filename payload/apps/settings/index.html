@@ -102,6 +102,16 @@
     </div>
   </section>
 
+  <section class="group" id="sound">
+    <h3>Sound</h3>
+    <p class="neth-sub" style="margin:0 0 6px 2px">Output</p>
+    <div class="neth-card" style="padding:0" id="sound-sinks">
+      <p class="neth-sub" style="padding:13px 16px" id="sound-empty">Looking for audio devices…</p>
+    </div>
+    <p class="neth-sub" style="margin:14px 0 6px 2px" id="sound-input-label" hidden>Input</p>
+    <div class="neth-card" style="padding:0;margin-top:0" id="sound-sources"></div>
+  </section>
+
   <div id="form"><p class="neth-sub">Loading…</p></div>
 
   <section class="group" id="updates">
@@ -680,6 +690,104 @@
     }
   }
   loadNetwork();
+
+  // --------------------------------------------------------------- sound
+  // Control Centre's single slider only ever touches @DEFAULT_AUDIO_SINK@;
+  // this is every sink and source wpctl reports, each with its own
+  // volume/mute and a way to make it the default -- what a USB headset or a
+  // second output actually needs, which the quick slider has no way to
+  // reach at all.
+  function soundRow(dev, kind) {
+    const row = document.createElement("div");
+    row.className = "row";
+    const label = document.createElement("div");
+    label.className = "label";
+    const name = document.createElement("strong");
+    name.className = "name";
+    name.textContent = dev.name;
+    label.append(name);
+    if (dev.default) {
+      const help = document.createElement("span");
+      help.className = "help";
+      help.textContent = "Default";
+      label.append(help);
+    }
+
+    const ctl = document.createElement("div");
+    ctl.className = "control";
+
+    if (!dev.default) {
+      const useBtn = document.createElement("button");
+      useBtn.className = "neth-btn";
+      useBtn.textContent = "Use";
+      useBtn.onclick = async () => {
+        useBtn.disabled = true;
+        await fetch("/api/audio/default", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: dev.id }),
+        }).catch(() => {});
+        loadSound();
+      };
+      ctl.append(useBtn);
+    }
+
+    const sw = document.createElement("div");
+    sw.className = "sw";
+    sw.title = "Mute";
+    sw.dataset.on = dev.muted ? "0" : "1";  // "on" here means "audible"
+    sw.innerHTML = "<i></i>";
+    sw.onclick = async () => {
+      const audible = sw.dataset.on !== "1";
+      sw.dataset.on = audible ? "1" : "0";
+      await fetch("/api/audio/volume", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: dev.id, muted: !audible }),
+      }).catch(() => {});
+    };
+
+    const out = document.createElement("span");
+    out.className = "val";
+    const pct = Math.round(dev.volume * 100);
+    out.textContent = pct + "%";
+    const range = document.createElement("input");
+    range.type = "range"; range.min = 0; range.max = 100; range.step = 1; range.value = pct;
+    range.oninput = () => { out.textContent = range.value + "%"; };
+    range.onchange = () => fetch("/api/audio/volume", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: dev.id, level: Number(range.value) }),
+    }).catch(() => {});
+
+    ctl.append(sw, range, out);
+    row.append(label, ctl);
+    return row;
+  }
+
+  async function loadSound() {
+    const sinksCard = document.getElementById("sound-sinks");
+    const sourcesCard = document.getElementById("sound-sources");
+    const empty = document.getElementById("sound-empty");
+    const inputLabel = document.getElementById("sound-input-label");
+    let r;
+    try {
+      r = await fetch("/api/audio/devices").then((x) => x.json());
+    } catch (e) {
+      empty.textContent = "nethosd is not answering.";
+      return;
+    }
+    const sinks = r.sinks || [], sources = r.sources || [];
+    if (!sinks.length && !sources.length) {
+      empty.textContent = "No audio devices found.";
+      return;
+    }
+    sinksCard.textContent = "";
+    sourcesCard.textContent = "";
+    for (const s of sinks) sinksCard.append(soundRow(s, "sink"));
+    if (sources.length) {
+      inputLabel.hidden = false;
+      for (const s of sources) sourcesCard.append(soundRow(s, "source"));
+    }
+  }
+  loadSound();
 
   await load();
 })();

@@ -347,6 +347,85 @@ def volume_set(level=None, mute=None):
     return volume_get()
 
 
+# volume_get()/volume_set() above cover Control Centre's single master
+# slider (@DEFAULT_AUDIO_SINK@, whatever that happens to be); this is the
+# Settings-app Sound panel's own deeper view -- every actual sink and
+# source, and which one is *chosen* as default rather than just what it is.
+# wpctl status, not pactl: it is the one command that lists every device
+# with the id wpctl set-default needs, and reports which is currently
+# default in the same pass -- pactl has no equivalent single command for
+# that, only separate list/get-default calls that would need reconciling
+# by name, which is exactly the kind of guessing a real id avoids.
+_WPCTL_DEVICE_RE = re.compile(
+    r"^[\s│├└─]*(\*)?\s*(\d+)\.\s+(.+?)\s+\[vol:\s*([\d.]+)(\s+MUTED)?\]\s*$")
+
+
+def audio_devices():
+    """Every sink and source WirePlumber knows about, parsed from `wpctl
+    status`'s tree output -- there is no --json here the way wlr-randr has
+    one, so this walks the Audio > Sinks/Sources sections by their own
+    heading lines rather than assuming a fixed line count, which breaks the
+    moment a machine has more devices than whatever this was tested against."""
+    if not shutil.which("wpctl"):
+        return {"sinks": [], "sources": []}
+    try:
+        r = subprocess.run(["wpctl", "status"], capture_output=True,
+                           text=True, timeout=8)
+    except (OSError, subprocess.SubprocessError):
+        return {"sinks": [], "sources": []}
+
+    sinks, sources = [], []
+    section = None
+    for line in r.stdout.splitlines():
+        stripped = line.strip(" │")
+        if stripped.startswith(("├─ Sinks", "└─ Sinks")):
+            section = "sinks"; continue
+        if stripped.startswith(("├─ Sources", "└─ Sources")):
+            section = "sources"; continue
+        if stripped.startswith(("├─", "└─")):
+            section = None; continue
+        if section not in ("sinks", "sources"):
+            continue
+        m = _WPCTL_DEVICE_RE.match(line)
+        if not m:
+            continue
+        default, dev_id, name, vol, muted = m.groups()
+        entry = {"id": dev_id, "name": name.strip(), "volume": float(vol),
+                 "muted": bool(muted), "default": bool(default)}
+        (sinks if section == "sinks" else sources).append(entry)
+    return {"sinks": sinks, "sources": sources}
+
+
+def audio_set_default(device_id):
+    if not shutil.which("wpctl") or not device_id:
+        return False
+    try:
+        p = subprocess.run(["wpctl", "set-default", str(device_id)],
+                           capture_output=True, text=True, timeout=8)
+        return p.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def audio_set_volume(device_id, level=None, mute=None):
+    """Same as volume_set() above, but by device id rather than always the
+    default sink -- what lets the Sound panel adjust a device that is not
+    the one currently chosen, the way GNOME's own Sound panel does."""
+    if not shutil.which("wpctl") or not device_id:
+        return False
+    ok = True
+    if mute is not None:
+        p = subprocess.run(["wpctl", "set-mute", str(device_id), "1" if mute else "0"],
+                           capture_output=True, timeout=6)
+        ok = ok and p.returncode == 0
+    if level is not None:
+        lvl = max(0, min(100, int(level)))
+        p = subprocess.run(["wpctl", "set-volume", str(device_id), "%d%%" % lvl],
+                           capture_output=True, timeout=6)
+        ok = ok and p.returncode == 0
+    return ok
+
+
 def wifi_state():
     """Radio, current connection and what is in range."""
     out = {"available": bool(shutil.which("nmcli")), "enabled": False,
@@ -2807,6 +2886,9 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/network/known":
             return self.send_json({"known": network_known()})
 
+        if route == "/api/audio/devices":
+            return self.send_json(audio_devices())
+
         if route == "/api/files":
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             path = safe_path(qs.get("path", [""])[0])
@@ -3027,6 +3109,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": "need name"}, 400)
             ok, detail = network_reconnect(name)
             return self.send_json({"ok": ok, "detail": detail})
+
+        if route == "/api/audio/default":
+            device_id = str(data.get("id", ""))
+            if not device_id:
+                return self.send_json({"error": "need id"}, 400)
+            return self.send_json({"ok": audio_set_default(device_id)})
+
+        if route == "/api/audio/volume":
+            device_id = str(data.get("id", ""))
+            if not device_id:
+                return self.send_json({"error": "need id"}, 400)
+            level = data.get("level")
+            mute = data.get("muted")
+            ok = audio_set_volume(device_id,
+                                  level=level if level is not None else None,
+                                  mute=mute if mute is not None else None)
+            return self.send_json({"ok": ok})
 
         if route == "/api/control/wifi":
             action = data.get("action", "")
