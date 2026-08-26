@@ -54,7 +54,17 @@ cp -R /nethos/payload/nethos-view-native /work/src
 mkdir -p /work/bin
 sh /work/src/build.sh
 cp /work/src/../bin/nethos-view-native /out/nethos-view-native-x86_64
-strip /out/nethos-view-native-x86_64
+# --strip-debug, not a plain strip: build.sh -g gives it real DWARF info,
+# and a plain strip throws that away along with the symbol table entirely --
+# the crash handler in main.c calls backtrace_symbols_fd(), which resolves
+# names from .symtab, not DWARF. A fully stripped binary still runs fine and
+# still calls that function on a crash; it just logs bare hex addresses,
+# a crash report with no way to find out what crashed. --strip-debug keeps
+# .symtab (function names) and drops only the much larger DWARF sections.
+# Done here, inside the container, not on the Mac afterward: this Mac has
+# no ELF strip at all, only Mach-O -- running it there was found silently
+# reaching for the wrong tool entirely before this ever ran once.
+strip --strip-debug /out/nethos-view-native-x86_64
 '
 [ -f "$OUT" ] || die "no binary produced"
 chmod 755 "$OUT"

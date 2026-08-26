@@ -69,7 +69,15 @@ if [ "$SHELL_RESTART" -eq 1 ]; then
     sleep 1
     # setsid, so the shell does not die with the SSH session or terminal that
     # asked for the restart -- which is exactly how this gets run.
-    setsid nohup nethos-session >/dev/null 2>&1 &
+    #
+    # Appended to a real file, not /dev/null: this is the only path a shell
+    # restart takes once the very first boot has passed (the Troubleshooter's
+    # "Restart the shell" goes through here too, via nethosd), so /dev/null
+    # here was throwing away stderr for most of a machine's actual uptime --
+    # confirmed on real hardware chasing a crash that left nothing in dmesg
+    # and nothing anywhere readable, only reproducible by running
+    # nethos-session by hand with output visible.
+    setsid nohup nethos-session >>"$HOME/.cache/nethos/shell-stderr.log" 2>&1 &
     exit 0
 fi
 

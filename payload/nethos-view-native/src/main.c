@@ -21,6 +21,8 @@
 #include <signal.h>
 #include <execinfo.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <time.h>
 
 #include "nethos_view.h"
 
@@ -34,13 +36,52 @@ static bool g_apphost;
  * (Wayfire's autostart, stderr goes to the journal at best) and, unlike a
  * Python traceback, a bare segfault says nothing at all about where. Kept
  * from Phase 1 on the same theory: a rewrite still short on hours of
- * real-hardware runtime will hit more before it hits none. */
+ * real-hardware runtime will hit more before it hits none.
+ *
+ * stderr used to be the only place this went, which turned out to be nowhere
+ * at all in practice: nethos-reload --shell (and the Troubleshooter's
+ * "Restart the shell", and every subsequent restart, since that is the only
+ * path that runs once the very first boot has passed) launches nethos-session
+ * as `setsid nohup nethos-session >/dev/null 2>&1 &` -- stderr is /dev/null
+ * for every one of those, which is most of a machine's uptime. A crash
+ * reported here on real hardware left nothing in dmesg (no segfault trap --
+ * whatever aborted did so cleanly enough not to fault) and nothing on stderr
+ * anyone could read, which is indistinguishable from "still trying to figure
+ * out how this happened" months later. ~/.cache/nethos/session.log is the
+ * one place nethos_session_log() already writes to regardless of how this
+ * process was launched -- raw open()/write() here rather than calling it
+ * directly, since fopen/vfprintf are not signal-safe and a handler that
+ * itself hangs or corrupts state defeats the entire point. */
 static void crash_handler(int sig) {
     void *bt[32];
     int n = backtrace(bt, 32);
-    fprintf(stderr, "\nnethos-view-native: crashed (signal %d)\n", sig);
+
+    char hdr[256];
+    time_t now = time(NULL);
+    struct tm tm_now;
+    localtime_r(&now, &tm_now);
+    int len = strftime(hdr, sizeof(hdr) - 40, "%H:%M:%S ", &tm_now);
+    len += snprintf(hdr + len, sizeof(hdr) - len,
+                     "nethos-view-native: crashed (signal %d)\n", sig);
+
+    write(2, hdr, len);
     backtrace_symbols_fd(bt, n, 2);
-    _exit(139);
+
+    const char *home = getenv("HOME");
+    if (home) {
+        char path[1088];
+        snprintf(path, sizeof(path), "%s/.cache/nethos/session.log", home);
+        int fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0644);
+        if (fd >= 0) {
+            write(fd, hdr, len);
+            backtrace_symbols_fd(bt, n, fd);
+            close(fd);
+        }
+    }
+    /* 128+signal, the shell convention -- not the hardcoded 139 (128+SIGSEGV
+     * specifically) this used to always report even for a SIGABRT (134) or
+     * any future signal added below. */
+    _exit(128 + sig);
 }
 
 /* Direct port of App.do_activate(). */
@@ -68,6 +109,9 @@ static void on_activate(GApplication *app, gpointer user_data) {
 int main(int argc, char **argv) {
     signal(SIGSEGV, crash_handler);
     signal(SIGABRT, crash_handler);
+    signal(SIGBUS, crash_handler);
+    signal(SIGFPE, crash_handler);
+    signal(SIGILL, crash_handler);
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--")) continue;
