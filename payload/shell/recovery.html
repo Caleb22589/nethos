@@ -1,0 +1,215 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>NETHOS Recovery</title>
+<link rel="stylesheet" href="/lib/nethos.css">
+<script src="/lib/nethos.js" defer></script>
+<script src="/lib/nethos-ui.js" defer></script>
+
+<!-- Shown two ways: as the only surface on screen when a
+     nethos-a-recovery/nethos-b-recovery GRUB entry booted this slot (see
+     nethos-session and payload/grub/09_nethos_ab), and as an ordinary
+     launchable window from a working desktop for repairs that do not need a
+     reboot at all -- same page, same code, because the actions are the same
+     actions either way. It cannot tell which case it is from here, and does
+     not need to: every button already states what it does before it is
+     pressed. -->
+<body class="app-shell">
+<header class="app-toolbar">
+  <h1>NETHOS Recovery</h1>
+  <span class="chip" id="daemon-chip">checking…</span>
+</header>
+
+<main id="main">
+  <section>
+    <h2>Slots</h2>
+    <p class="dim">What each A/B slot looks like right now.</p>
+    <pre class="stream" id="ab-status">—</pre>
+    <div class="row">
+      <div class="grow"></div>
+      <button class="btn" id="ab-refresh">Refresh</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Chroot</h2>
+    <div class="row">
+      <div class="grow">
+        <b>Open a repair shell</b>
+        <div class="dim">Mounts the other slot and drops you into it — reinstall a kernel, edit a config, reset a password with plain <code>passwd</code>. <code>exit</code> to leave and unmount.</div>
+      </div>
+      <button class="btn btn-primary" id="act-chroot">Open chroot</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Recovery settings</h2>
+    <div class="row">
+      <div class="grow">
+        <b>Roll back to the last good slot</b>
+        <div class="dim">Points the bootloader at whichever slot last marked itself good, then reboots.</div>
+      </div>
+      <button class="btn" data-ab="rollback" data-confirm="Roll back and reboot now?">Roll back</button>
+    </div>
+    <div class="row">
+      <div class="grow">
+        <b>Rebuild the idle slot from this one</b>
+        <div class="dim">Only do this if the slot you are running now is the healthy one — it overwrites the other slot completely.</div>
+      </div>
+      <button class="btn" data-ab="sync" data-confirm="Overwrite the idle slot with a copy of this one?">Re-sync</button>
+    </div>
+    <div class="row">
+      <div class="grow">
+        <b>Restore a snapshot</b>
+        <div class="dim" id="snap-detail">looking for snapshots…</div>
+      </div>
+      <select class="btn" id="snap-pick" disabled><option>none yet</option></select>
+      <button class="btn" id="snap-restore" disabled>Restore</button>
+    </div>
+    <div class="row">
+      <div class="grow">
+        <b>Reboot normally</b>
+        <div class="dim">Back to the desktop, on the slot the bootloader currently prefers.</div>
+      </div>
+      <button class="btn" id="act-reboot">Reboot</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>NETHBot</h2>
+    <div class="row">
+      <div class="grow">
+        <b>Ask the assistant</b>
+        <div class="dim" id="bot-detail">looking for it…</div>
+      </div>
+      <button class="btn btn-primary" id="bot-open" disabled>Open NETHBot</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Diagnostics</h2>
+    <div class="row">
+      <div class="grow"></div>
+      <button class="btn" id="doc-refresh">Refresh</button>
+    </div>
+    <pre class="stream" id="doc-log">—</pre>
+  </section>
+</main>
+
+<script>
+(async () => {
+  const api = (p, b) => fetch(p, b ? {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(b),
+  } : undefined).then((r) => r.json()).catch(() => ({ error: "unreachable" }));
+
+  async function refreshDaemon() {
+    const d = await api("/api/diagnostics");
+    const chip = document.getElementById("daemon-chip");
+    if (d.error) { chip.textContent = "daemon unreachable"; chip.className = "chip warn"; return; }
+    chip.textContent = "daemon up"; chip.className = "chip on";
+  }
+
+  async function refreshAb() {
+    const r = await api("/api/recovery/status");
+    document.getElementById("ab-status").textContent = r.status || "no status available";
+  }
+  document.getElementById("ab-refresh").addEventListener("click", refreshAb);
+
+  document.getElementById("act-chroot").addEventListener("click", async (e) => {
+    const b = e.target;
+    b.disabled = true; const was = b.textContent; b.textContent = "Opening…";
+    const r = await api("/api/recovery/chroot", {});
+    if (r.error) nethos.system.notify("Chroot: " + r.error, "warn");
+    setTimeout(() => { b.textContent = was; b.disabled = false; }, 2000);
+  });
+
+  // Each of these reboots the machine or overwrites a whole slot, so every
+  // one confirms first -- unlike the troubleshooter's "reload" action, there
+  // is no undo-by-waiting-a-second here.
+  for (const b of document.querySelectorAll("[data-ab]")) {
+    b.addEventListener("click", async () => {
+      if (!(await ui.confirm(b.dataset.confirm))) return;
+      b.disabled = true; const was = b.textContent; b.textContent = "Working…";
+      const r = await api("/api/recovery/" + b.dataset.ab, {});
+      if (r.error) {
+        nethos.system.notify("Recovery: " + r.error, "warn");
+        b.textContent = was; b.disabled = false;
+      } else {
+        b.textContent = "Done";
+      }
+    });
+  }
+
+  document.getElementById("act-reboot").addEventListener("click", async () => {
+    if (!(await ui.confirm("Reboot now?"))) return;
+    await api("/api/launch", { builtin: "reboot" });
+  });
+
+  async function refreshSnapshots() {
+    const r = await api("/api/snapshots");
+    const pick = document.getElementById("snap-pick");
+    const detail = document.getElementById("snap-detail");
+    const btn = document.getElementById("snap-restore");
+    const snaps = r.snapshots || [];
+    if (!snaps.length) {
+      detail.textContent = "No snapshots yet — nethos-snapshot create makes one.";
+      return;
+    }
+    detail.textContent = snaps.length + " available, newest first.";
+    pick.innerHTML = "";
+    for (const s of snaps) {
+      const opt = document.createElement("option");
+      opt.value = s.id;
+      opt.textContent = (s.label || s.id) + " — " + (s.date || s.id);
+      pick.appendChild(opt);
+    }
+    pick.disabled = false; btn.disabled = false;
+  }
+  document.getElementById("snap-restore").addEventListener("click", async (e) => {
+    const id = document.getElementById("snap-pick").value;
+    if (!id) return;
+    if (!(await ui.confirm("Restore snapshot " + id + "? The current state is snapshotted first."))) return;
+    const b = e.target;
+    b.disabled = true; const was = b.textContent; b.textContent = "Restoring…";
+    const r = await api("/api/snapshots/restore", { id });
+    if (r.error) nethos.system.notify("Restore: " + r.error, "warn");
+    b.textContent = was; b.disabled = false;
+  });
+
+  const botBtn = document.getElementById("bot-open");
+  const botDetail = document.getElementById("bot-detail");
+  async function refreshBot() {
+    const s = await api("/api/nethbot");
+    if (s.error || !s.installed) {
+      botDetail.textContent = "Not installed.";
+      botBtn.disabled = true;
+      return;
+    }
+    botDetail.textContent = s.running
+      ? "Running on port " + s.port
+      : "Installed. Opening it will start it.";
+    botBtn.disabled = false;
+  }
+  botBtn.addEventListener("click", async () => {
+    botBtn.disabled = true; const was = botBtn.textContent; botBtn.textContent = "Starting…";
+    const r = await api("/api/nethbot/open", {});
+    if (r.error) nethos.system.notify("NETHBot: " + r.error, "warn");
+    botBtn.textContent = was;
+    refreshBot();
+  });
+
+  async function refreshDoctor() {
+    const r = await api("/api/recovery/doctor");
+    document.getElementById("doc-log").textContent = r.doctor || "nothing to show";
+  }
+  document.getElementById("doc-refresh").addEventListener("click", refreshDoctor);
+
+  await refreshDaemon();
+  await refreshAb();
+  await refreshSnapshots();
+  await refreshBot();
+  await refreshDoctor();
+  setInterval(refreshDaemon, 10000);
+})();
+</script>
+</body>

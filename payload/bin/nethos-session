@@ -16,6 +16,14 @@ API="http://127.0.0.1:7777"
 SESSION_LOG="$HOME/.cache/nethos/session.log"
 mkdir -p "$(dirname "$SESSION_LOG")" 2>/dev/null || true
 
+# nethos.recovery=1 on the kernel cmdline -- set only by the
+# nethos-a-recovery/nethos-b-recovery GRUB entries (payload/grub/09_nethos_ab)
+# -- means this boot is a repair, not a desktop session. Everything above
+# this point in the file (autologin, Wayfire, nethosd) is identical either
+# way; only which surfaces get shown, right at the bottom, differs.
+RECOVERY=0
+grep -q 'nethos\.recovery=1' /proc/cmdline 2>/dev/null && RECOVERY=1
+
 # Hand the compositor's environment to the user service manager, otherwise
 # nethosd starts without WAYLAND_DISPLAY and cannot talk to the compositor.
 systemctl --user import-environment \
@@ -244,7 +252,7 @@ nethos_first_run() {
     curl -sf -X POST -H 'Content-Type: application/json' \
          -d '{"id":"welcome"}' "$API/api/launch" >/dev/null 2>&1 || true
 }
-nethos_first_run &
+[ "$RECOVERY" = "1" ] || nethos_first_run &
 
 # No separate app-window host to warm here any more: the shell process
 # started below (exec nethos-view ...) serves that role itself now, so app
@@ -288,6 +296,20 @@ if [ "${NETHOS_VIEW_IMPL:-native}" != "python" ] && [ -n "${WAYFIRE_SOCKET:-}" ]
         && command -v nethos-view-native >/dev/null 2>&1; then
     NETHOS_VIEW_BIN=nethos-view-native
 fi
+
+# Recovery mode shows one page and nothing else -- no panel, no dock, no
+# launcher, because none of them mean anything when the thing they would
+# launch is the reason this boot happened. role=window rather than a layer
+# surface: a normal fullscreen application window is the right shape for
+# something the user is meant to look straight at and interact with, and it
+# is what firedecor and Wayfire's own window handling already do correctly.
+if [ "$RECOVERY" = "1" ]; then
+    printf '%s recovery: showing recovery.html instead of the desktop\n' \
+        "$(date +%H:%M:%S)" >> "$SESSION_LOG" 2>/dev/null || true
+    exec "$NETHOS_VIEW_BIN" \
+        "url=$API/recovery.html,role=window,name=recovery,title=NETHOS Recovery,transparent=0"
+fi
+
 exec "$NETHOS_VIEW_BIN" \
     "url=$API/splash.html,role=overlay,name=splash,exclusive=0" \
     "url=$API/desktop.html,role=widget,name=desktop,layer=bottom,anchor=top,exclusive=-1" \

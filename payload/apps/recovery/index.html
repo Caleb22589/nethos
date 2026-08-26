@@ -1,0 +1,11 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Recovery</title>
+<!-- launch_web_app always serves an app at /apps/<id>/<entry> (nethosd.py),
+     so this file has to exist -- but the real page is payload/shell/
+     recovery.html, the same one the recovery boot mode shows full-screen.
+     Redirecting rather than copying it keeps there being exactly one place
+     that page's content lives. -->
+<meta http-equiv="refresh" content="0; url=/recovery.html">
+<script>location.replace("/recovery.html");</script>
+<body></body>

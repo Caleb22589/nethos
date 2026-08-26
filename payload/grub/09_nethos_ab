@@ -87,10 +87,31 @@ else
 
 if [ -z "\$nethos_slot" ]; then set nethos_slot=A; fi
 if [ -z "\$nethos_try" ];  then set nethos_try=0; fi
+set recovery_boot=0
 
 # Out of attempts: the slot we were trying never marked itself good.
 if [ "\$nethos_try" = "0" -a -n "\$nethos_last_good" ]; then
     set nethos_slot="\$nethos_last_good"
+
+    # nethos_try above only counts attempts of a slot being switched *to*.
+    # Once it runs out and this forces nethos_slot back to nethos_last_good,
+    # nothing was ever counting attempts of the fallback slot itself -- so a
+    # fallback slot that also will not come up got retried forever with no
+    # further decision ever made. nethos_try2 exists only for that case: it
+    # starts counting the first time this branch is taken, and mark-good
+    # clears it on every successful boot (see nethos-ab) -- a healthy machine
+    # never accumulates it, only one stuck here boot after boot does.
+    if [ -z "\$nethos_try2" ]; then set nethos_try2=3; fi
+    if [ "\$nethos_try2" = "0" ]; then
+        # The fallback slot has now failed three times running. Retrying it a
+        # fourth time is not recovery, it is the same loop with extra steps --
+        # go to the recovery environment on this same slot instead, since it
+        # is the one most likely to actually still be intact.
+        set recovery_boot=1
+    fi
+    if [ "\$nethos_try2" = "3" ]; then set nethos_try2=2; save_env nethos_try2; fi
+    if [ "\$nethos_try2" = "2" ]; then set nethos_try2=1; save_env nethos_try2; fi
+    if [ "\$nethos_try2" = "1" ]; then set nethos_try2=0; save_env nethos_try2; fi
 fi
 
 # Spend an attempt before booting, not after. A system that never gets far
@@ -99,7 +120,11 @@ if [ "\$nethos_try" = "3" ]; then set nethos_try=2; save_env nethos_try; fi
 if [ "\$nethos_try" = "2" ]; then set nethos_try=1; save_env nethos_try; fi
 if [ "\$nethos_try" = "1" ]; then set nethos_try=0; save_env nethos_try; fi
 
-if [ "\$nethos_slot" = "B" ]; then set default=nethos-b; else set default=nethos-a; fi
+if [ "\$recovery_boot" = "1" ]; then
+    if [ "\$nethos_slot" = "B" ]; then set default=nethos-b-recovery; else set default=nethos-a-recovery; fi
+else
+    if [ "\$nethos_slot" = "B" ]; then set default=nethos-b; else set default=nethos-a; fi
+fi
 fi
 set timeout_style=hidden
 set timeout=0
@@ -120,6 +145,31 @@ cat <<EOF
 menuentry 'NETHOS' --id nethos-b {
     search --no-floppy --label --set=root NETHOSEFI
     linux  /vmlinuz-$KVER_B root=LABEL=NETHOS_B rw quiet loglevel=3 $NETHOS_CMDLINE
+EOF
+[ -e "/boot/initrd.img-$KVER_B" ] && echo "    initrd /initrd.img-$KVER_B"
+cat <<'EOF'
+}
+EOF
+
+# Recovery: same kernel, same slot, same root as the entry right above --
+# nethos.recovery=1 is the only difference, and nethos-session (not GRUB or
+# the kernel) is what actually reads it and shows the recovery page instead
+# of the desktop. Named plainly rather than sharing 'NETHOS' with nethos-a/b:
+# which slot boots is an implementation detail nobody needs to see, but
+# whether this is a repair environment or the desktop is not.
+cat <<EOF
+menuentry 'NETHOS Recovery (slot A)' --id nethos-a-recovery {
+    search --no-floppy --label --set=root NETHOSEFI
+    linux  /vmlinuz-$KVER_A root=LABEL=NETHOS_A rw quiet loglevel=3 $NETHOS_CMDLINE nethos.recovery=1
+EOF
+[ -e "/boot/initrd.img-$KVER_A" ] && echo "    initrd /initrd.img-$KVER_A"
+cat <<'EOF'
+}
+EOF
+cat <<EOF
+menuentry 'NETHOS Recovery (slot B)' --id nethos-b-recovery {
+    search --no-floppy --label --set=root NETHOSEFI
+    linux  /vmlinuz-$KVER_B root=LABEL=NETHOS_B rw quiet loglevel=3 $NETHOS_CMDLINE nethos.recovery=1
 EOF
 [ -e "/boot/initrd.img-$KVER_B" ] && echo "    initrd /initrd.img-$KVER_B"
 cat <<'EOF'

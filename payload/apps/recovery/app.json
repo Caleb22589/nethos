@@ -1,0 +1,12 @@
+{
+  "id": "recovery",
+  "name": "Recovery",
+  "description": "Chroot into the other slot, roll back, or ask NETHBot — without rebooting",
+  "icon": "RC",
+  "version": "1.0.0",
+  "categories": ["NETHOS", "System"],
+  "entry": "index.html",
+  "permissions": ["system"],
+  "mode": "window",
+  "window": { "width": 880, "height": 720 }
+}

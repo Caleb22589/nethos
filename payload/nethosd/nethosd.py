@@ -2611,6 +2611,26 @@ class Handler(BaseHTTPRequestHandler):
                                    "port": NETHBOT_PORT,
                                    "searched": NETHBOT_DIRS})
 
+        if route == "/api/recovery/status":
+            # Read-only, so a GET like /api/diagnostics rather than an
+            # action under do_POST -- recovery.html polls this to show what
+            # nethos-ab status already knows without a person opening a
+            # chroot terminal just to check.
+            try:
+                out = subprocess.run(["nethos-ab", "status"], capture_output=True,
+                                     text=True, timeout=10).stdout
+            except (OSError, subprocess.SubprocessError):
+                out = ""
+            return self.send_json({"status": out})
+
+        if route == "/api/recovery/doctor":
+            try:
+                out = subprocess.run(["nethos-doctor"], capture_output=True,
+                                     text=True, timeout=10).stdout
+            except (OSError, subprocess.SubprocessError):
+                out = ""
+            return self.send_json({"doctor": out})
+
         if route == "/api/diagnostics":
             # What a person would otherwise have to open a terminal and read
             # four files to learn.
@@ -2918,6 +2938,31 @@ class Handler(BaseHTTPRequestHandler):
                 spawn(["nethos-reload", "--daemon"])
                 return self.send_json({"ok": True, "did": "restarting nethosd"})
             return self.send_json({"error": "unknown action"}, 400)
+
+        if route == "/api/recovery/chroot":
+            # A terminal already inside the chroot, not chroot run directly
+            # from here -- a shell handed to nethos-chroot needs a real tty
+            # to be useful at all, and this process has none to give it.
+            spawn(["foot", "-e", "sudo", "-n", "nethos-chroot"])
+            return self.send_json({"ok": True})
+
+        if route == "/api/recovery/reboot-recovery":
+            # One-shot into the recovery entry for *this* slot -- see
+            # nethos-ab recovery. The reboot itself is a second spawn rather
+            # than chained with && in one command: if the grub-editenv call
+            # fails, the machine should not reboot into whatever GRUB
+            # defaults to next instead of failing loudly here.
+            spawn(["sudo", "-n", "nethos-ab", "recovery"])
+            spawn(["systemctl", "reboot"])
+            return self.send_json({"ok": True})
+
+        if route == "/api/recovery/rollback":
+            spawn(["sudo", "-n", "nethos-ab", "rollback"])
+            return self.send_json({"ok": True})
+
+        if route == "/api/recovery/sync":
+            spawn(["sudo", "-n", "nethos-ab", "sync"])
+            return self.send_json({"ok": True})
 
         if route == "/api/settings":
             if data.get("reset"):

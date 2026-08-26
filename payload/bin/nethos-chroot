@@ -1,0 +1,74 @@
+#!/bin/bash
+# Get inside the slot you are not running, to fix it.
+#
+#   nethos-chroot          the idle slot
+#   nethos-chroot A|B      a specific one
+#
+# A/B gives an update somewhere safe to fail (docs/ABUPDATE.md), but the same
+# split is also the simplest way to repair a slot that will not boot: mount
+# it, chroot in, fix whatever is wrong (reinstall a kernel, edit a config,
+# reset a password with plain `passwd`), exit, reboot. Nothing here is
+# recovery-mode-specific -- it works exactly the same run by hand from a
+# working desktop, which is the point: recovery.html's chroot button is this
+# script, not a separate mechanism.
+set -euo pipefail
+
+# shellcheck source=nethos-slots.sh
+. "$(dirname "$0")/nethos-slots.sh" 2>/dev/null || . /usr/bin/nethos-slots.sh
+
+say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
+die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+[ "$(id -u)" -eq 0 ] || die "needs root: sudo nethos-chroot"
+[ -f "$CONF" ] || die "$CONF is missing -- this system has no A/B layout"
+
+target="${1:-$(other_slot)}"
+target=$(echo "$target" | tr 'a-z' 'A-Z')
+case "$target" in
+    A|B) ;;
+    *) die "slot must be A or B, not '$target'" ;;
+esac
+
+dev=$(slot_dev "$target")
+real=$(readlink -f "$dev" 2>/dev/null || echo "$dev")
+[ -b "$real" ] || die "slot $target is not a block device: $dev"
+
+MNT=$(mktemp -d /run/nethos-chroot.XXXXXX)
+mounted=()
+
+cleanup() {
+    # Unwind in the exact reverse order things were mounted -- unmounting
+    # the real root before /dev/proc/sys/run come off it would just fail,
+    # and leave a stale mount nothing else here would ever clean up.
+    local i
+    for (( i=${#mounted[@]}-1; i>=0; i-- )); do
+        umount -R "${mounted[$i]}" 2>/dev/null || umount -l "${mounted[$i]}" 2>/dev/null || true
+    done
+    rmdir "$MNT" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+say "Mounting slot $target ($dev) at $MNT"
+mount "$dev" "$MNT" || die "cannot mount $dev"
+mounted+=("$MNT")
+
+if [ -f "$MNT/.nethos-slot-incomplete" ]; then
+    die "slot $target is INCOMPLETE -- half-written by 'nethos-ab sync', do not chroot into it. Run 'nethos-ab sync' again to finish it, or pass the other slot."
+fi
+[ -x "$MNT/sbin/init" ] || [ -L "$MNT/sbin/init" ] || die "slot $target has no /sbin/init -- not a complete system"
+
+# The shared partitions, so the repair can see the real kernels on the ESP
+# and the real user data in /home -- without these a chroot can fix
+# everything except the two things most repairs actually need.
+BOOT_DEV=$(findmnt -no SOURCE /boot 2>/dev/null || true)
+HOME_DEV=$(findmnt -no SOURCE /home 2>/dev/null || true)
+[ -n "$BOOT_DEV" ] && { mount "$BOOT_DEV" "$MNT/boot"; mounted+=("$MNT/boot"); }
+[ -n "$HOME_DEV" ] && { mount "$HOME_DEV" "$MNT/home"; mounted+=("$MNT/home"); }
+
+for fs in dev proc sys run; do
+    mount --rbind "/$fs" "$MNT/$fs"
+    mounted+=("$MNT/$fs")
+done
+
+say "Chroot into slot $target. 'exit' to leave and unmount."
+chroot "$MNT" /bin/bash -l || true

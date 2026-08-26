@@ -185,6 +185,28 @@ if [ -f "$PAYLOAD/nethos/cmdline" ] && [ ! -f /etc/nethos/cmdline ]; then
     install -m 0644 "$PAYLOAD"/nethos/cmdline /etc/nethos/cmdline
 fi
 
+# GRUB itself, stripped to what an already-hidden menu still needs.
+#
+# 09_nethos_ab already sets timeout_style=hidden/timeout=0 for a machine
+# with an A/B layout, but only inside its own generated fragment -- a plain
+# `update-grub` run without it (a single-slot install, or before the A/B
+# fragment above is installed) falls through to whatever /etc/default/grub
+# says, which on stock Debian is a visible menu and a several-second wait.
+# Setting the same values there keeps both paths hidden and instant.
+# GRUB_DISABLE_OS_PROBER also speeds up every future `update-grub`: this
+# machine has Ubuntu/Windows/Proxmox entries in the firmware's own boot
+# menu already, reachable there regardless of whether GRUB lists them too.
+#
+# Idempotent and additive only, the same as the cmdline file above -- a key
+# already set (by this installer running before, or by a person) is left
+# alone rather than fought over on every install.
+if [ -f /etc/default/grub ]; then
+    for kv in 'GRUB_TIMEOUT_STYLE=hidden' 'GRUB_TIMEOUT=0' 'GRUB_DISABLE_OS_PROBER=true'; do
+        key=${kv%%=*}
+        grep -q "^${key}=" /etc/default/grub || echo "$kv" >> /etc/default/grub
+    done
+fi
+
 # A/B: the bootloader entries and the counter, installed only where the disk
 # actually has two slots. On a single-slot install these would generate menu
 # entries for a partition that does not exist.

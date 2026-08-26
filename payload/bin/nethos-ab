@@ -5,6 +5,7 @@
 #   nethos-ab sync            build the idle slot from the running one
 #   nethos-ab switch          boot the idle slot next time, with a counter
 #   nethos-ab rollback        point back at the slot that works
+#   nethos-ab recovery        boot into recovery mode once, then normal again
 #   nethos-ab mark-good       this boot worked (systemd calls this)
 #
 # The point is that an update never touches the running system. It fills the
@@ -16,13 +17,14 @@
 # slot, so nothing here can lose them.
 set -euo pipefail
 
-CONF=/etc/nethos/slots.conf
-SLOT_FILE=/etc/nethos/slot
 GRUBENV=/boot/grub/grubenv
 TRIES=3
 
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# shellcheck source=nethos-slots.sh
+. "$(dirname "$0")/nethos-slots.sh" 2>/dev/null || . /usr/bin/nethos-slots.sh
 
 [ -f "$CONF" ] || die "$CONF is missing -- this system was not installed with an A/B layout.
   nethos-install --layout ab lays the disk out; it cannot be added afterwards
@@ -31,19 +33,6 @@ die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 # shellcheck disable=SC1090
 layout=$(sed -n 's/^layout=//p' "$CONF")
 [ "$layout" = ab ] || die "layout is '$layout', not ab"
-
-slot_dev() {    # A|B -> device
-    local spec
-    spec=$(sed -n "s/^slot_$(echo "$1" | tr 'A-Z' 'a-z')=//p" "$CONF")
-    case "$spec" in
-        LABEL=*) echo "/dev/disk/by-label/${spec#LABEL=}" ;;
-        UUID=*)  echo "/dev/disk/by-uuid/${spec#UUID=}" ;;
-        *)       echo "$spec" ;;
-    esac
-}
-
-active_slot() { cat "$SLOT_FILE" 2>/dev/null || echo A; }
-other_slot()  { [ "$(active_slot)" = A ] && echo B || echo A; }
 
 grubenv_get() { grub-editenv "$GRUBENV" list 2>/dev/null | sed -n "s/^$1=//p"; }
 
@@ -152,6 +141,19 @@ cmd_switch() {
     say "Next boot: slot $oth ($TRIES attempts, then back to $(active_slot))"
 }
 
+cmd_recovery() {
+    [ "$(id -u)" -eq 0 ] || die "needs root"
+    # One-shot, the same way `nethos-kernel rt` boots the RT kernel once:
+    # next_entry is read by 09_nethos_ab's generated grub.cfg and cleared as
+    # it is read, so the boot after this one is normal again regardless of
+    # what happened. The current slot, not the other one -- recovery repairs
+    # the system in place (chroot reaches the other slot when that is what
+    # is actually broken); it does not mean "try booting the other slot".
+    local slot; slot=$(active_slot)
+    grub-editenv "$GRUBENV" set next_entry="nethos-$(echo "$slot" | tr 'A-Z' 'a-z')-recovery"
+    say "Next boot: recovery ($slot). Caller still has to reboot."
+}
+
 cmd_rollback() {
     [ "$(id -u)" -eq 0 ] || die "needs root"
     local good
@@ -169,6 +171,12 @@ cmd_mark_good() {
     grub-editenv "$GRUBENV" set nethos_try=0
     grub-editenv "$GRUBENV" set nethos_last_good="$(active_slot)"
     grub-editenv "$GRUBENV" set nethos_slot="$(active_slot)"
+    # nethos_try2 only exists to count failures of the fallback slot itself
+    # (see 09_nethos_ab) -- a boot that reached here proves the slot it is
+    # running on works, fallback or not, so that count no longer applies.
+    # Left in place it would eventually trip a perfectly healthy machine into
+    # recovery the next time nethos_try alone happened to hit 0 again.
+    grub-editenv "$GRUBENV" unset nethos_try2 2>/dev/null || true
 }
 
 case "${1:-status}" in
@@ -176,7 +184,8 @@ case "${1:-status}" in
     sync)       cmd_sync ;;
     switch)     cmd_switch ;;
     rollback)   cmd_rollback ;;
+    recovery)   cmd_recovery ;;
     mark-good)  cmd_mark_good ;;
-    -h|--help)  sed -n '2,16p' "$0" | sed 's/^# \?//' ;;
+    -h|--help)  sed -n '2,17p' "$0" | sed 's/^# \?//' ;;
     *)          die "unknown command: $1" ;;
 esac
