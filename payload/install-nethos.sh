@@ -47,7 +47,12 @@ if [ "$DO_PACKAGES" -eq 1 ]; then
 
     log "Installing the NETHOS package set"
     # swaynag ships inside the sway package; no separate dependency needed.
+    # sudo is not in Arch Linux ARM's base rootfs (unlike the x86_64 Arch
+    # cloud image, which ships it already) -- without it /etc/sudoers does
+    # not exist yet and the sed below dies under set -e.
     pacman -S --noconfirm --needed \
+        sudo \
+        openssh \
         hyprland \
         xdg-desktop-portal-hyprland \
         sway swaybg swayidle swaylock \

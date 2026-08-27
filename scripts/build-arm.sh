@@ -179,6 +179,12 @@ mount --bind /dev  "$ROOTFS/dev"
 mount --bind /dev/pts "$ROOTFS/dev/pts"
 mount -t proc  proc  "$ROOTFS/proc"
 mount -t sysfs sys   "$ROOTFS/sys"
+# The Arch Linux ARM rootfs ships /etc/resolv.conf as a symlink (systemd-
+# resolved style). Before the chroot exists, resolving it walks straight
+# back out to the *host's* real resolv.conf -- cp then sees source and
+# destination as the identical file and refuses. Remove the symlink first
+# (rm does not follow it) so cp always writes a fresh regular file.
+rm -f "$ROOTFS/etc/resolv.conf"
 cp /etc/resolv.conf "$ROOTFS/etc/resolv.conf"
 
 mkdir -p "$ROOTFS/opt/nethos-payload"
@@ -189,6 +195,7 @@ chmod +x "$ROOTFS/opt/nethos-payload/install-nethos.sh" \
 
 # fstab by UUID so the disk can move between machines and controllers.
 ROOT_UUID=$(blkid -s UUID -o value "${TARGET}2")
+ROOT_PARTUUID=$(blkid -s PARTUUID -o value "${TARGET}2")
 ESP_UUID=$(blkid -s UUID -o value "${TARGET}1")
 cat > "$ROOTFS/etc/fstab" <<FSTAB
 UUID=$ROOT_UUID  /      ext4  rw,relatime  0 1
@@ -221,20 +228,51 @@ mkinitcpio -P
 
 grub-install --target=arm64-efi --efi-directory=/boot \
              --bootloader-id=NETHOS --removable --no-nvram
-sed -i 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=1/' /etc/default/grub || true
-sed -i 's/^GRUB_DISTRIBUTOR=.*/GRUB_DISTRIBUTOR="NETHOS"/' /etc/default/grub || true
-# A serial console makes `run.sh --console` useful on ARM too.
-sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT="quiet console=tty0 console=ttyAMA0,115200"|' \
-    /etc/default/grub || true
-grub-mkconfig -o /boot/grub/grub.cfg
+
+# grub-mkconfig's 10_linux script pairs a kernel with its initramfs by
+# matching filename patterns (vmlinuz-X <-> initramfs-X.img). Arch Linux
+# ARM's linux-aarch64 package ships a bare "Image" with no version suffix,
+# so the pairing fails silently and the generated grub.cfg has no `initrd`
+# line at all -- confirmed by inspecting it directly. The kernel then boots
+# with no initramfs and therefore no udev, so it cannot resolve ANY root=
+# identifier that needs a filesystem driver or device scan -- including
+# UUID=, which was tried first and produced "VFS: Unable to mount root fs on
+# unknown-block(0,0)" even though the UUID itself was correct (verified by
+# reading the ext4 superblock straight off the built image). PARTUUID is
+# different: it comes from the GPT table, which the kernel parses natively
+# at boot with no driver or initramfs involved -- confirmed, it is exactly
+# the identifier the kernel's own "available partitions" panic listing
+# showed. So: skip grub-mkconfig's autodetection entirely and write a grub.cfg
+# by hand, naming the exact two files this build produces.
+[ -n "${ROOT_PARTUUID:-}" ] || { echo "FATAL: ROOT_PARTUUID not set"; exit 1; }
+[ -f /boot/Image ] || { echo "FATAL: no /boot/Image"; exit 1; }
+[ -f /boot/initramfs-linux.img ] || { echo "FATAL: no /boot/initramfs-linux.img"; exit 1; }
+
+mkdir -p /boot/grub
+cat > /boot/grub/grub.cfg <<GRUBCFG
+set timeout=1
+set default=0
+
+menuentry 'NETHOS Linux' {
+	linux /Image root=PARTUUID=${ROOT_PARTUUID} rw quiet console=tty0 console=ttyAMA0,115200
+	initrd /initramfs-linux.img
+}
+GRUBCFG
+
+grep -q "root=PARTUUID=${ROOT_PARTUUID}" /boot/grub/grub.cfg && \
+grep -q '^\s*initrd /initramfs-linux.img' /boot/grub/grub.cfg || \
+    { echo "FATAL: hand-written grub.cfg is missing the linux or initrd line -- would not boot"; exit 1; }
 
 systemctl enable NetworkManager 2>/dev/null || true
+# run.sh forwards host port 2222 -> guest 22 for exactly this: SSH in rather
+# than drive the VM through the serial console or the GUI window.
+systemctl enable sshd 2>/dev/null || true
 echo 'root:nethos' | chpasswd
 echo "--- chroot finished ---"
 INSIDE
 
 chmod +x "$ROOTFS/root/inside.sh"
-chroot "$ROOTFS" /root/inside.sh
+ROOT_UUID="$ROOT_UUID" ROOT_PARTUUID="$ROOT_PARTUUID" chroot "$ROOTFS" /root/inside.sh
 rm -f "$ROOTFS/root/inside.sh"
 
 sync
@@ -282,6 +320,16 @@ say "Seed: $(du -h "$SEED" | cut -f1)"
 say "Running the builder VM (accel=$ACCEL). This takes a while: it installs a"
 say "full Arch Linux ARM plus the NETHOS package set."
 
+CONSOLE_LOG="$BUILD/build-arm-console.log"
+rm -f "$CONSOLE_LOG"
+
+# The guest's own bootstrap runs under `set -e` and can die partway (a failed
+# command, or the VM being killed from outside) without ever reaching
+# `poweroff`. Either way qemu-system-aarch64 still exits and this script would
+# carry on to declare success -- it did exactly that once already, on a build
+# that died at "preparing the chroot" before pacman or the chroot install ever
+# ran. So the console output is captured and checked for the bootstrap's own
+# completion line before anything downstream is trusted.
 qemu-system-aarch64 \
     -name nethos-arm-builder \
     -machine virt,accel="$ACCEL",highmem=on \
@@ -298,9 +346,13 @@ qemu-system-aarch64 \
     -device virtio-net-pci,netdev=net0 \
     -netdev user,id=net0 \
     -device virtio-rng-pci \
-    -nographic
+    -nographic 2>&1 | tee "$CONSOLE_LOG"
 
 [ "$KEEP_BUILDER" -eq 1 ] || rm -f "$BUILDER_WORK"
+
+grep -q "=== NETHOS ARM build finished" "$CONSOLE_LOG" || \
+    die "the guest build did not finish -- see $CONSOLE_LOG (last lines below)
+$(tail -20 "$CONSOLE_LOG")"
 
 say "Built: $DISK"
 echo

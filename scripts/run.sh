@@ -207,7 +207,7 @@ Build it with:  scripts/build-arm.sh"
         -device virtio-rng-pci \
         "${NET[@]}" \
         -serial mon:stdio \
-        "${QMP[@]}" \
+        ${QMP[@]+"${QMP[@]}"} \
         "${DISPLAY_ARGS[@]}"
 fi
 
@@ -290,7 +290,7 @@ Add it to the search list in $0"
         -usb -device usb-tablet -device usb-kbd \
         "${NET[@]}" \
         -serial mon:stdio \
-        "${QMP[@]}" \
+        ${QMP[@]+"${QMP[@]}"} \
         "${DISPLAY_ARGS[@]}" \
         -boot order=c
 fi
