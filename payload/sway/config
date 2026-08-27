@@ -87,6 +87,19 @@ bindsym $mod+Ctrl+Shift+r exec nethos-reload --daemon
 bindsym $mod+Shift+e exec swaynag -t warning -m 'Log out of NETHOS?' \
     -B 'Log out' 'swaymsg exit'
 
+# The visual Alt+Tab switcher. nethosd owns whether it is already open (see
+# nethos-switcher and switcher_open() in nethosd.py) -- every press here just
+# says "next" or "prev" and lets it decide whether that opens or steps.
+# Escape while it is open is handled by the overlay surface itself, once it
+# holds the keyboard, not by a global bindsym: Escape is already meaningful
+# everywhere else (closing menus, dialogs) and a global grab here would steal
+# it from all of them, open or not.
+bindsym Mod1+Tab exec nethos-switcher next
+bindsym Mod1+Shift+Tab exec nethos-switcher prev
+# --release: fires when Alt itself is let go, which is what commits the
+# selection -- the same physical gesture as every other Alt+Tab.
+bindsym --release Mod1 exec nethos-switcher activate
+
 floating_modifier $mod normal
 
 # Windows float, and snap where you put them.

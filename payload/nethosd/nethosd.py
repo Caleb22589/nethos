@@ -2332,6 +2332,83 @@ def menu_toggle(force=None):
     return want
 
 
+# --------------------------------------------------------------------------
+# window switcher (Alt+Tab)
+# --------------------------------------------------------------------------
+# The compositor owns the keybinding (Alt+Tab / Alt+Shift+Tab / release-Alt --
+# see sway/config and hypr/hyprland.conf) and has no notion of "already open";
+# it fires the same "open" call on every Tab press whether or not the switcher
+# is already on screen. So this is the only place that knows whether a press
+# should open the switcher or step it, which is also why the window list is
+# snapshotted once on open rather than re-read on every step -- windows
+# closing or reordering mid-cycle would otherwise shift what Tab lands on.
+
+SWITCHER_STATE = {"open": False, "windows": [], "selected": 0}
+
+
+def switcher_windows():
+    """Real windows, focused one first.
+
+    Not full most-recently-used order -- nethosd does not keep a focus
+    history -- but putting the focused window first guarantees the first Tab
+    press already lands on a *different* window, which is the one thing that
+    has to be true for this to feel like Alt+Tab at all.
+    """
+    windows = list_windows()
+    windows.sort(key=lambda w: not w.get("focused"))
+    return windows
+
+
+def switcher_open(direction=1):
+    """Open the switcher, or step it if a press is already open.
+
+    Returns the published state dict, or None if there is nothing to switch
+    between (zero or one window).
+    """
+    if not SWITCHER_STATE["open"]:
+        windows = switcher_windows()
+        if len(windows) < 2:
+            return None
+        SWITCHER_STATE["open"] = True
+        SWITCHER_STATE["windows"] = windows
+        SWITCHER_STATE["selected"] = direction % len(windows)
+    else:
+        windows = SWITCHER_STATE["windows"]
+        SWITCHER_STATE["selected"] = (SWITCHER_STATE["selected"] + direction) % len(windows)
+    return switcher_publish()
+
+
+def switcher_select(index):
+    windows = SWITCHER_STATE["windows"]
+    if not SWITCHER_STATE["open"] or not windows:
+        return None
+    SWITCHER_STATE["selected"] = index % len(windows)
+    return switcher_publish()
+
+
+def switcher_publish():
+    data = {"open": True, "windows": SWITCHER_STATE["windows"],
+            "selected": SWITCHER_STATE["selected"]}
+    EVENTS.publish("switcher", data)
+    return data
+
+
+def switcher_close(activate, index=None):
+    """Close the switcher. `activate` focuses the selected window first --
+    false is a plain cancel (Escape), true is release-Alt, Enter, or a click.
+    `index` overrides which window that is, so a click on a card can choose
+    and confirm in one call rather than a select-then-close race between two
+    requests."""
+    if not SWITCHER_STATE["open"]:
+        return
+    windows = SWITCHER_STATE["windows"]
+    selected = SWITCHER_STATE["selected"] if index is None else index % max(1, len(windows))
+    SWITCHER_STATE["open"] = False
+    SWITCHER_STATE["windows"] = []
+    if activate and windows:
+        window_action("focus", windows[selected]["id"])
+    EVENTS.publish("switcher", {"open": False})
+
 
 # --------------------------------------------------------------------------
 # NETHBot — the local assistant, when it is installed
@@ -2974,6 +3051,10 @@ class Handler(BaseHTTPRequestHandler):
             })
         if route == "/api/menu":
             return self.send_json({"open": MENU_STATE["open"]})
+        if route == "/api/switcher":
+            return self.send_json({"open": SWITCHER_STATE["open"],
+                                   "windows": SWITCHER_STATE["windows"],
+                                   "selected": SWITCHER_STATE["selected"]})
         if route == "/api/version":
             return self.send_json({"generation": EVENTS.generation,
                                    "version": read_first("/etc/nethos-release") or "unknown"})
@@ -3407,6 +3488,23 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/menu":
             return self.send_json({"ok": True, "open": menu_toggle(data.get("open"))})
 
+        if route == "/api/switcher":
+            action = data.get("action")
+            if action == "open":
+                direction = 1 if data.get("dir", 1) >= 0 else -1
+                state = switcher_open(direction)
+                return self.send_json({"ok": state is not None,
+                                       "open": SWITCHER_STATE["open"]})
+            if action == "select":
+                state = switcher_select(int(data.get("index", 0)))
+                return self.send_json({"ok": state is not None})
+            if action == "close":
+                index = data.get("index")
+                switcher_close(bool(data.get("activate")),
+                               int(index) if index is not None else None)
+                return self.send_json({"ok": True})
+            return self.send_json({"error": "bad action"}, 400)
+
         if route == "/api/tray/activate":
             ok = tray_activate(str(data.get("id", "")), bool(data.get("secondary")))
             return self.send_json({"ok": ok})
@@ -3435,8 +3533,26 @@ class Handler(BaseHTTPRequestHandler):
                                    "generation": EVENTS.bump(data.get("reason", "manual"))})
 
         if route == "/api/notify":
-            EVENTS.publish("notify", {"text": str(data.get("text", ""))[:300],
-                                      "level": data.get("level", "info")})
+            # title/app/icon/actions are all optional -- nethos.js's notify()
+            # and every existing caller pass only {text, level}, and still
+            # work: the panel falls back to a level glyph and "NETHOS" for
+            # the parts nobody supplied.
+            actions = data.get("actions")
+            if not isinstance(actions, list):
+                actions = []
+            actions = [
+                {"label": str(a.get("label", ""))[:40], "href": a.get("href")}
+                for a in actions if isinstance(a, dict) and a.get("label")
+            ][:3]
+            EVENTS.publish("notify", {
+                "text": str(data.get("text", ""))[:300],
+                "level": data.get("level", "info"),
+                "title": str(data.get("title", ""))[:80] or None,
+                "app": str(data.get("app", ""))[:40] or None,
+                "icon": str(data.get("icon", ""))[:8] or None,
+                "actions": actions,
+                "duration": max(0, min(30000, int(data.get("duration", 6000)))),
+            })
             return self.send_json({"ok": True})
 
         return self.send_error(404)

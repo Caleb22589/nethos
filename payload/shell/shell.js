@@ -209,7 +209,7 @@ function initPanel(settings) {
     if (msg.type === "windows") soon();
     else if (msg.type === "menu") brand.classList.toggle("active", !!msg.data.open);
     else if (msg.type === "tray") refreshTray();
-    else if (msg.type === "notify") toast(msg.data.text, msg.data.level);
+    else if (msg.type === "notify") showNotification(msg.data);
   });
 
   refreshTasks(); refreshStatus(); refreshTray();
@@ -581,6 +581,7 @@ function initMenu() {
   const search = document.getElementById("search");
   const count = document.getElementById("count");
   let apps = [], view = [], sel = 0, open = false;
+  let switcherOpen = false;
 
   function render() {
     grid.replaceChildren();
@@ -683,7 +684,7 @@ function initMenu() {
     // frame the control centre is still on screen and still taking clicks.
     if (!open && !askOpen) keyboard(false);
     repaint();
-    overlayReleaseSoon(() => !open && !ccOpen && !askOpen && !ctxOpen);
+    overlayReleaseSoon(() => !open && !ccOpen && !askOpen && !ctxOpen && !switcherOpen);
   }
 
   function bar(pct) {
@@ -932,7 +933,7 @@ function initMenu() {
     askEl.hidden = true;
     document.body.classList.remove("ctx");
     keyboard(false);
-    overlayReleaseSoon(() => !open && !ccOpen && !askOpen && !ctxOpen);
+    overlayReleaseSoon(() => !open && !ccOpen && !askOpen && !ctxOpen && !switcherOpen);
     if (askDismiss) {
       window.removeEventListener("pointerdown", askDismiss, true);
       askDismiss = null;
@@ -1103,7 +1104,7 @@ function initMenu() {
         // stops it being on screen. A surface that just goes transparent does
         // not damage what it was covering, so the launcher stayed painted
         // until something else forced a repaint twenty seconds later.
-        overlayReleaseSoon(() => !open && !ccOpen && !askOpen && !ctxOpen);
+        overlayReleaseSoon(() => !open && !ccOpen && !askOpen && !ctxOpen && !switcherOpen);
       }
     }
     if (open) {
@@ -1133,6 +1134,149 @@ function initMenu() {
   // intercepting clicks meant for the desktop.
   if (typeof nethosHost !== "undefined") nethosHost.inputRect(0, 0, 0, 0);
   load();
+
+  /* -------------------------------------------------------- switcher --
+   * Alt+Tab. The compositor (sway/config, hypr/hyprland.conf) owns the
+   * keybinding and has no notion of "already open" -- it sends the same
+   * "next"/"prev" on every Tab press regardless. nethosd is the one that
+   * knows whether to open or step (see switcher_open() in nethosd.py), so
+   * this surface only ever renders whatever the "switcher" event says and
+   * reports clicks and the few keys (Escape/Enter/arrows) it makes sense to
+   * also accept once this surface actually holds the keyboard.
+   */
+  const switcherWorld = document.getElementById("switcher-world");
+  let switcherWindows = [], switcherSelected = 0, switcherUnits = [];
+  let appIconsById = null;   // nethos_app id -> {icon_url, icon}, loaded once
+
+  async function appIcon(nethosApp) {
+    if (!nethosApp) return null;
+    if (!appIconsById) {
+      appIconsById = {};
+      try {
+        const list = apps.length ? apps : (await get("/api/apps")).apps;
+        for (const a of list) appIconsById[a.id] = a;
+      } catch (e) { /* icons are cosmetic; initials still work without them */ }
+    }
+    return appIconsById[nethosApp] || null;
+  }
+
+  const switcherLabel = (w) => w.title || w.app_id || "Window";
+
+  /* Position (and re-position, on every step) each card by its offset from
+     the selected one -- a small 3D carousel, computed here rather than in
+     CSS with calc()/abs() so it behaves the same regardless of what CSS math
+     functions this WebKit build happens to support. */
+  function switcherLayout() {
+    switcherUnits.forEach((unit, i) => {
+      const offset = i - switcherSelected;
+      const dist = Math.abs(offset);
+      const tx = offset * 210;
+      const tz = -Math.min(240, dist * 70);
+      const scale = i === switcherSelected ? 1.08 : Math.max(0.72, 1 - dist * 0.12);
+      const ty = i === switcherSelected ? -14 : 0;
+      unit.style.transform =
+        `translate(-50%, -50%) translate3d(${tx}px, ${ty}px, ${tz}px) scale(${scale})`;
+      unit.style.opacity = Math.max(0.35, 1 - dist * 0.28);
+      unit.classList.toggle("sel", i === switcherSelected);
+    });
+  }
+
+  async function switcherBuild() {
+    switcherWorld.replaceChildren();
+    switcherUnits = switcherWindows.map((w) => {
+      const unit = el("div", "sw-unit");
+      unit.append(el("div", "sw-puffs"));
+
+      const card = el("div", "sw-card glass");
+      card.append(el("div", "sw-icon"));   // filled in below, once icons resolve
+      card.append(el("div", "sw-name", switcherLabel(w)));
+      unit.append(card);
+
+      // Hover previews (moves the selection, same as the arrow keys) and a
+      // click confirms it -- the same two-step mouse gesture the keyboard
+      // already gets, rather than a click being the only thing the mouse can
+      // do at all.
+      unit.addEventListener("mouseenter", () => {
+        const i = switcherUnits.indexOf(unit);
+        if (i !== switcherSelected) post("/api/switcher", { action: "select", index: i });
+      });
+      unit.addEventListener("click", () =>
+        post("/api/switcher", { action: "close", activate: true, index: switcherUnits.indexOf(unit) }));
+
+      switcherWorld.append(unit);
+      return unit;
+    });
+    switcherLayout();
+
+    // Icons and puffs both need something the card doesn't have until it has
+    // a frame: a real icon_url (an async lookup) and a real measured size.
+    switcherWindows.forEach(async (w, i) => {
+      const unit = switcherUnits[i];
+      const src = await appIcon(w.nethos_app);
+      unit.querySelector(".sw-icon").replaceWith(
+        iconTile({ name: switcherLabel(w), icon_url: src && src.icon_url, icon: src && src.icon },
+                 "sw-icon"));
+    });
+    requestAnimationFrame(() => {
+      switcherUnits.forEach((unit) => {
+        const r = unit.querySelector(".sw-card").getBoundingClientRect();
+        buildCloudPuffs(unit.querySelector(".sw-puffs"), r.width, r.height, "sw-puff", 6);
+      });
+    });
+  }
+
+  function switcherShow() {
+    if (switcherOpen) return;
+    switcherOpen = true;
+    document.body.classList.add("switching");
+    if (typeof nethosHost !== "undefined") {
+      nethosHost.inputRect(0, 0, window.innerWidth, window.innerHeight);
+      nethosHost.show();
+      keyboard(true);
+    }
+    switcherBuild();
+  }
+
+  function switcherHide() {
+    if (!switcherOpen) return;
+    switcherOpen = false;
+    document.body.classList.remove("switching");
+    keyboard(false);
+    if (typeof nethosHost !== "undefined") nethosHost.inputRect(0, 0, 0, 0);
+    repaint();
+    overlayReleaseSoon(() => !open && !ccOpen && !askOpen && !ctxOpen && !switcherOpen);
+    // Wait out the CSS transition before dropping the cards -- clearing them
+    // immediately would cut the fade-out short.
+    setTimeout(() => {
+      if (!switcherOpen) { switcherWorld.replaceChildren(); switcherUnits = []; }
+    }, 340);
+  }
+
+  onEvent((msg) => {
+    if (msg.type !== "switcher") return;
+    if (!msg.data.open) { switcherHide(); return; }
+    switcherWindows = msg.data.windows || [];
+    switcherSelected = msg.data.selected || 0;
+    if (!switcherOpen) switcherShow();
+    else switcherLayout();
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (!switcherOpen) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      post("/api/switcher", { action: "close", activate: false });
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      post("/api/switcher", { action: "close", activate: true });
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      post("/api/switcher", { action: "open", dir: 1 });
+    } else if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      post("/api/switcher", { action: "open", dir: -1 });
+    }
+  });
 }
 
 /* ---------------------------------------------------------------- desktop */
@@ -1453,12 +1597,97 @@ function onEvent(handler) {
   /* eslint-enable no-unreachable */
 }
 
-function toast(text, level) {
-  let host = document.querySelector(".toasts");
-  if (!host) { host = el("div", "toasts"); document.body.appendChild(host); }
-  const node = el("div", "toast toast-" + (level || "info"), text);
-  host.appendChild(node);
-  setTimeout(() => node.remove(), 4000);
+/* ---------------------------------------------------------------- clouds --
+ * Shared by the notification toast and the Alt+Tab switcher: a handful of
+ * soft round puffs behind a card, sized off that card's own measured
+ * footprint rather than a fixed guess -- see buildCloudPuffs()'s own comment
+ * for why that is the whole point.
+ *
+ * A ring of separated puffs (the first version of this) does not read as a
+ * cloud at all -- each one is legible as its own faint dot rather than part
+ * of one shape. A real cloud silhouette is heavy overlap along a horizontal
+ * band, bigger in the middle and tapering at the ends, which is what this
+ * lays out instead. */
+const LEVEL_GLYPH = { info: "●", good: "✓", warn: "!", error: "✕" };
+
+function buildCloudPuffs(host, w, h, cls, count) {
+  host.replaceChildren();
+  const short = Math.min(w, h);
+  const spread = w * 0.5;
+  for (let i = 0; i < count; i++) {
+    const t = count === 1 ? 0.5 : i / (count - 1);
+    const edge = Math.abs(t - 0.5) * 2;               // 0 at centre, 1 at the ends
+    const size = short * (0.62 - edge * 0.2) * (0.9 + Math.random() * 0.25);
+    const x = w / 2 + (t - 0.5) * spread + (Math.random() - 0.5) * short * 0.12;
+    const y = h / 2 + (Math.random() - 0.5) * h * 0.16 - size * 0.1;
+    const puff = el("div", cls);
+    puff.style.width = puff.style.height = size + "px";
+    puff.style.left = (x - size / 2) + "px";
+    puff.style.top = (y - size / 2) + "px";
+    puff.style.animationDelay = -(Math.random() * 6) + "s";
+    host.appendChild(puff);
+  }
+}
+
+function showNotification(data) {
+  let vp = document.querySelector(".toasts");
+  if (!vp) { vp = el("div", "toasts"); document.body.appendChild(vp); }
+
+  const level = data.level || "info";
+  const cloud = el("div", "notif-cloud");
+  const card = el("div", "notif-card glass");
+
+  const header = el("div", "notif-header");
+  header.append(el("div", "notif-icon notif-" + level, data.icon || LEVEL_GLYPH[level] || LEVEL_GLYPH.info));
+  const meta = el("div", "notif-meta");
+  meta.append(el("div", "notif-app", data.app || "NETHOS"));
+  header.append(meta);
+  const close = el("button", "notif-close", "✕");
+  header.append(close);
+  card.append(header);
+
+  const body = el("div", "notif-body");
+  if (data.title) body.append(el("div", "notif-title", data.title));
+  if (data.text) body.append(el("div", "notif-text", data.text));
+  card.append(body);
+
+  const actions = Array.isArray(data.actions) ? data.actions.filter((a) => a && a.label) : [];
+  if (actions.length) {
+    const bar = el("div", "notif-actions");
+    actions.forEach((a, i) => {
+      const b = el("button", "notif-btn" + (i === 0 ? " primary" : ""), a.label);
+      b.addEventListener("click", () => {
+        if (a.href) { try { window.open(a.href, "_blank"); } catch (e) {} }
+        dismiss();
+      });
+      bar.append(b);
+    });
+    card.append(bar);
+  }
+
+  cloud.append(card);
+  vp.appendChild(cloud);
+
+  // Puffs need the card's real size, which does not exist until it has a
+  // frame -- measuring synchronously here would read the pre-layout size.
+  requestAnimationFrame(() => {
+    const r = card.getBoundingClientRect();
+    buildCloudPuffs(cloud, r.width, r.height, "notif-puff", 7);
+    requestAnimationFrame(() => cloud.classList.add("in"));
+  });
+
+  let dismissed = false;
+  function dismiss() {
+    if (dismissed) return;
+    dismissed = true;
+    cloud.classList.remove("in");
+    cloud.classList.add("out");
+    setTimeout(() => cloud.remove(), 320);
+  }
+  close.addEventListener("click", dismiss);
+
+  const duration = data.duration == null ? 6000 : data.duration;
+  if (duration > 0) setTimeout(dismiss, duration);
 }
 
 /* --------------------------------------------------------- context menu --

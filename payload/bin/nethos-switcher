@@ -1,0 +1,22 @@
+#!/bin/sh
+# Drive the Alt+Tab window switcher. Bound in sway/config and
+# hypr/hyprland.conf:
+#
+#   Alt+Tab             nethos-switcher next
+#   Alt+Shift+Tab        nethos-switcher prev
+#   release of Alt        nethos-switcher activate
+#   Escape (while open, handled by the overlay itself, not a keybind)
+#
+# nethosd is the only thing that knows whether the switcher is already open --
+# the compositor fires "next"/"prev" identically on every Tab press whether
+# this is the first one or the fifth, so "next"/"prev" both open *and* step.
+case "$1" in
+    next)     data='{"action":"open","dir":1}' ;;
+    prev)     data='{"action":"open","dir":-1}' ;;
+    activate) data='{"action":"close","activate":true}' ;;
+    cancel)   data='{"action":"close","activate":false}' ;;
+    *) echo "usage: nethos-switcher next|prev|activate|cancel" >&2; exit 2 ;;
+esac
+exec curl -sf -X POST -H 'Content-Type: application/json' \
+    -d "$data" \
+    http://127.0.0.1:7777/api/switcher >/dev/null

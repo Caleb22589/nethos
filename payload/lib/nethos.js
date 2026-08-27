@@ -140,7 +140,12 @@
       version: () => get("/api/version"),
       /** Ask every NETHOS surface to reload itself right now. */
       reload: (reason) => post("/api/reload", { reason: reason || "app" }),
-      notify: (text, level) => post("/api/notify", { text, level: level || "info" }),
+      /** notify("text", "level") or notify({ text, level, title, app, icon,
+       *  actions, duration }) for the richer cloud notification. */
+      notify: (text, level) => post("/api/notify",
+        typeof text === "object" && text !== null
+          ? { level: "info", ...text }
+          : { text, level: level || "info" }),
       poweroff: () => post("/api/launch", { builtin: "poweroff" }),
       reboot: () => post("/api/launch", { builtin: "reboot" }),
       logout: () => post("/api/launch", { builtin: "logout" }),

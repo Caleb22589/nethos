@@ -470,22 +470,97 @@ body[data-view="desktop"][data-wallpaper="dusk"] {
 .widget-head h3 { margin: 0; }
 .widget-head .spacer { flex: 1; }
 
-/* ================================================================ toasts */
+/* ======================================================= notifications ===
+ * "Cloud" toasts: a real glass card, with a handful of soft blobs drifting
+ * behind it. The blobs are sized off the card itself (in notifPuffs(), since
+ * that needs the card's actual laid-out box) rather than any fixed number
+ * here -- that is what keeps the cloud proportioned to what it is carrying
+ * instead of the same oversized, unrelated shape on every notification.
+ */
 
 .toasts {
   position: fixed; right: 14px; top: 56px;
-  display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
+  display: flex; flex-direction: column; gap: 12px; align-items: flex-end;
   z-index: 999;
 }
-.toast {
-  padding: 10px 16px; border-radius: var(--r-pill);
-  font-size: 12.5px; font-weight: 500;
-  background: var(--glass-strong); color: var(--ink);
-  box-shadow: inset 0 1px 0 0 var(--rim), var(--shadow);
-  animation: toast-in 260ms var(--ease);
+
+.notif-cloud {
+  position: relative;
+  width: min(340px, 90vw);
+  isolation: isolate;
+  transform: translateX(24px) scale(0.94);
+  opacity: 0;
+  transition: transform var(--slow), opacity var(--slow);
 }
-.toast-good  { color: var(--good); }
-.toast-error { color: var(--danger); }
+.notif-cloud.in  { transform: translateX(0) scale(1); opacity: 1; }
+.notif-cloud.out {
+  transform: translateX(24px) scale(0.94);
+  opacity: 0;
+  transition: transform var(--fast), opacity var(--fast);
+}
+
+.notif-puff {
+  position: absolute;
+  border-radius: 50%;
+  /* --glass-strong/--glass-dim are tuned for a translucent overlay *on top
+     of* content -- reading a shape made only of them, on its own, against a
+     dim backdrop, is exactly what "very faint" meant. A cloud needs to be
+     solid enough to read as a cloud. */
+  background: radial-gradient(circle at 35% 30%, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.55) 75%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5), 0 4px 18px rgba(20, 26, 36, 0.10);
+  filter: blur(1.5px);
+  z-index: -1;
+  opacity: 0.9;
+}
+.notif-puff { animation: puff-drift 7s ease-in-out infinite; }
+@keyframes puff-drift {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-6px); }
+}
+
+.notif-card {
+  padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.notif-header { display: flex; align-items: center; gap: 10px; }
+.notif-icon {
+  width: 28px; height: 28px; flex: none;
+  border-radius: var(--r-sm);
+  display: grid; place-items: center;
+  font-size: 13px; font-weight: 700;
+  background: var(--glass-sunk); color: var(--ink-soft);
+}
+.notif-icon.notif-good  { color: var(--good); }
+.notif-icon.notif-warn  { color: var(--warn); }
+.notif-icon.notif-error { color: var(--danger); }
+.notif-meta { flex: 1; min-width: 0; }
+.notif-app {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.3px;
+  text-transform: uppercase; color: var(--ink-faint);
+}
+.notif-close {
+  width: 22px; height: 22px; flex: none;
+  border-radius: var(--r-sm);
+  background: none; color: var(--ink-faint);
+  font-size: 11px;
+  transition: background var(--fast), color var(--fast);
+}
+.notif-close:hover { background: var(--glass-sunk); color: var(--ink); }
+
+.notif-body { display: flex; flex-direction: column; gap: 4px; }
+.notif-title { font-size: 13px; font-weight: 600; color: var(--ink); }
+.notif-text  { font-size: 12px; line-height: 1.5; color: var(--ink-soft); }
+
+.notif-actions { display: flex; gap: 8px; }
+.notif-btn {
+  padding: 6px 13px; border-radius: var(--r-pill);
+  font-size: 11.5px; font-weight: 600;
+  background: var(--glass-sunk); color: var(--ink-soft);
+  transition: background var(--fast), color var(--fast);
+}
+.notif-btn:hover { background: var(--glass-dim); color: var(--ink); }
+.notif-btn.primary { background: var(--accent); color: #fff; }
+.notif-btn.primary:hover { background: var(--accent-2); }
 
 
 /* ------------------------------------------------------- liquid glass --
@@ -726,6 +801,95 @@ html.no-motion .cc-card { animation: none; }
 /* The panel's status cluster is a control now, so it should say so. */
 #status { border-radius: var(--r-pill); padding: 3px 8px; transition: background var(--fast); }
 #status:hover { background: var(--glass-sunk); }
+
+/* ===================================================== window switcher == */
+/* Alt+Tab. Drawn in the overlay for the same reason the launcher and control
+ * centre are: full-screen, reliably takes clicks and keyboard. nethosd owns
+ * whether it is open and which window is selected (see switcher_open() in
+ * nethosd.py) -- this only ever renders whatever the "switcher" event says.
+ *
+ * Puffs behind each card are sized in JS off that card's own measured
+ * footprint (swPuffs() in shell.js), the same technique as the notification
+ * cloud above and for the same reason: a cloud sized independently of its
+ * content is either dwarfing a short title or too small for a long one, and
+ * looks like a different, unrelated shape every time rather than the same
+ * kind of thing scaled to what it is wrapping.
+ */
+body[data-view="menu"]:not(.shown):not(.ctx):not(.switching) { pointer-events: none; }
+body[data-view="menu"].switching { opacity: 1; pointer-events: auto; }
+
+#switcher {
+  position: fixed; inset: 0;
+  display: none;
+}
+body[data-view="menu"].switching #switcher { display: block; }
+
+#switcher-sky {
+  position: absolute; inset: 0;
+  background: rgba(28, 32, 38, 0.28);
+  opacity: 0;
+  transition: opacity var(--slow);
+}
+body[data-view="menu"].switching #switcher-sky { opacity: 1; }
+
+#switcher-world {
+  position: absolute; inset: 0;
+  perspective: 1100px;
+  opacity: 0;
+  transform: scale(0.96);
+  transition: opacity var(--slow), transform var(--slow);
+}
+body[data-view="menu"].switching #switcher-world { opacity: 1; transform: none; }
+
+.sw-unit {
+  position: absolute; left: 50%; top: 50%;
+  width: 200px; margin: -70px 0 0 -100px;
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  transition: transform var(--slow), opacity var(--slow);
+  cursor: pointer;
+}
+
+.sw-puffs { position: absolute; inset: -40%; z-index: -1; pointer-events: none; }
+.sw-puff {
+  position: absolute;
+  border-radius: 50%;
+  /* --glass-strong/--glass-dim are tuned for a translucent overlay *on top
+     of* content -- reading a shape made only of them, on its own, against a
+     dim backdrop, is exactly what "very faint" meant. A cloud needs to be
+     solid enough to read as a cloud. */
+  background: radial-gradient(circle at 35% 30%, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.55) 75%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5), 0 4px 18px rgba(20, 26, 36, 0.10);
+  filter: blur(1.5px);
+}
+
+.sw-card {
+  width: 100%; padding: 14px 12px;
+  border-radius: var(--r-lg);
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  text-align: center;
+  transition: box-shadow var(--fast);
+}
+.sw-unit.sel .sw-card {
+  box-shadow: 0 0 0 2px var(--accent),
+              inset 0 1px 0 0 var(--rim), inset 0 0 0 1px var(--rim-soft),
+              inset 0 -1px 0 0 var(--edge), var(--shadow-lg);
+}
+
+.sw-icon {
+  width: 40px; height: 40px;
+  border-radius: var(--r-sm);
+  display: grid; place-items: center;
+  font-size: 15px; font-weight: 600; font-family: var(--mono);
+  background: var(--glass-sunk); color: var(--ink-soft);
+  overflow: hidden;
+}
+.sw-icon img { width: 100%; height: 100%; object-fit: cover; }
+.sw-name {
+  font-size: 12.5px; font-weight: 500; color: var(--ink);
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sw-unit.sel .sw-name { color: var(--ink); font-weight: 600; }
+.sw-unit:not(.sel) .sw-name { color: var(--ink-soft); }
 
 /* ================================================== desktop icons ======= */
 /* Top-left, in a column, out of the way of the widgets on the right. The
